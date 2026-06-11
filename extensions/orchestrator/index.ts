@@ -1,0 +1,94 @@
+/**
+ * ORCHESTRATOR EXTENSION — Entry point.
+ *
+ * Refactored from monolithic orchestrator.ts (1663 lines) into modular structure.
+ * Design spec: ORCHESTRATION-UI-DESIGN.md
+ * Refactoring plan: ORCHESTRATION-REFACTOR.md
+ *
+ * This file is the wiring hub. It:
+ * - Guards against subagent re-registration (env var check)
+ * - Registers before_agent_start handler (injects system prompt, strips tools)
+ * - Registers tool_call handler (blocks non-delegate calls)
+ * - Delegates tool registration to delegate-tool.ts
+ * - Delegates command registration to commands.ts
+ */
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY } from "./subagent-runner.ts";
+import { clearPlanPanel, setupPlanPanel } from "./plan-panel.ts";
+import { shortenLabel } from "../token-saver.ts";
+import { registerDelegateTool } from "./delegate-tool.ts";
+import { registerCommands } from "./commands.ts";
+import { debugLog } from "./debug.ts";
+
+export default function (pi: ExtensionAPI) {
+	// ── Guard: Skip registration when loading for a subagent session ──
+	if (_batchLoadSubagent > 0 || isSubagentContext()) {
+		debugLog("SKIPPING orchestrator registration (subagent context)", {
+			batchLoad: _batchLoadSubagent,
+			envGuard: process.env[SUBAGENT_ENV_KEY],
+		});
+		return;
+	}
+
+	// ── System Prompt: Tell the agent to ALWAYS delegate ──
+	pi.on("before_agent_start", async (event, ctx) => {
+		clearPlanPanel(ctx);
+
+		// Strip ALL non-delegation tools from the prompt
+		if (event.systemPromptOptions?.selectedTools) {
+			event.systemPromptOptions.selectedTools = ["delegate"];
+		}
+
+		// Show initial plan panel from the user's prompt
+		const prompt = event.prompt || "";
+		if (prompt) {
+			setupPlanPanel(shortenLabel(prompt), ["Planning..."], ctx);
+		}
+
+		const delegationInstructions = `
+## Orchestrator Mode — DELEGATE ONLY
+
+You are an expert coding assistant operating in **orchestrator mode**. In this mode, your role shifts from direct execution to delegation management — you direct specialist agents who do the hands-on work.
+
+### Your tool: delegate(specialist, task)
+
+You have ONE tool: \`delegate(specialist, task)\`.
+Call it once per step. Review the output. Then call it again for the next step.
+
+You do NOT have read, bash, grep, find, edit, or write tools in this mode.
+You CANNOT access files or run commands directly.
+
+### Specialist roster:
+- **scout** — Fast codebase investigation (read-only)
+- **coder** — Implementation (read/write/bash)
+- **reviewer** — Code review (read-only, thorough)
+- **researcher** — Question answering (read-only)
+- **writer** — Documentation (read/write)
+
+### Workflow:
+1. Analyze the request
+2. Call delegate(scout, "investigate ...") — read output
+3. Call delegate(coder, "implement ... based on: [scout output]") — read output
+4. Call delegate(reviewer, "review ... based on: [coder output]") — read output
+5. Synthesize all results into final answer
+
+You decide next step AFTER seeing previous result. NOT before.`;
+
+		return {
+			systemPrompt: event.systemPrompt + delegationInstructions,
+		};
+	});
+
+	// ── Safety net: Block non-delegation tool calls ──
+	pi.on("tool_call", async (event, ctx) => {
+		if (_batchLoadSubagent > 0) return; // Don't block subagent tools
+		if (event.toolName !== "delegate") {
+			return { block: true, reason: `Orchestrator mode: use delegate() instead of ${event.toolName}` };
+		}
+	});
+
+	// ── Register tools and commands ──
+	registerDelegateTool(pi);
+	registerCommands(pi);
+}

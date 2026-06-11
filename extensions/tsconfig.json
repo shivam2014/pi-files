@@ -1,0 +1,25 @@
+{
+	"compilerOptions": {
+		"target": "ESNext",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"allowImportingTsExtensions": true,
+		"strict": true,
+		"noUnusedLocals": false,
+		"noUnusedParameters": false,
+		"skipLibCheck": true,
+		"types": ["node"],
+		"typeRoots": [
+			"/Users/shivam94/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@types"
+		],
+		"paths": {
+			"@earendil-works/pi-ai": [
+				"/Users/shivam94/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.d.ts"
+			],
+			"@earendil-works/pi-coding-agent": [
+				"/Users/shivam94/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
+			]
+		}
+	},
+	"include": ["orchestrator/**/*.ts"]
+}
