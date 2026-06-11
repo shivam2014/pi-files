@@ -46,6 +46,9 @@ function _reg(): { planTimer: ReturnType<typeof setInterval> | null; spinnerTime
 /** Stored reference to ctx.ui.setWidget for timer-based updates */
 let _setWidget: ((key: string, content: string[] | undefined) => void) | null = null;
 
+/** Cache of last widget content — skip redundant setWidget calls */
+let _lastWidgetContent: string[] | null = null;
+
 // ============================================================================
 // Widget content generation
 // ============================================================================
@@ -58,7 +61,7 @@ function renderPlanLines(): string[] {
 	if (!planState) return [];
 	const { goal, steps, startTime } = planState;
 	const elapsed = Date.now() - startTime;
-	const elapsedStr = formatDuration(elapsed);
+	const elapsedStr = formatDuration(elapsed).padStart(6);
 	const total = steps.length;
 	const completedCount = steps.filter((s) => s.completed).length;
 	const erroredCount = steps.filter((s) => s.errored).length;
@@ -96,6 +99,26 @@ function renderPlanLines(): string[] {
 	return lines;
 }
 
+/**
+ * Push content to widget, skipping if identical to last push.
+ * This prevents unnecessary TUI re-layouts when nothing meaningful changed
+ * (e.g. only the spinner frame or elapsed second changed).
+ */
+function _renderWidget(): void {
+	if (!_setWidget) return;
+	const lines = renderPlanLines();
+	// Compare with cache — skip if nothing changed
+	if (_lastWidgetContent && _lastWidgetContent.length === lines.length) {
+		let same = true;
+		for (let i = 0; i < lines.length; i++) {
+			if (_lastWidgetContent[i] !== lines[i]) { same = false; break; }
+		}
+		if (same) return;
+	}
+	_lastWidgetContent = lines;
+	_setWidget(WIDGET_KEY, lines);
+}
+
 // ============================================================================
 // Timer management
 // ============================================================================
@@ -103,20 +126,17 @@ function renderPlanLines(): string[] {
 function startPlanTimer(): void {
 	stopPlanTimer();
 	const r = _reg();
-	// Single timer at 200ms: updates spinner frame and widget content together.
-	// Spinner has 10 frames → full cycle in 2s, smooth but only 5 redraws/sec.
+	// Single timer at 1000ms: updates spinner and elapsed time once per second.
+	// Content caching (_renderWidget) skips redundant pushes when nothing changed.
 	r.planTimer = setInterval(() => {
 		if (planState) {
 			_spinnerIndex++;
-			const lines = renderPlanLines();
-			if (_setWidget) {
-				_setWidget(WIDGET_KEY, lines);
-			}
+			_renderWidget();
 		} else {
 			stopPlanTimer();
 		}
-	}, 200);
-	r.spinnerTimer = null; // merged into planTimer, no separate spinner timer needed
+	}, 1000);
+	r.spinnerTimer = null; // merged into planTimer
 }
 
 function stopPlanTimer(): void {
@@ -130,8 +150,6 @@ function stopPlanTimer(): void {
 		r.spinnerTimer = null;
 	}
 }
-
-
 
 // ============================================================================
 // Plan generation — create initial steps from user prompt
@@ -174,7 +192,6 @@ export function generatePlanFromPrompt(prompt: string): string[] {
 	return steps;
 }
 
-
 // ============================================================================
 // Public API
 // ============================================================================
@@ -186,6 +203,7 @@ export function hasActivePlan(): boolean {
 export function clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 	stopPlanTimer();
 	planState = null;
+	_lastWidgetContent = null;
 	if (_setWidget) {
 		_setWidget(WIDGET_KEY, undefined);
 	}
@@ -215,9 +233,7 @@ export function pushPlanStep(label: string): void {
 	});
 
 	_spinnerIndex = 0;
-	if (_setWidget) {
-		_setWidget(WIDGET_KEY, renderPlanLines());
-	}
+	_renderWidget();
 }
 
 /**
@@ -240,9 +256,7 @@ export function startDelegationStep(label: string): void {
 	if (activeIdx >= 0 && !planState.steps[activeIdx].completed) {
 		planState.steps[activeIdx].label = label;
 		_spinnerIndex = 0;
-		if (_setWidget) {
-			_setWidget(WIDGET_KEY, renderPlanLines());
-		}
+		_renderWidget();
 		return;
 	}
 
@@ -254,9 +268,7 @@ export function startDelegationStep(label: string): void {
 		planState.steps[pendingIdx].label = label;
 		planState.steps[pendingIdx].active = true;
 		_spinnerIndex = 0;
-		if (_setWidget) {
-			_setWidget(WIDGET_KEY, renderPlanLines());
-		}
+		_renderWidget();
 		return;
 	}
 
@@ -282,11 +294,10 @@ export function setupPlanPanel(
 
 	// Store setWidget reference for timer updates
 	_setWidget = ctx.ui.setWidget.bind(ctx.ui);
+	_lastWidgetContent = null; // clear cache so initial render always pushes
 
 	startPlanTimer();
-	if (_setWidget) {
-		_setWidget(WIDGET_KEY, renderPlanLines());
-	}
+	_renderWidget();
 }
 
 export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
@@ -300,21 +311,17 @@ export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: 
 	// Don't auto-activate next step — let startDelegationStep consume it
 	// when the next delegation actually begins. This avoids showing a
 	// spinner on a step that the agent may never run.
-	if (_setWidget) {
-		_setWidget(WIDGET_KEY, renderPlanLines());
-	}
+	_renderWidget();
 }
 
 export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 	if (!planState) return;
 	const idx = planState.steps.findIndex((s) => s.active);
-	if (idx >= 0) {
+	if ( idx >= 0) {
 		planState.steps[idx].errored = true;
 		planState.steps[idx].active = false;
 	}
-	if (_setWidget) {
-		_setWidget(WIDGET_KEY, renderPlanLines());
-	}
+	_renderWidget();
 }
 
 export function renderPlanStatusText(): string {
