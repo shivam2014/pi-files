@@ -14,12 +14,29 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+/**
+ * Regex to strip the auto-generated "Available tools:" / "In addition to..." / "Guidelines:"
+ * sections from the system prompt. The prompt is already built by the framework before
+ * this handler runs, so setting selectedTools = ["delegate"] doesn't retroactively clean
+ * the string — we must remove the contradictory sections ourselves.
+ *
+ * The default prompt structure is:
+ *   <intro>
+ *   Available tools:\n<list>\n\nIn addition to...\n\nGuidelines:\n<list>\n\nPi documentation...
+ *
+ * This regex matches from "Available tools:" up to (exclusive) the blank line before
+ * "Pi documentation", removing all tool listings and guidelines.
+ * For custom prompts (no "Available tools:" section), it's a no-op.
+ */
+const TOOLS_SECTION_REGEX = /Available tools:\n[\s\S]*?(?=\n\n(?:Pi documentation|$))/;
 import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY } from "./subagent-runner.ts";
 import { clearPlanPanel, generatePlanFromPrompt, setupPlanPanel } from "./plan-panel.ts";
 import { shortenLabel } from "../token-saver.ts";
 import { registerDelegateTool } from "./delegate-tool.ts";
 import { registerCommands } from "./commands.ts";
 import { debugLog } from "./debug.ts";
+import { SPECIALISTS, listSpecialists } from "./specialists.ts";
 
 export default function (pi: ExtensionAPI) {
 	// ── Guard: Skip registration when loading for a subagent session ──
@@ -34,11 +51,13 @@ export default function (pi: ExtensionAPI) {
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
 		clearPlanPanel(ctx);
+		pi.setActiveTools(["delegate"]);
 
-		// Strip ALL non-delegation tools from the prompt
-		if (event.systemPromptOptions?.selectedTools) {
-			event.systemPromptOptions.selectedTools = ["delegate"];
-		}
+		// Strip the auto-generated tools list + guidelines from the already-built prompt
+		// string (they contradict the "DELEGATE ONLY" instructions below).
+		// Note: systemPromptOptions is read-only inspection per pi docs; modifying it
+		// has no effect on the already-built prompt string, so we strip via regex instead.
+		const cleanedPrompt = event.systemPrompt.replace(TOOLS_SECTION_REGEX, "");
 
 		// Generate and show the full plan upfront from the user's prompt
 		const prompt = event.prompt || "";
@@ -47,7 +66,19 @@ export default function (pi: ExtensionAPI) {
 			setupPlanPanel(shortenLabel(prompt), steps, ctx);
 		}
 
+		// Build dynamic specialist roster
+		const rosterLines = listSpecialists().map(name => {
+			const spec = SPECIALISTS[name];
+			const tools = spec.tools.join(", ");
+			const desc = spec.description ? ` ${spec.description}` : "";
+			return `  - **${name}** — tools: ${tools}${desc}`;
+		}).join("\n");
 
+		// Build skills summary available to subagents (from parent context)
+		const parentSkills = event.systemPromptOptions?.skills;
+		const skillsSection = parentSkills && parentSkills.length > 0
+			? `\n\nAvailable skills (pass relevant ones in task descriptions):\n${parentSkills.map(s => `  - **${s.name}**: ${s.description}`).join("\n")}`
+			: "";
 
 		const delegationInstructions = `
 ## Orchestrator Mode — DELEGATE ONLY
@@ -63,11 +94,8 @@ You do NOT have read, bash, grep, find, edit, or write tools in this mode.
 You CANNOT access files or run commands directly.
 
 ### Specialist roster:
-- **scout** — Fast codebase investigation (read-only)
-- **coder** — Implementation (read/write/bash)
-- **reviewer** — Code review (read-only, thorough)
-- **researcher** — Question answering (read-only)
-- **writer** — Documentation (read/write)
+${rosterLines}
+${skillsSection}
 
 ### Workflow:
 1. Analyze the request
@@ -79,7 +107,7 @@ You CANNOT access files or run commands directly.
 You decide next step AFTER seeing previous result. NOT before.`;
 
 		return {
-			systemPrompt: event.systemPrompt + delegationInstructions,
+			systemPrompt: cleanedPrompt + delegationInstructions,
 		};
 	});
 
