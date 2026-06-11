@@ -126,13 +126,13 @@ function _renderWidget(): void {
 function startPlanTimer(): void {
 	stopPlanTimer();
 	const r = _reg();
-	// Single timer at 1000ms: updates spinner and elapsed time once per second.
-	// Content caching (_renderWidget) skips redundant pushes when nothing changed.
-	r.planTimer = setInterval(() => {
+
+	// Fast spinner timer — smooth animation at 80ms
+	r.spinnerTimer = setInterval(() => {
 		// Self-check: if this interval ID doesn't match the registry,
 		// we're a stale interval from an old module — kill self.
-		if (_reg().planTimer !== r.planTimer) {
-			clearInterval(r.planTimer!);
+		if (_reg().spinnerTimer !== r.spinnerTimer) {
+			clearInterval(r.spinnerTimer!);
 			return;
 		}
 		if (planState) {
@@ -141,8 +141,22 @@ function startPlanTimer(): void {
 		} else {
 			stopPlanTimer();
 		}
+	}, 80);
+
+	// Slow elapsed timer — update display once per second
+	r.planTimer = setInterval(() => {
+		// Self-check: if this interval ID doesn't match the registry,
+		// we're a stale interval from an old module — kill self.
+		if (_reg().planTimer !== r.planTimer) {
+			clearInterval(r.planTimer!);
+			return;
+		}
+		if (planState) {
+			_renderWidget();
+		} else {
+			stopPlanTimer();
+		}
 	}, 1000);
-	r.spinnerTimer = null; // merged into planTimer
 }
 
 function stopPlanTimer(): void {

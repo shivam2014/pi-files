@@ -127,7 +127,10 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			const text = result?.content?.[0]?.type === "text" ? result.content[0].text : "";
 
 			if (isPartial && !state.interval) {
-				state.interval = setInterval(() => context.invalidate(), 1000);
+				state.interval = setInterval(() => {
+					_spinnerIndex++;
+					context.invalidate();
+				}, 80);
 			}
 			if (!isPartial && state.interval) {
 				clearInterval(state.interval);
