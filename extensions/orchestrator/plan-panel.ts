@@ -129,6 +129,12 @@ function startPlanTimer(): void {
 	// Single timer at 1000ms: updates spinner and elapsed time once per second.
 	// Content caching (_renderWidget) skips redundant pushes when nothing changed.
 	r.planTimer = setInterval(() => {
+		// Self-check: if this interval ID doesn't match the registry,
+		// we're a stale interval from an old module — kill self.
+		if (_reg().planTimer !== r.planTimer) {
+			clearInterval(r.planTimer!);
+			return;
+		}
 		if (planState) {
 			_spinnerIndex++;
 			_renderWidget();
