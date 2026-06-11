@@ -103,22 +103,20 @@ function renderPlanLines(): string[] {
 function startPlanTimer(): void {
 	stopPlanTimer();
 	const r = _reg();
+	// Single timer at 200ms: updates spinner frame and widget content together.
+	// Spinner has 10 frames → full cycle in 2s, smooth but only 5 redraws/sec.
 	r.planTimer = setInterval(() => {
-		if (planState) {
-			updatePlanDisplay();
-		} else {
-			stopPlanTimer();
-		}
-	}, 1000);
-	r.spinnerTimer = setInterval(() => {
 		if (planState) {
 			_spinnerIndex++;
 			const lines = renderPlanLines();
 			if (_setWidget) {
 				_setWidget(WIDGET_KEY, lines);
 			}
+		} else {
+			stopPlanTimer();
 		}
-	}, 100);
+	}, 200);
+	r.spinnerTimer = null; // merged into planTimer, no separate spinner timer needed
 }
 
 function stopPlanTimer(): void {
@@ -133,13 +131,7 @@ function stopPlanTimer(): void {
 	}
 }
 
-function updatePlanDisplay(): void {
-	_spinnerIndex++;
-	const lines = renderPlanLines();
-	if (_setWidget) {
-		_setWidget(WIDGET_KEY, lines);
-	}
-}
+
 
 // ============================================================================
 // Plan generation — create initial steps from user prompt
@@ -223,7 +215,9 @@ export function pushPlanStep(label: string): void {
 	});
 
 	_spinnerIndex = 0;
-	updatePlanDisplay();
+	if (_setWidget) {
+		_setWidget(WIDGET_KEY, renderPlanLines());
+	}
 }
 
 /**
@@ -246,7 +240,9 @@ export function startDelegationStep(label: string): void {
 	if (activeIdx >= 0 && !planState.steps[activeIdx].completed) {
 		planState.steps[activeIdx].label = label;
 		_spinnerIndex = 0;
-		updatePlanDisplay();
+		if (_setWidget) {
+			_setWidget(WIDGET_KEY, renderPlanLines());
+		}
 		return;
 	}
 
@@ -258,7 +254,9 @@ export function startDelegationStep(label: string): void {
 		planState.steps[pendingIdx].label = label;
 		planState.steps[pendingIdx].active = true;
 		_spinnerIndex = 0;
-		updatePlanDisplay();
+		if (_setWidget) {
+			_setWidget(WIDGET_KEY, renderPlanLines());
+		}
 		return;
 	}
 
@@ -286,7 +284,9 @@ export function setupPlanPanel(
 	_setWidget = ctx.ui.setWidget.bind(ctx.ui);
 
 	startPlanTimer();
-	updatePlanDisplay();
+	if (_setWidget) {
+		_setWidget(WIDGET_KEY, renderPlanLines());
+	}
 }
 
 export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
@@ -300,7 +300,9 @@ export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: 
 	// Don't auto-activate next step — let startDelegationStep consume it
 	// when the next delegation actually begins. This avoids showing a
 	// spinner on a step that the agent may never run.
-	updatePlanDisplay();
+	if (_setWidget) {
+		_setWidget(WIDGET_KEY, renderPlanLines());
+	}
 }
 
 export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
@@ -310,7 +312,9 @@ export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: str
 		planState.steps[idx].errored = true;
 		planState.steps[idx].active = false;
 	}
-	updatePlanDisplay();
+	if (_setWidget) {
+		_setWidget(WIDGET_KEY, renderPlanLines());
+	}
 }
 
 export function renderPlanStatusText(): string {
