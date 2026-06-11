@@ -114,4 +114,17 @@ python3 ${WEB_ACCESS}code_search.py "React useEffect cleanup"
 - **Never** use raw `curl` to scrape search engines
 - **Never** call the LLM API to "search the web"
 - **Never** try to read skills as MCP resources
-- Search then fetch: use `web_search` for discovery, `fetch_content` for deep dives
+- **Search then fetch**: use `web_search` for discovery, `fetch_content` for deep dives
+
+---
+
+# pi Agent Config
+
+## TUI Smoke Test
+
+- Test file: `~/.pi/tui-smoke.sh`
+- Run: `./.pi/tui-smoke.sh` (from home dir)
+- Tmux-based automated TUI tests for the orchestrator extension
+- Validates: plan panel visibility, activity feed icons (✓⠋○), specialist blocks, no crash logs
+- Environment: `PI_BIN`, `TEST_TIMEOUT`, `CAPTURE_DIR`
+- Cleanup: auto-removes tmux session, archives captures to `$CAPTURE_DIR`

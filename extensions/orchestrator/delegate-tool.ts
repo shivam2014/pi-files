@@ -15,7 +15,7 @@ import type { Specialist } from "./types.ts";
 import { SPECIALISTS } from "./specialists.ts";
 import { runSubagent } from "./subagent-runner.ts";
 import { createOrchestratorActivity } from "./activity-feed.ts";
-import { hasActivePlan, setupPlanPanel, completePlanStep, errorPlanStep } from "./plan-panel.ts";
+import { hasActivePlan, setupPlanPanel, startDelegationStep, completePlanStep, errorPlanStep } from "./plan-panel.ts";
 import type { Scope } from "./types.ts";
 
 // Local spinner state for renderResult animation
@@ -160,11 +160,15 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				return { content: [{ type: "text" as const, text: `Unknown specialist: "${params.specialist}". Available: ${available}` }], details: {} } as any;
 			}
 
-			// Set up plan panel for this single delegation
+			// Set up plan panel — consume or append a step for each delegation
+			const specName = specialist.name.charAt(0).toUpperCase() + specialist.name.slice(1);
+			const stepLabel = `${specName}: ${shortenLabel(params.task)}`;
+
 			if (!hasActivePlan()) {
 				_orchestratorActivity = createOrchestratorActivity();
-				const specName = specialist.name.charAt(0).toUpperCase() + specialist.name.slice(1);
-				setupPlanPanel(shortenLabel(params.task), [`${specName}: ${shortenLabel(params.task)}`], ctx);
+				setupPlanPanel(shortenLabel(params.task), [stepLabel], ctx);
+			} else {
+				startDelegationStep(stepLabel);
 			}
 
 			onUpdate?.({

@@ -15,7 +15,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY } from "./subagent-runner.ts";
-import { clearPlanPanel, setupPlanPanel } from "./plan-panel.ts";
+import { clearPlanPanel, generatePlanFromPrompt, setupPlanPanel } from "./plan-panel.ts";
 import { shortenLabel } from "../token-saver.ts";
 import { registerDelegateTool } from "./delegate-tool.ts";
 import { registerCommands } from "./commands.ts";
@@ -40,11 +40,14 @@ export default function (pi: ExtensionAPI) {
 			event.systemPromptOptions.selectedTools = ["delegate"];
 		}
 
-		// Show initial plan panel from the user's prompt
+		// Generate and show the full plan upfront from the user's prompt
 		const prompt = event.prompt || "";
 		if (prompt) {
-			setupPlanPanel(shortenLabel(prompt), ["Planning..."], ctx);
+			const steps = generatePlanFromPrompt(prompt);
+			setupPlanPanel(shortenLabel(prompt), steps, ctx);
 		}
+
+
 
 		const delegationInstructions = `
 ## Orchestrator Mode — DELEGATE ONLY

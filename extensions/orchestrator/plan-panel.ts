@@ -37,8 +37,11 @@ let planState: {
 	startTime: number;
 } | null = null;
 
-let planTimer: ReturnType<typeof setInterval> | null = null;
-let _spinnerTimer: ReturnType<typeof setInterval> | null = null;
+// Global registry survives jiti hot reload — prevents orphaned timer closures
+const __T = "__orchestrator_plan_timers__";
+function _reg(): { planTimer: ReturnType<typeof setInterval> | null; spinnerTimer: ReturnType<typeof setInterval> | null } {
+	return ((globalThis as any)[__T] ??= { planTimer: null, spinnerTimer: null });
+}
 
 /** Stored reference to ctx.ui.setWidget for timer-based updates */
 let _setWidget: ((key: string, content: string[] | undefined) => void) | null = null;
@@ -56,34 +59,38 @@ function renderPlanLines(): string[] {
 	const { goal, steps, startTime } = planState;
 	const elapsed = Date.now() - startTime;
 	const elapsedStr = formatDuration(elapsed);
-
 	const total = steps.length;
-	const completed = steps.filter((s) => s.completed).length;
-	const errored = steps.filter((s) => s.errored).length;
+	const completedCount = steps.filter((s) => s.completed).length;
+	const erroredCount = steps.filter((s) => s.errored).length;
+	const goalTrunc = goal.length > 55 ? goal.slice(0, 52) + "..." : goal;
 
-	// Progress dots
-	const dots = steps
-		.filter((s) => s.completed || s.errored)
-		.map((s) => (s.errored ? "✗" : "●"))
-		.join("");
+	// Header: Plan ◆ <goal>  ● N/N  duration
+	const prog = erroredCount > 0
+		? `● ${completedCount}/${total} ✗${erroredCount}`
+		: `● ${completedCount}/${total}`;
+	const lines: string[] = [`Plan: ◆ ${goalTrunc}  ${prog}  ${elapsedStr}`];
 
-	// Goal line
-	const goalTrunc = goal.length > 60 ? goal.slice(0, 57) + "..." : goal;
-	const progressStr = errored > 0
-		? `${dots} [${completed}/${total}] ✗${errored}`
-		: `${dots} [${completed}/${total}]`;
+	const BUDGET = 9; // widget hard-caps at 10 lines, header uses 1
 
-	// Find active step label
-	const activeStep = steps.find((s) => s.active);
-	const activeLabel = activeStep
-		? `${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} ${activeStep.label}`
-		: "";
+	// Build display rows in CHRONOLOGICAL order — each step in its original position
+	const frames = SPINNER_FRAMES;
+	const idx = _spinnerIndex % frames.length;
+	const rows: { icon: string; label: string }[] = [];
+	for (const s of steps) {
+		if (s.errored) rows.push({ icon: "✗", label: s.label });
+		else if (s.completed) rows.push({ icon: "✓", label: s.label });
+		else if (s.active) rows.push({ icon: frames[idx], label: s.label });
+		else rows.push({ icon: "○", label: s.label });
+	}
 
-	const lines: string[] = [`Plan: ◆ ${goalTrunc}  ${progressStr}  ${elapsedStr}`];
-
-	// Show active step on second line
-	if (activeLabel) {
-		lines.push(`  ${activeLabel}`);
+	// Trim oldest rows from the top if over budget (newest = bottom = most relevant)
+	if (rows.length > BUDGET) {
+		const kept = rows.slice(rows.length - BUDGET);
+		const hidden = rows.length - kept.length;
+		lines.push(`  … +${hidden} more`);
+		for (const r of kept) lines.push(`  ${r.icon} ${r.label}`);
+	} else {
+		for (const r of rows) lines.push(`  ${r.icon} ${r.label}`);
 	}
 
 	return lines;
@@ -95,14 +102,15 @@ function renderPlanLines(): string[] {
 
 function startPlanTimer(): void {
 	stopPlanTimer();
-	planTimer = setInterval(() => {
+	const r = _reg();
+	r.planTimer = setInterval(() => {
 		if (planState) {
 			updatePlanDisplay();
 		} else {
 			stopPlanTimer();
 		}
 	}, 1000);
-	_spinnerTimer = setInterval(() => {
+	r.spinnerTimer = setInterval(() => {
 		if (planState) {
 			_spinnerIndex++;
 			const lines = renderPlanLines();
@@ -114,13 +122,14 @@ function startPlanTimer(): void {
 }
 
 function stopPlanTimer(): void {
-	if (planTimer !== null) {
-		clearInterval(planTimer);
-		planTimer = null;
+	const r = _reg();
+	if (r.planTimer !== null) {
+		clearInterval(r.planTimer);
+		r.planTimer = null;
 	}
-	if (_spinnerTimer !== null) {
-		clearInterval(_spinnerTimer);
-		_spinnerTimer = null;
+	if (r.spinnerTimer !== null) {
+		clearInterval(r.spinnerTimer);
+		r.spinnerTimer = null;
 	}
 }
 
@@ -131,6 +140,48 @@ function updatePlanDisplay(): void {
 		_setWidget(WIDGET_KEY, lines);
 	}
 }
+
+// ============================================================================
+// Plan generation — create initial steps from user prompt
+// ============================================================================
+
+/**
+ * Generate initial plan steps from the user's prompt using keyword detection.
+ * Determines what specialist work is needed (research, implement, test, review, docs).
+ * Falls back to a standard investigate→implement→review workflow if nothing matches.
+ */
+export function generatePlanFromPrompt(prompt: string): string[] {
+	const p = prompt.toLowerCase();
+	const steps: string[] = [];
+	const has = (words: string[]) => words.some((w) => p.includes(w));
+
+	const needsTest = has([
+		"test", "verify", "validate", "check",
+	]);
+
+	const needsDocs = has([
+		"document", "doc", "readme", "explain",
+		"documentation", "comment",
+	]);
+
+	// Always include the standard 3-step workflow (scout → coder → reviewer)
+	// These get re-labeled with actual specialist info as delegations arrive
+	steps.push("Investigate");
+	steps.push("Implement");
+	steps.push("Review");
+
+	// Append extra steps for detected needs beyond the standard workflow
+	if (needsTest) {
+		steps.push("Test");
+	}
+
+	if (needsDocs) {
+		steps.push("Document");
+	}
+
+	return steps;
+}
+
 
 // ============================================================================
 // Public API
@@ -147,6 +198,72 @@ export function clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: st
 		_setWidget(WIDGET_KEY, undefined);
 	}
 	_setWidget = null;
+}
+
+/**
+ * Push a new step onto the active plan and make it the current step.
+ * Marks the previously active step as completed if it wasn't already.
+ * This allows the widget to show multi-step progress across sequential delegations.
+ */
+export function pushPlanStep(label: string): void {
+	if (!planState) return;
+
+	// Mark current active step as completed if it exists and isn't already done
+	const activeIdx = planState.steps.findIndex((s) => s.active);
+	if (activeIdx >= 0 && !planState.steps[activeIdx].completed) {
+		planState.steps[activeIdx].completed = true;
+		planState.steps[activeIdx].active = false;
+	}
+
+	planState.steps.push({
+		label,
+		completed: false,
+		errored: false,
+		active: true,
+	});
+
+	_spinnerIndex = 0;
+	updatePlanDisplay();
+}
+
+/**
+ * Activate a step for a delegation, consuming pre-planned steps in order.
+ *
+ * - If a pre-planned step is already active and not yet completed, re-label it
+ *   with the actual delegation info (e.g. "Investigate" → "Scout: investigate auth").
+ * - If the current step was completed and more pre-planned steps remain, activate
+ *   the next pending step and re-label it.
+ * - If all pre-planned steps are consumed, append a new step dynamically.
+ *
+ * This gives the user a full picture: what was done (✓), what's running (⠋),
+ * and what's coming next (○).
+ */
+export function startDelegationStep(label: string): void {
+	if (!planState) return;
+
+	// Case 1: Active step exists and isn't completed — relabel it
+	const activeIdx = planState.steps.findIndex((s) => s.active);
+	if (activeIdx >= 0 && !planState.steps[activeIdx].completed) {
+		planState.steps[activeIdx].label = label;
+		_spinnerIndex = 0;
+		updatePlanDisplay();
+		return;
+	}
+
+	// Case 2: Find the first pending step and activate it
+	const pendingIdx = planState.steps.findIndex(
+		(s) => !s.completed && !s.active && !s.errored,
+	);
+	if (pendingIdx >= 0) {
+		planState.steps[pendingIdx].label = label;
+		planState.steps[pendingIdx].active = true;
+		_spinnerIndex = 0;
+		updatePlanDisplay();
+		return;
+	}
+
+	// Case 3: No pre-planned steps left — append dynamically
+	pushPlanStep(label);
 }
 
 export function setupPlanPanel(
