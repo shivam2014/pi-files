@@ -297,10 +297,9 @@ export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: 
 		planState.steps[idx].errored = false;
 		planState.steps[idx].active = false;
 	}
-	const next = idx + 1;
-	if (next < planState.steps.length) {
-		planState.steps[next].active = true;
-	}
+	// Don't auto-activate next step — let startDelegationStep consume it
+	// when the next delegation actually begins. This avoids showing a
+	// spinner on a step that the agent may never run.
 	updatePlanDisplay();
 }
 
