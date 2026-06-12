@@ -104,6 +104,27 @@ function extractScopeFromOutput(output: string): Scope | null {
 	return null;
 }
 
+function extractFindingsFromOutput(output: string): { summary: string; key_files: string[]; issues: string[]; recommendation: string } | null {
+    const findingsMatch = output.match(/##\s+Findings\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
+    if (!findingsMatch) return null;
+    const block = findingsMatch[1];
+    const extract = (key: string): string => {
+        const m = block.match(new RegExp(`-?\\s*${key}:\\s*(.+)`, 'i'));
+        return m ? m[1].trim() : '';
+    };
+    const extractList = (key: string): string[] => {
+        const m = block.match(new RegExp(`-?\\s*${key}:\\s*\\[?(.+?)\\]?\\s*$`, 'im'));
+        if (!m) return [];
+        return m[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+    };
+    return {
+        summary: extract('summary') || '',
+        key_files: extractList('key_files'),
+        issues: extractList('issues'),
+        recommendation: extract('recommendation') || '',
+    };
+}
+
 /**
  * Register the delegate tool on the pi extension API.
  */
@@ -247,6 +268,16 @@ delegate(coder, "fix the token expiry")
 					// Don't block here — let the coder gate handle it with a better message
 				}
 			}
+
+			const findings = extractFindingsFromOutput(result.output);
+			if (findings && findings.summary) {
+				const summaryParts = [`[Findings: ${findings.summary}]`];
+				if (findings.key_files.length > 0) summaryParts.push(`Files: ${findings.key_files.join(', ')}`);
+				if (findings.issues.length > 0 && findings.issues[0] !== 'none') summaryParts.push(`Issues: ${findings.issues.join('; ')}`);
+				if (findings.recommendation) summaryParts.push(`Next: ${findings.recommendation}`);
+				result.output = summaryParts.join('\n') + '\n\n' + result.output;
+			}
+
 			// NOTE: scope stays cached after coder runs (not cleared) so user can
 			// re-iterate on same files without re-calling scout.
 			// Scope is cleared on session reset (before_agent_start).

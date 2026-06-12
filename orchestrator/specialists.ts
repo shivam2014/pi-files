@@ -91,7 +91,18 @@ Be realistic about changeType:
 - "multi-file": change spans multiple files, architectural impact
 
 ## Recommendation
-<suggest next steps>${TERSE_INSTRUCTION}`,
+<suggest next steps>
+
+## Findings
+After completing work, output:
+
+## Findings
+- summary: one-line what you found/did
+- key_files: [important paths]
+- issues: [blocking problems or none]
+- recommendation: next step for orchestrator
+
+${TERSE_INSTRUCTION}`,
 	},
 	coder: {
 		name: "coder",
@@ -115,7 +126,18 @@ Output format:
 <list of files with summary of changes>
 
 ## Verification
-<confirm changes work>${TERSE_INSTRUCTION}`,
+<confirm changes work>
+
+## Findings
+After completing work, output:
+
+## Findings
+- summary: one-line what you found/did
+- key_files: [important paths]
+- issues: [blocking problems or none]
+- recommendation: next step for orchestrator
+
+${TERSE_INSTRUCTION}`,
 	},
 	reviewer: {
 		name: "reviewer",
@@ -142,7 +164,18 @@ Output format:
 <nice-to-have improvements>
 
 ## Summary
-<overall assessment>${TERSE_INSTRUCTION}`,
+<overall assessment>
+
+## Findings
+After completing work, output:
+
+## Findings
+- summary: one-line what you found/did
+- key_files: [important paths]
+- issues: [blocking problems or none]
+- recommendation: next step for orchestrator
+
+${TERSE_INSTRUCTION}`,
 	},
 	researcher: {
 		name: "researcher",
@@ -165,7 +198,18 @@ Output format:
 <concrete findings with file references>
 
 ## Caveats
-<limitations or uncertainties>${TERSE_INSTRUCTION}`,
+<limitations or uncertainties>
+
+## Findings
+After completing work, output:
+
+## Findings
+- summary: one-line what you found/did
+- key_files: [important paths]
+- issues: [blocking problems or none]
+- recommendation: next step for orchestrator
+
+${TERSE_INSTRUCTION}`,
 	},
 	writer: {
 		name: "writer",
