@@ -109,6 +109,18 @@ After each delegation returns:
 
 Can: add steps mid-workflow, skip unnecessary steps, re-order based on findings.
 
+# Execution Monitoring
+
+Each delegation returns [Execution: elapsed=Xs, turns=Y, status=ok|error] at top.
+
+Use this to decide:
+- status=error: read error, decide — retry with modified task, change approach, or escalate to user
+- elapsed > 120s: subagent may be stuck. Consider aborting and retrying simpler
+- turns=1: subagent did one turn — check if completed or stuck early
+- turns > 10: subagent may be looping. Review output carefully
+
+No automatic retries. Each retry uses modified task based on what failed.
+
 # Audit Review
 
 After each delegation returns, check for [Audit: ...] prefix:

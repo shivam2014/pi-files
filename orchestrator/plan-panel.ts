@@ -27,6 +27,37 @@ let planState: {
 	startTime: number;
 } | null = null;
 
+function savePlanState(): void {
+	if (!planState) return;
+	try {
+		const fs = require('fs');
+		const path = require('path');
+		const dir = path.join(process.cwd(), '.pi');
+		if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, 'orchestrator-plan.json'), JSON.stringify({
+			goal: planState.goal,
+			steps: planState.steps.map(s => ({ label: s.label, completed: s.completed, errored: s.errored })),
+			startTime: planState.startTime,
+		}, null, 2));
+	} catch {}
+}
+
+function loadPlanState(): typeof planState {
+	try {
+		const fs = require('fs');
+		const path = require('path');
+		const statePath = path.join(process.cwd(), '.pi', 'orchestrator-plan.json');
+		if (!fs.existsSync(statePath)) return null;
+		const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+		if (!saved?.goal || !saved?.steps) return null;
+		return {
+			goal: saved.goal,
+			steps: saved.steps.map((s: any) => ({ ...s, active: false })),
+			startTime: saved.startTime || Date.now(),
+		};
+	} catch { return null; }
+}
+
 // Global registry survives jiti hot reload — prevents orphaned timer closures
 const __T = "__orchestrator_plan_timers__";
 function _reg(): { planTimer: ReturnType<typeof setInterval> | null; spinnerTimer: ReturnType<typeof setInterval> | null } {
@@ -363,6 +394,17 @@ export function setupPlanPanel(
 	stepLabels: string[],
 	ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } },
 ): void {
+	// Try to restore previous session state
+	const restored = loadPlanState();
+	if (restored && restored.goal === goal) {
+		planState = restored;
+		_setWidget = ctx.ui.setWidget.bind(ctx.ui);
+		_lastWidgetContent = null;
+		startPlanTimer();
+		_renderWidget();
+		return;
+	}
+
 	planState = {
 		goal,
 		steps: stepLabels.map((label, i) => ({
@@ -396,6 +438,7 @@ export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: 
 	// when the next delegation actually begins. This avoids showing a
 	// spinner on a step that the agent may never run.
 	_renderWidget();
+	savePlanState();
 }
 
 export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
@@ -407,6 +450,7 @@ export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: str
 		planState.steps[idx].detail = undefined;
 	}
 	_renderWidget();
+	savePlanState();
 }
 
 export function renderPlanStatusText(): string {

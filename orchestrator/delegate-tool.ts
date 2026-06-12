@@ -267,16 +267,13 @@ delegate(coder, "fix the token expiry")
 			// Determine scope: for coder, use cached scope from previous subagent output
 			const scopeToUse = params.specialist === "coder" ? _cachedScope : null;
 
+			const startTime = Date.now();
 			const result = await runSubagent(
-				specialist,
-				params.task,
-				ctx.cwd,
+				specialist, params.task, ctx.cwd,
 				{ modelRegistry: ctx.modelRegistry, model: ctx.model },
-				signal,
-				onUpdate,
-				_orchestratorActivity ?? undefined,
-				scopeToUse,
+				signal, onUpdate, _orchestratorActivity ?? undefined, scopeToUse,
 			);
+			const elapsedMs = Date.now() - startTime;
 
 			// After ANY subagent completes, try to extract scope from its output
 			// This allows scout → scope → coder flow: scout outputs ## Scope, system captures it
@@ -299,6 +296,14 @@ delegate(coder, "fix the token expiry")
 				if (findings.recommendation) summaryParts.push(`Next: ${findings.recommendation}`);
 				result.output = summaryParts.join('\n') + '\n\n' + result.output;
 			}
+
+			// Prepend execution metadata for orchestrator visibility
+			const execStatus = result.output?.startsWith("[error]") ? "error" : "ok";
+			const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${result.turns || 0}, status=${execStatus}]`];
+			if (execStatus === "error") {
+				execMeta.push(`[Error: ${result.output.slice(0, 200)}]`);
+			}
+			result.output = execMeta.join('\n') + '\n\n' + result.output;
 
 			// Extract audit trail
 			const audit = extractAuditFromOutput(result.output);

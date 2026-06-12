@@ -94,9 +94,11 @@ export async function runSubagent(
 	onUpdate?: (update: any) => void,
 	orchestratorActivity?: OrchestratorActivity,
 	scope?: Scope | null,
-): Promise<{ output: string; turns: number }> {
+): Promise<{ output: string; turns: number; elapsed_ms?: number }> {
 	// Write scope file for scope-guard.ts enforcement
 	writeScopeFile(cwd, scope);
+
+	const startTime = Date.now();
 
 	try {
 		const authStorage = AuthStorage.create();
@@ -310,7 +312,7 @@ export async function runSubagent(
 			finalOutput = finalOutput.slice(0, OUTPUT_CAP) + "\n\n[output truncated]";
 		}
 
-		return { output: finalOutput, turns };
+		return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime };
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error);
 		const stack = error instanceof Error ? error.stack : "";
