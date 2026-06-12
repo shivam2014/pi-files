@@ -56,7 +56,7 @@ Code/commits/PRs: write normal. "stop caveman" or "normal mode": revert. Think s
 export const SPECIALISTS: Record<string, Specialist> = {
 	scout: {
 		name: "scout",
-		description: "Read-only codebase investigator. Uses grep/find to locate code, read to examine files. Ideal for architecture discovery, bug investigation, and code tracing.",
+		description: "Read-only codebase investigator. Uses grep/find to locate code, read to examine files, bash to execute commands. Ideal for architecture discovery, bug investigation, code tracing, running CLI tools, and verifying command output.",
 		tools: ["read", "bash"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
 
@@ -78,10 +78,17 @@ Output format:
 ## Dependencies
 <relevant relationships>
 
+When you finish your analysis, output a structured scope section:
+
 ## Scope
-<OPTIONAL: if the task involves modifying or creating files, output a scope definition>
-<Format: filesToModify: ["src/file1.ts", "src/file2.ts"], filesToCreate: ["src/newfile.ts"]>
-<Omit if this is a read-only investigation>
+- filesToModify: ["path/to/file1.ts", "path/to/file2.ts"]
+- filesToCreate: ["path/to/newfile.ts"]
+- changeType: "single-file" | "multi-file"
+- maxLinesPerFile: 400
+
+Be realistic about changeType:
+- "single-file": change touches only one file, trivial edit
+- "multi-file": change spans multiple files, architectural impact
 
 ## Recommendation
 <suggest next steps>${TERSE_INSTRUCTION}`,

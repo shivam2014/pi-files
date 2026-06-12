@@ -20,7 +20,7 @@ import { formatDuration } from "./ui-utils.ts";
 
 const BOX_INNER_WIDTH = 52;
 const MAX_FEED_STEPS = 6;
-const MAX_FEED_SUBSTEPS = 3;
+const MAX_FEED_SUBSTEPS = 8;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 let _spinnerIndex = 0;
 
@@ -103,6 +103,13 @@ export function renderCombinedProgress(
 	goal?: string,
 ): string {
 	_spinnerIndex++;
+
+	if (feedState.errored) {
+		const header = `⚠ Subagent Error`;
+		const msg = feedState.errorMessage ?? "Unknown error";
+		return [header, "", msg].join('\n');
+	}
+
 	const lines: string[] = [];
 	const total = orchestratorActivity.steps.length;
 	const completed = orchestratorActivity.steps.filter((s) => s.completed).length;
@@ -136,6 +143,8 @@ export function renderCombinedProgress(
 				if (hiddenCount > 0) {
 					lines.push(`  ... +${hiddenCount} more`);
 				}
+				// Note: outputPreview intentionally omitted from chat feed for compactness;
+				// it's shown in the plan panel via renderSubstepLines instead.
 				for (const sub of visibleSubs) {
 					lines.push(sub.completed
 						? `  ✓ ${sub.label}`
@@ -249,15 +258,6 @@ export function parseTextForFeed(state: ActivityFeedState, text: string): void {
 			continue;
 		}
 
-		const label = extractStepLabel(trimmed);
-		if (label && state.goal && !existingStepLabels.has(label)) {
-			if (isValidStepLabel(label)) {
-				addStep(state, label);
-				existingStepLabels.add(label);
-			}
-			continue;
-		}
-
 		if (state.goal === "" && !trimmed.startsWith("#")) {
 			state.goal = trimmed;
 		}
@@ -297,13 +297,16 @@ export function addSubstep(state: ActivityFeedState, label: string): void {
 	step.substeps.push({ label, completed: false, startTime: Date.now() });
 }
 
-export function completeLastSubstep(state: ActivityFeedState): void {
+export function completeLastSubstep(state: ActivityFeedState, outputPreview?: string): void {
 	if (state.currentStep < 0 || state.currentStep >= state.steps.length) return;
 	const step = state.steps[state.currentStep];
 	if (step.substeps.length > 0) {
 		const sub = step.substeps[step.substeps.length - 1];
 		sub.completed = true;
 		sub.endTime = Date.now();
+		if (outputPreview) {
+			sub.outputPreview = outputPreview;
+		}
 	}
 }
 
@@ -316,6 +319,21 @@ export function completeCurrentStep(state: ActivityFeedState): void {
 	state.steps[state.currentStep].completed = true;
 	state.steps[state.currentStep].endTime = Date.now();
 	state.currentStep++;
+}
+
+export function markFeedError(state: ActivityFeedState, message: string): void {
+	state.errored = true;
+	state.errorMessage = message;
+	// Force-complete all steps and substeps
+	for (const step of state.steps) {
+		step.completed = true;
+		for (const sub of step.substeps) {
+			sub.completed = true;
+		}
+	}
+	if (state.currentStep >= 0 && state.currentStep < state.steps.length) {
+		state.currentStep = state.steps.length;
+	}
 }
 
 export function toolCallToSubstep(toolName: string, input: any): string {
@@ -346,25 +364,40 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 }
 
 /**
- * Render the subagent activity feed (Layer 2 — tool blocks in chat history).
- * NEVER collapses. During: spinner on current. After: all ✓ with durations.
+ * Render substep lines for plan panel display.
+ * Returns indented lines with status icons (✓ for completed, ▶ for active)
+ * and optional output preview appended to completed substeps.
  */
+export function renderSubstepLines(substeps: Substep[], maxLines: number = 5): string[] {
+	const visible = substeps.slice(-maxLines);
+	const hidden = substeps.length - visible.length;
+	const lines: string[] = [];
+	if (hidden > 0) {
+		lines.push(`    … +${hidden} more`);
+	}
+	for (const sub of visible) {
+		if (sub.completed) {
+			const preview = sub.outputPreview ? ` → ${sub.outputPreview}` : '';
+			lines.push(`    ✓ ${sub.label}${preview}`);
+		} else {
+			lines.push(`    ▶ ${sub.label} → Running...`);
+		}
+	}
+	return lines;
+}
+
 export function renderActivityFeed(name: string, state: ActivityFeedState): string {
 	_spinnerIndex++;
+
+	if (state.errored) {
+		const header = `⚠ Subagent Error`;
+		const msg = state.errorMessage ?? "Unknown error";
+		return [header, "", msg].join('\n');
+	}
+
 	const lines: string[] = [];
 
 	if (state.steps.length === 0) {
-		const substepCount = state.steps.reduce((sum, s) => sum + s.substeps.length, 0);
-		if (substepCount > 0) {
-			for (const s of state.steps) {
-				for (const sub of s.substeps) {
-					lines.push(sub.completed
-						? `  ✓ ${sub.label}`
-						: `  ${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} ${sub.label}...`);
-				}
-			}
-			return lines.join("\n");
-		}
 		lines.push(`  ${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} Starting...`);
 		return lines.join("\n");
 	}
@@ -401,6 +434,8 @@ export function renderActivityFeed(name: string, state: ActivityFeedState): stri
 			if (hiddenCount > 0) {
 				lines.push(`  ... +${hiddenCount} more`);
 			}
+			// Note: outputPreview intentionally omitted from chat feed for compactness;
+			// it's shown in the plan panel via renderSubstepLines instead.
 			for (const sub of visibleSubs) {
 				if (sub.completed) {
 					const subDuration = sub.startTime && sub.endTime

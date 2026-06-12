@@ -25,6 +25,7 @@ export interface Substep {
 	completed: boolean;
 	startTime?: number;
 	endTime?: number;
+	outputPreview?: string;
 }
 
 /** A step in the activity feed (Layer 2 chat blocks) */
@@ -42,6 +43,8 @@ export interface ActivityFeedState {
 	steps: Step[];
 	currentStep: number;
 	rawText: string;
+	errored?: boolean;
+	errorMessage?: string;
 }
 
 /** Specialist definition */
@@ -70,7 +73,13 @@ export interface PlanStep {
 	completed: boolean;
 	active: boolean;
 	errored?: boolean;
+	detail?: string;
+	detailLines?: string[];
 }
+
+export type ScopeGateMode = "strict" | "relaxed";
+// strict = multi-file change, full planning required
+// relaxed = single-file change, lightweight scope
 
 /** Scope enforcement manifest — limits which files the coder can modify */
 export interface Scope {
@@ -78,4 +87,5 @@ export interface Scope {
 	filesToCreate: string[];
 	changeType: "single-file" | "multi-file";
 	maxLinesPerFile: number;
+	gateMode?: ScopeGateMode;
 }

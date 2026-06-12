@@ -26,11 +26,14 @@ import {
 	addSubstep,
 	completeLastSubstep,
 	completeCurrentStep,
+	markFeedError,
 	renderActivityFeed,
 	renderCombinedProgress,
 	toolCallToSubstep,
+	renderSubstepLines,
 } from "./activity-feed.ts";
 import { compressOutput } from "./activity-feed.ts";
+import { updatePlanStepDetail } from "./plan-panel.ts";
 
 export const SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
 
@@ -47,12 +50,20 @@ export function isSubagentContext(): boolean {
 /**
  * Write scope file for scope-guard.ts enforcement.
  * Only written if scope is provided.
+ * Derives gateMode from changeType if not explicitly set.
  */
 function writeScopeFile(cwd: string, scope?: Scope | null): void {
 	if (!scope) return;
 	const dir = join(cwd, ".pi");
 	try { mkdirSync(dir, { recursive: true }); } catch {}
-	writeFileSync(join(dir, "scope.json"), JSON.stringify(scope, null, 2));
+
+	// Derive gateMode from changeType if not set
+	const scopeWithGate = {
+		...scope,
+		gateMode: scope.gateMode ?? (scope.changeType === "single-file" ? "relaxed" : "strict"),
+	};
+
+	writeFileSync(join(dir, "scope.json"), JSON.stringify(scopeWithGate, null, 2));
 }
 
 /**
@@ -183,6 +194,13 @@ export async function runSubagent(
 			if (event.type === "tool_execution_start") {
 				const substepLabel = toolCallToSubstep(event.toolName, event.args);
 				addSubstep(feed, substepLabel);
+				// Pass substep history lines to plan panel immediately
+				const activeStep = feed.steps[feed.currentStep];
+				if (activeStep) {
+					updatePlanStepDetail(renderSubstepLines(activeStep.substeps));
+				} else {
+					updatePlanStepDetail(substepLabel);
+				}
 				const text = orchestratorActivity
 					? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
 					: renderActivityFeed(specialist.name, feed);
@@ -194,7 +212,24 @@ export async function runSubagent(
 
 			// Tool execution completed
 			if (event.type === "tool_execution_end") {
-				completeLastSubstep(feed);
+				// Extract truncated output preview from tool result
+				let outputPreview: string | undefined;
+				try {
+					const rawResult = (event as any).result ?? (event as any).output;
+					if (rawResult != null) {
+						const raw = typeof rawResult === "string" ? rawResult : JSON.stringify(rawResult);
+						const stripped = compressOutput(raw);
+						outputPreview = stripped.length > 80 ? stripped.slice(0, 77) + "..." : stripped || undefined;
+					}
+				} catch {}
+				completeLastSubstep(feed, outputPreview);
+				// Update plan panel with substep history lines
+				const activeStep = feed.steps[feed.currentStep];
+				if (activeStep && activeStep.substeps.length > 0) {
+					updatePlanStepDetail(renderSubstepLines(activeStep.substeps));
+				} else {
+					updatePlanStepDetail("");
+				}
 				const text = orchestratorActivity
 					? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
 					: renderActivityFeed(specialist.name, feed);
@@ -207,18 +242,22 @@ export async function runSubagent(
 
 		// Periodic re-render timer — animates spinner between events
 		let renderTimer: ReturnType<typeof setInterval> | null = null;
+		let _lastRenderText: string | null = null;
 		const startRenderTimer = () => {
 			renderTimer = setInterval(() => {
 				if (feed.steps.length > 0 || output.length > 0) {
 					const text = orchestratorActivity
 						? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
 						: renderActivityFeed(specialist.name, feed);
+					// Skip update if content unchanged (only spinner frame changed)
+					if (text === _lastRenderText) return;
+					_lastRenderText = text;
 					onUpdate?.({
 						content: [{ type: "text", text }],
 						details: { specialist: specialist.name, status: "running" },
 					});
 				}
-			}, 1000);
+			}, 80);
 		};
 		startRenderTimer();
 
@@ -233,7 +272,15 @@ export async function runSubagent(
 			_inSubagentExecution++;
 			await session.prompt(task);
 		} catch (error) {
-			output = `[error] ${error instanceof Error ? error.message : String(error)}`;
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			// Surface error in activity feed before cleanup
+			markFeedError(feed, errorMsg);
+			const errorText = renderActivityFeed(specialist.name, feed) ?? errorMsg;
+			onUpdate?.({
+				content: [{ type: "text", text: errorText }],
+				details: { specialist: specialist.name, status: "error", error: errorMsg },
+			});
+			output = `[error] ${errorMsg}`;
 		} finally {
 			_inSubagentExecution--;
 			unsubscribe();
@@ -241,8 +288,32 @@ export async function runSubagent(
 				clearInterval(renderTimer);
 				renderTimer = null;
 			}
+			_lastRenderText = null;
 			if (signal) signal.removeEventListener("abort", abortHandler);
 			session.dispose();
+		}
+
+		// After successful completion, force-complete remaining steps and check for mismatches
+		const warnings: string[] = [];
+		let stepTotal = feed.steps.length;
+		let stepCompleted = 0;
+		for (const step of feed.steps) {
+			if (!step.completed) {
+				step.completed = true;
+				for (const sub of step.substeps) sub.completed = true;
+			} else {
+				stepCompleted++;
+			}
+		}
+		if (stepCompleted < stepTotal) {
+			warnings.push(`Step counter mismatch: completed ${stepCompleted}/${stepTotal} steps`);
+		}
+		// Reset currentStep to show final state
+		feed.currentStep = Math.max(feed.currentStep, feed.steps.length);
+
+		// Append warnings to output
+		if (warnings.length > 0) {
+			output += `\n\n[Orchestrator Warnings]\n${warnings.map(w => `  ⚠ ${w}`).join('\n')}`;
 		}
 
 		// Compress + cap output before returning to parent

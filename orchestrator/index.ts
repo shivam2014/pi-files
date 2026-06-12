@@ -81,9 +81,9 @@ ${skillsSection}
 
 ### Workflow:
 1. Analyze the request
-2. Call delegate(scout, "investigate ...") — read output
-3. Call delegate(coder, "implement ... based on: [scout output]") — read output
-4. Call delegate(reviewer, "review ... based on: [coder output]") — read output
+2. If task is investigation or CLI execution → delegate(scout, ...)
+3. If task involves file changes → delegate(scout, ...) first for scope, then delegate(coder, ...)
+4. If task is code review → delegate(reviewer, ...)
 5. Synthesize all results into final answer
 
 You decide next step AFTER seeing previous result. NOT before.`;
