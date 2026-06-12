@@ -305,6 +305,18 @@ delegate(coder, "fix the token expiry")
 			}
 			result.output = execMeta.join('\n') + '\n\n' + result.output;
 
+		// Prepend tool call trail for orchestrator visibility
+		if (result.toolCallTrail && result.toolCallTrail.length > 0) {
+			const trail = result.toolCallTrail.map(t =>
+				`${t.completed ? '✓' : '⚠'} ${t.tool}${t.outputPreview ? ` → ${t.outputPreview}` : ''}`
+			).join('\n');
+			result.output = `[Tool Calls (${result.toolCallTrail.length}):
+${trail}
+]
+
+` + result.output;
+		}
+
 			// Extract audit trail
 			const audit = extractAuditFromOutput(result.output);
 			if (audit) {

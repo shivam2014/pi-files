@@ -94,7 +94,7 @@ export async function runSubagent(
 	onUpdate?: (update: any) => void,
 	orchestratorActivity?: OrchestratorActivity,
 	scope?: Scope | null,
-): Promise<{ output: string; turns: number; elapsed_ms?: number }> {
+): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
 	// Write scope file for scope-guard.ts enforcement
 	writeScopeFile(cwd, scope);
 
@@ -312,7 +312,19 @@ export async function runSubagent(
 			finalOutput = finalOutput.slice(0, OUTPUT_CAP) + "\n\n[output truncated]";
 		}
 
-		return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime };
+		// Build tool call trail from feed state
+		const toolCallTrail: { tool: string; outputPreview?: string; completed: boolean }[] = [];
+		for (const step of feed.steps) {
+			for (const sub of step.substeps) {
+				toolCallTrail.push({
+					tool: sub.label,
+					outputPreview: sub.outputPreview,
+					completed: sub.completed,
+				});
+			}
+		}
+
+		return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime, toolCallTrail };
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error);
 		const stack = error instanceof Error ? error.stack : "";
