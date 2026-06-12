@@ -185,7 +185,7 @@ Output format:
 <what was created or updated>
 
 ## Content
-<the documentation>${TERSE_INSTRUCTION}`,
+<the documentation>`,
 	},
 };
 

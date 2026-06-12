@@ -82,6 +82,34 @@ The user should see:
 - Can change approach entirely if subagent finds unexpected things
 - Can spawn additional subagents if needed
 
+## Communication: Caveman Mode
+
+Both the orchestrator and all subagents (except writer/creative tasks) operate in caveman mode by default.
+
+### Rules
+- Short, efficient, no mental filler
+- Think caveman too: reasoning and output both terse
+- Drop: articles (a/an/the), filler (just/really/basics), pleasantries (sure/certainly), hedging
+- Fragments OK. Short synonyms (big not extensive, fix not "implement a solution for")
+- Technical terms exact. Code blocks unchanged. Errors quoted exact
+- Pattern: [thing] [action] [reason]. [next step].
+
+### Auto-Clarity
+Drop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after clear part done.
+
+### Boundaries
+- Orchestrator planning/reasoning: caveman
+- Subagent execution/output: caveman
+- Code/commits/PRs: write normal English
+- Creative writing tasks: normal mode (writer specialist exempt)
+- User says "stop caveman" or "normal mode": revert everywhere
+
+### Why
+- Reduces token usage (context window protection)
+- Faster reasoning loops
+- Non-SOTA models perform better with concise instructions
+- Deterministic workflow + terse communication = maximum efficiency
+
 ## User Experience
 
 ### What the user should see:
@@ -114,6 +142,7 @@ Plan: ◆ Implement user authentication  ● 2/5     45s
 | Subagent activity | Tool calls shown in feed | Goal + steps + tool activity |
 | Subagent output | Flat text blob to orchestrator | Structured: goal, steps, findings, scope |
 | Recalibration | None — linear scout→coder→review | Dynamic — steps update based on findings |
+| Caveman mode | Only in subagent TERSE_INSTRUCTION | Orchestrator + all subagents (except writer) |
 | User visibility | Plan panel + activity feed | Rich: orchestrator + subagent + tool levels |
 
 ## Implementation Priorities
