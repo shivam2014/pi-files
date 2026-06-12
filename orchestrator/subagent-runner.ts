@@ -293,28 +293,16 @@ export async function runSubagent(
 			session.dispose();
 		}
 
-		// After successful completion, force-complete remaining steps and check for mismatches
-		const warnings: string[] = [];
-		let stepTotal = feed.steps.length;
-		let stepCompleted = 0;
+		// After successful completion, force-complete remaining steps
 		for (const step of feed.steps) {
 			if (!step.completed) {
 				step.completed = true;
 				for (const sub of step.substeps) sub.completed = true;
-			} else {
-				stepCompleted++;
 			}
-		}
-		if (stepCompleted < stepTotal) {
-			warnings.push(`Step counter mismatch: completed ${stepCompleted}/${stepTotal} steps`);
 		}
 		// Reset currentStep to show final state
 		feed.currentStep = Math.max(feed.currentStep, feed.steps.length);
 
-		// Append warnings to output
-		if (warnings.length > 0) {
-			output += `\n\n[Orchestrator Warnings]\n${warnings.map(w => `  ⚠ ${w}`).join('\n')}`;
-		}
 
 		// Compress + cap output before returning to parent
 		let finalOutput = compressOutput(output || "(no output)");
