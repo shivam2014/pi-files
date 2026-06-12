@@ -21,7 +21,6 @@ let _spinnerIndex = 0;
 /** Widget key used for setWidget calls */
 const WIDGET_KEY = "orchestrator-status";
 
-
 let planState: {
 	goal: string;
 	steps: PlanStep[];
@@ -207,44 +206,52 @@ function stopPlanTimer(): void {
 }
 
 // ============================================================================
+// Goal summarization — better plan titles from user prompts
+// ============================================================================
+
+export function summarizeGoal(prompt: string): string {
+	// Extract verb + object, drop noise
+	const p = prompt.trim();
+
+	// Common action patterns
+	const actionPatterns = [
+		/(?:create|add|build|implement|fix|update|refactor|improve|optimize|check|investigate|analyze|find|search|debug|test|review|document|explain|set up|configure)\s+(.+)/i,
+		/(?:how (?:do I|to|can I))\s+(.+)/i,
+		/(?:what|which|where|when|who)\s+(?:is|are|does|do|was|were)\s+(.+)/i,
+	];
+
+	for (const pattern of actionPatterns) {
+		const match = p.match(pattern);
+		if (match) {
+			// Clean up the matched part
+			let goal = match[0].trim();
+			// Remove file paths and technical noise
+			goal = goal.replace(/(?:in|at|from|to|for|into)\s+[\w/.~-]+/g, '').trim();
+			goal = goal.replace(/\s+/g, ' ');
+			// Capitalize first letter
+			goal = goal.charAt(0).toUpperCase() + goal.slice(1);
+			// Truncate if too long
+			if (goal.length > 50) goal = goal.slice(0, 47) + '...';
+			return goal;
+		}
+	}
+
+	// Fallback: use shortenLabel
+	return shortenLabel(p);
+}
+
+// ============================================================================
 // Plan generation — create initial steps from user prompt
 // ============================================================================
 
 /**
- * Generate initial plan steps from the user's prompt using keyword detection.
- * Determines what specialist work is needed (research, implement, test, review, docs).
- * Falls back to a standard investigate→implement→review workflow if nothing matches.
+ * Generate initial plan steps from the user's prompt.
+ * Start with just "Planning" — real steps added dynamically by orchestrator
+ * via startDelegationStep() as delegations arrive.
  */
 export function generatePlanFromPrompt(prompt: string): string[] {
-	const p = prompt.toLowerCase();
-	const steps: string[] = [];
-	const has = (words: string[]) => words.some((w) => p.includes(w));
-
-	const needsTest = has([
-		"test", "verify", "validate", "check",
-	]);
-
-	const needsDocs = has([
-		"document", "doc", "readme", "explain",
-		"documentation", "comment",
-	]);
-
-	// Always include the standard 3-step workflow (scout → coder → reviewer)
-	// These get re-labeled with actual specialist info as delegations arrive
-	steps.push("Investigate");
-	steps.push("Implement");
-	steps.push("Review");
-
-	// Append extra steps for detected needs beyond the standard workflow
-	if (needsTest) {
-		steps.push("Test");
-	}
-
-	if (needsDocs) {
-		steps.push("Document");
-	}
-
-	return steps;
+	// Start with just "Planning..." — real steps added dynamically by orchestrator
+	return ["Planning..."];
 }
 
 // ============================================================================

@@ -15,10 +15,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-
 import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY } from "./subagent-runner.ts";
-import { clearPlanPanel, generatePlanFromPrompt, setupPlanPanel } from "./plan-panel.ts";
-import { shortenLabel } from "../token-saver.ts";
+import { clearPlanPanel, generatePlanFromPrompt, setupPlanPanel, summarizeGoal } from "./plan-panel.ts";
 import { registerDelegateTool } from "./delegate-tool.ts";
 import { registerCommands } from "./commands.ts";
 import { debugLog } from "./debug.ts";
@@ -45,7 +43,7 @@ export default function (pi: ExtensionAPI) {
 		const prompt = event.prompt || "";
 		if (prompt) {
 			const steps = generatePlanFromPrompt(prompt);
-			setupPlanPanel(shortenLabel(prompt), steps, ctx);
+			setupPlanPanel(summarizeGoal(prompt), steps, ctx);
 		}
 
 		// Build dynamic specialist roster
