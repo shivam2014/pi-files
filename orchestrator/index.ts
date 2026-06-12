@@ -109,6 +109,15 @@ After each delegation returns:
 
 Can: add steps mid-workflow, skip unnecessary steps, re-order based on findings.
 
+# Audit Review
+
+After each delegation returns, check for [Audit: ...] prefix:
+- If problems reported: assess if they affect the plan. Adjust if needed.
+- If scope_deviation reported: this is critical. Review what the subagent did outside its scope. Decide if the deviation was acceptable or if you need to correct it.
+- If no audit issues: proceed normally.
+
+Scope deviations are serious. If a subagent wrote files it wasn't supposed to, or ran commands outside its task, you MUST flag this to the user.
+
 # Clarification
 
 If task ambiguous before starting:

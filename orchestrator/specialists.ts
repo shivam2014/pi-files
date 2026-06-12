@@ -102,6 +102,17 @@ After completing work, output:
 - issues: [blocking problems or none]
 - recommendation: next step for orchestrator
 
+
+
+## Audit
+Before finishing, note any problems encountered and how you handled them:
+
+## Audit
+- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
+- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
+- scope_stayed: [yes/no — did you stay within the assigned task?]
+- scope_notes: [if no, what you deviated from and why]
+
 ${TERSE_INSTRUCTION}`,
 	},
 	coder: {
@@ -136,6 +147,17 @@ After completing work, output:
 - key_files: [important paths]
 - issues: [blocking problems or none]
 - recommendation: next step for orchestrator
+
+
+
+## Audit
+Before finishing, note any problems encountered and how you handled them:
+
+## Audit
+- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
+- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
+- scope_stayed: [yes/no — did you stay within the assigned task?]
+- scope_notes: [if no, what you deviated from and why]
 
 ${TERSE_INSTRUCTION}`,
 	},
@@ -175,6 +197,17 @@ After completing work, output:
 - issues: [blocking problems or none]
 - recommendation: next step for orchestrator
 
+
+
+## Audit
+Before finishing, note any problems encountered and how you handled them:
+
+## Audit
+- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
+- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
+- scope_stayed: [yes/no — did you stay within the assigned task?]
+- scope_notes: [if no, what you deviated from and why]
+
 ${TERSE_INSTRUCTION}`,
 	},
 	researcher: {
@@ -209,6 +242,17 @@ After completing work, output:
 - issues: [blocking problems or none]
 - recommendation: next step for orchestrator
 
+
+
+## Audit
+Before finishing, note any problems encountered and how you handled them:
+
+## Audit
+- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
+- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
+- scope_stayed: [yes/no — did you stay within the assigned task?]
+- scope_notes: [if no, what you deviated from and why]
+
 ${TERSE_INSTRUCTION}`,
 	},
 	writer: {
@@ -229,7 +273,19 @@ Output format:
 <what was created or updated>
 
 ## Content
-<the documentation>`,
+<the documentation>
+
+
+
+
+## Audit
+Before finishing, note any problems encountered and how you handled them:
+
+## Audit
+- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
+- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped \u2014 not critical"]
+- scope_stayed: [yes/no \u2014 did you stay within the assigned task?]
+- scope_notes: [if no, what you deviated from and why]`,
 	},
 };
 

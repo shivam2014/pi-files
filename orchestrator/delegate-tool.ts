@@ -125,6 +125,28 @@ function extractFindingsFromOutput(output: string): { summary: string; key_files
     };
 }
 
+function extractAuditFromOutput(output: string): { problems: string[]; resolution: string[]; scope_stayed: boolean; scope_notes: string } | null {
+    const auditMatch = output.match(/##\s+Audit\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
+    if (!auditMatch) return null;
+    const block = auditMatch[1];
+    const extractList = (key: string): string[] => {
+        const m = block.match(new RegExp(`-?\\s*${key}:\\s*\\[?(.+?)\\]?\\s*$`, 'im'));
+        if (!m) return [];
+        return m[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+    };
+    const extract = (key: string): string => {
+        const m = block.match(new RegExp(`-?\\s*${key}:\\s*(.+)`, 'i'));
+        return m ? m[1].trim() : '';
+    };
+    const scopeStayed = extract('scope_stayed').toLowerCase();
+    return {
+        problems: extractList('problems'),
+        resolution: extractList('resolution'),
+        scope_stayed: scopeStayed === 'yes' || scopeStayed === 'true',
+        scope_notes: extract('scope_notes') || '',
+    };
+}
+
 /**
  * Register the delegate tool on the pi extension API.
  */
@@ -276,6 +298,22 @@ delegate(coder, "fix the token expiry")
 				if (findings.issues.length > 0 && findings.issues[0] !== 'none') summaryParts.push(`Issues: ${findings.issues.join('; ')}`);
 				if (findings.recommendation) summaryParts.push(`Next: ${findings.recommendation}`);
 				result.output = summaryParts.join('\n') + '\n\n' + result.output;
+			}
+
+			// Extract audit trail
+			const audit = extractAuditFromOutput(result.output);
+			if (audit) {
+				const auditParts = [];
+				if (audit.problems.length > 0 && audit.problems[0] !== 'none') {
+					auditParts.push(`Problems: ${audit.problems.join('; ')}`);
+					auditParts.push(`Resolution: ${audit.resolution.join('; ')}`);
+				}
+				if (!audit.scope_stayed) {
+					auditParts.push(`Scope deviation: ${audit.scope_notes}`);
+				}
+				if (auditParts.length > 0) {
+					result.output = `[Audit: ${auditParts.join(' | ')}]\n` + result.output;
+				}
 			}
 
 			// NOTE: scope stays cached after coder runs (not cleared) so user can
