@@ -13,11 +13,12 @@ import { shortenLabel } from "../token-saver.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Specialist } from "./types.ts";
 import { SPECIALISTS } from "./specialists.ts";
-import { runSubagent } from "./subagent-runner.ts";
-import { createOrchestratorActivity } from "./activity-feed.ts";
-import { hasActivePlan, setupPlanPanel, startDelegationStep, completePlanStep, errorPlanStep } from "./plan-panel.ts";
+import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
+import { createOrchestratorActivity, addOrchestratorStep, completeOrchestratorStep } from "./activity-feed.ts";
+import { hasActivePlan, setupPlanPanel, startDelegationStep, completePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount } from "./plan-panel.ts";
 import type { Scope } from "./types.ts";
 import { debugLog } from "./debug.ts";
+import { hidePeek, unregisterPeekFeed } from "./peek-overlay.ts";
 
 // Local spinner state for renderResult animation
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -26,83 +27,6 @@ let _orchestratorActivity: ReturnType<typeof createOrchestratorActivity> | null 
 
 // Scope caching: after a scout/researcher outputs scope info, store it for the next coder call
 let _cachedScope: Scope | null = null;
-
-/**
- * Parse subagent output for structured scope information.
- * Looks for:
- *   ## Scope
- *   {"filesToModify": [...], "filesToCreate": [...]}
- *
- * Returns Scope object if found, null otherwise.
- */
-function extractScopeFromOutput(output: string): Scope | null {
-	// Try JSON block first: look for ```json ... ``` or standalone JSON object
-	const jsonMatch = output.match(/```(?:json)?\s*(\{[\s\S]*?(?:"filesToModify"|"filesToCreate")[\s\S]*?\})/);
-	if (jsonMatch) {
-		try {
-			const parsed = JSON.parse(jsonMatch[1]);
-			if (parsed.filesToModify !== undefined || parsed.filesToCreate !== undefined) {
-				const filesToModify: string[] = parsed.filesToModify || [];
-				const filesToCreate: string[] = parsed.filesToCreate || [];
-				const extractedScope = {
-					filesToModify,
-					filesToCreate,
-					changeType: (filesToModify.length + filesToCreate.length) <= 1 ? "single-file" : "multi-file",
-					maxLinesPerFile: parsed.maxLinesPerFile || 400,
-				};
-				debugLog("extractScopeFromOutput: scope extracted successfully", extractedScope);
-				return extractedScope;
-			}
-		} catch (e) {
-			debugLog("extractScopeFromOutput: JSON.parse failed", { error: String(e), input: jsonMatch[1]?.slice(0, 200) });
-		}
-	}
-	debugLog("extractScopeFromOutput: JSON parser failed or no JSON scope found");
-
-	// Try ## Scope section with simple key: value format
-	const scopeSection = output.match(/## Scope\n([\s\S]*?)(?:\n##|$)/);
-	if (scopeSection) {
-		const section = scopeSection[1];
-		const filesToModify: string[] = [];
-		const filesToCreate: string[] = [];
-		let maxLinesPerFile = 400;
-
-		// Parse filesToModify line
-		const modifyMatch = section.match(/-?\s*\*{0,2}filesToModify\*{0,2}:\s*\[([^\]]*)\]/);
-		const foundModifyKey = !!modifyMatch;
-		if (modifyMatch && modifyMatch[1].trim()) {
-			filesToModify.push(...modifyMatch[1].split(",").map((s: string) => s.trim().replace(/^["'`]|["'`]$/g, "")));
-		}
-
-		// Parse filesToCreate line
-		const createMatch = section.match(/-?\s*\*{0,2}filesToCreate\*{0,2}:\s*\[([^\]]*)\]/);
-		const foundCreateKey = !!createMatch;
-		if (createMatch && createMatch[1].trim()) {
-			filesToCreate.push(...createMatch[1].split(",").map((s: string) => s.trim().replace(/^["'`]|["'`]$/g, "")));
-		}
-
-		// Parse maxLinesPerFile
-		const linesMatch = section.match(/-?\s*maxLinesPerFile:\s*(\d+)/);
-		if (linesMatch) {
-			maxLinesPerFile = parseInt(linesMatch[1], 10);
-		}
-
-		if (foundModifyKey || foundCreateKey) {
-			const extractedScope = {
-				filesToModify,
-				filesToCreate,
-				changeType: (filesToModify.length + filesToCreate.length) <= 1 ? "single-file" : "multi-file",
-				maxLinesPerFile,
-			};
-			debugLog("extractScopeFromOutput: scope extracted successfully", extractedScope);
-			return extractedScope;
-		}
-		debugLog("extractScopeFromOutput: ## Scope section found but failed to parse files lists", { section });
-	}
-
-	debugLog("extractScopeFromOutput: no scope found in output");
-	return null;
-}
 
 function extractFindingsFromOutput(output: string): { summary: string; key_files: string[]; issues: string[]; recommendation: string } | null {
     const findingsMatch = output.match(/##\s+Findings\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
@@ -167,6 +91,19 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			task: Type.String({
 				description: "Task description for the specialist to execute",
 			}),
+			scope: Type.Optional(Type.Object({
+				filesToModify: Type.Array(Type.String(), {
+					description: "Existing files the specialist may modify",
+				}),
+				filesToCreate: Type.Array(Type.String(), {
+					description: "New files the specialist may create",
+				}),
+				boundaries: Type.Optional(Type.String({
+					description: "Free-text scope boundaries the specialist must respect",
+				})),
+			}, {
+				description: "Structured scope constraints. REQUIRED when specialist=coder. Get this from scout's ## Scope output or declare it yourself based on your analysis.",
+			})),
 		}),
 
 		// ── Render: what shows when tool is invoked ──
@@ -217,29 +154,32 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				return { content: [{ type: "text" as const, text: "Provide specialist+task" }], details: {} } as any;
 			}
 
-			// === ADAPTIVE GATING: block coder without prior scope ===
-			if (params.specialist === "coder" && !_cachedScope) {
-				return {
-					content: [{
-						type: "text" as const,
-						text: `⛔ **Scope required before coding.**
+			// === SCOPE VALIDATION: require scope for coder ===
+			if (params.specialist === "coder") {
+				if (!params.scope || (!params.scope.filesToModify?.length && !params.scope.filesToCreate?.length)) {
+					return {
+						content: [{
+							type: "text" as const,
+							text: `⛔ **Scope required for coder.**
 
-No structured scope was found. This means either:
-1. \`delegate(scout, ...)\` was not called first, or
-2. Scout ran but its scope output couldn't be parsed (check debug logs at /tmp/pi-debug/)
-
-The scout must output a \`## Scope\` section with \`filesToModify\` or \`filesToCreate\` arrays.
+You must pass a \`scope\` parameter when calling coder. Get this from scout's output or declare it yourself.
 
 \`\`\`
-delegate(scout, "analyze the auth system")
-// scout must output:
-// ## Scope
-// - filesToModify: ["src/auth.ts"]
-delegate(coder, "fix the token expiry")
-\`\`\``
-					}],
-					details: {},
-				} as any;
+delegate("coder", "fix the auth middleware", {
+    scope: {
+        filesToModify: ["src/auth.ts"],
+        filesToCreate: []
+    }
+})
+\`\`\`
+
+The scope tells the coder exactly which files it's allowed to touch.`
+						}],
+						details: {},
+					} as any;
+				}
+				// Use scope from params — no text parsing needed
+				_cachedScope = params.scope;
 			}
 
 			const specialist: Specialist | undefined = SPECIALISTS[params.specialist];
@@ -253,8 +193,11 @@ delegate(coder, "fix the token expiry")
 			const stepLabel = `${specName}: ${shortenLabel(params.task)}`;
 
 			if (!hasActivePlan()) {
-				_orchestratorActivity = createOrchestratorActivity();
-				setupPlanPanel(shortenLabel(params.task), [stepLabel], ctx);
+				// Auto-create a 1-step plan from the delegation task (plan tool may have failed to register)
+				const autoGoal = params.task.length > 80 ? params.task.slice(0, 77) + "..." : params.task;
+				const autoSteps = [params.specialist + ": " + (params.task.length > 60 ? params.task.slice(0, 57) + "..." : params.task)];
+				setupPlanPanel(autoGoal, autoSteps, ctx);
+				startDelegationStep(stepLabel);
 			} else {
 				startDelegationStep(stepLabel);
 			}
@@ -267,80 +210,131 @@ delegate(coder, "fix the token expiry")
 			// Determine scope: for coder, use cached scope from previous subagent output
 			const scopeToUse = params.specialist === "coder" ? _cachedScope : null;
 
+			// Dynamic status: delegating
+			const orchestratorUi: OrchestratorUi | undefined = ctx?.ui ? ctx.ui : undefined;
+			try {
+				if (orchestratorUi) {
+					orchestratorUi.setWorkingMessage(`Sending to ${specialist.name}...`);
+					orchestratorUi.setStatus("orchestrator", orchestratorUi.theme.fg("accent", "\u25cf Delegating"));
+				}
+			} catch {}
+
+			_orchestratorActivity = createOrchestratorActivity();
+			incrementDelegationCount();
+			addOrchestratorStep(_orchestratorActivity, specialist.name + ": " + params.task.substring(0, 60));
 			const startTime = Date.now();
 			const result = await runSubagent(
 				specialist, params.task, ctx.cwd,
 				{ modelRegistry: ctx.modelRegistry, model: ctx.model },
-				signal, onUpdate, _orchestratorActivity ?? undefined, scopeToUse,
+				signal, onUpdate, _orchestratorActivity ?? undefined, scopeToUse, orchestratorUi,
 			);
 			const elapsedMs = Date.now() - startTime;
 
-			// After ANY subagent completes, try to extract scope from its output
-			// This allows scout → scope → coder flow: scout outputs ## Scope, system captures it
-			if (result.output) {
-				const extractedScope = extractScopeFromOutput(result.output);
-				if (extractedScope) {
-					_cachedScope = extractedScope;
-				} else if (params.specialist === "scout") {
-					// Scout ran but scope extraction failed — warn user
-					debugLog("delegate-tool: scope extraction failed after scout run", { output: result.output?.slice(0, 500) });
-					// Don't block here — let the coder gate handle it with a better message
+			try {
+				// Dynamic status: analyzing output
+				try {
+					if (orchestratorUi) {
+						orchestratorUi.setWorkingMessage("Reviewing output...");
+						orchestratorUi.setStatus("orchestrator", orchestratorUi.theme.fg("accent", "\u25cf Analyzing"));
+					}
+				} catch {}
+
+				if (result.output) {
+					debugLog("delegate-tool: subagent completed", { specialist: params.specialist, outputLength: result.output.length });
 				}
-			}
 
-			const findings = extractFindingsFromOutput(result.output);
-			if (findings && findings.summary) {
-				const summaryParts = [`[Findings: ${findings.summary}]`];
-				if (findings.key_files.length > 0) summaryParts.push(`Files: ${findings.key_files.join(', ')}`);
-				if (findings.issues.length > 0 && findings.issues[0] !== 'none') summaryParts.push(`Issues: ${findings.issues.join('; ')}`);
-				if (findings.recommendation) summaryParts.push(`Next: ${findings.recommendation}`);
-				result.output = summaryParts.join('\n') + '\n\n' + result.output;
-			}
+				// Dynamic status: parsing findings/audit
+				try {
+					if (orchestratorUi) {
+						orchestratorUi.setWorkingMessage("Parsing findings...");
+						orchestratorUi.setStatus("orchestrator", orchestratorUi.theme.fg("accent", "\u25cf Parsing"));
+					}
+				} catch {}
 
-			// Prepend execution metadata for orchestrator visibility
-			const execStatus = result.output?.startsWith("[error]") ? "error" : "ok";
-			const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${result.turns || 0}, status=${execStatus}]`];
-			if (execStatus === "error") {
-				execMeta.push(`[Error: ${result.output.slice(0, 200)}]`);
-			}
-			result.output = execMeta.join('\n') + '\n\n' + result.output;
+				const findings = extractFindingsFromOutput(result.output);
+				if (findings && findings.summary) {
+					const summaryParts = [`[Findings: ${findings.summary}]`];
+					if (findings.key_files.length > 0) summaryParts.push(`Files: ${findings.key_files.join(', ')}`);
+					if (findings.issues.length > 0 && findings.issues[0] !== 'none') summaryParts.push(`Issues: ${findings.issues.join('; ')}`);
+					if (findings.recommendation) summaryParts.push(`Next: ${findings.recommendation}`);
+					result.output = summaryParts.join('\n') + '\n\n' + result.output;
+				}
 
-		// Prepend tool call trail for orchestrator visibility
-		if (result.toolCallTrail && result.toolCallTrail.length > 0) {
-			const trail = result.toolCallTrail.map(t =>
-				`${t.completed ? '✓' : '⚠'} ${t.tool}${t.outputPreview ? ` → ${t.outputPreview}` : ''}`
-			).join('\n');
-			result.output = `[Tool Calls (${result.toolCallTrail.length}):
+				// Prepend execution metadata for orchestrator visibility
+				const execStatus = result.output?.startsWith("[error]") ? "error" : "ok";
+				const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${result.turns || 0}, status=${execStatus}]`];
+				if (execStatus === "error") {
+					execMeta.push(`[Error: ${result.output.slice(0, 200)}]`);
+				}
+				result.output = execMeta.join('\n') + '\n\n' + result.output;
+
+				// Prepend tool call trail for orchestrator visibility
+				if (result.toolCallTrail && result.toolCallTrail.length > 0) {
+					const trail = result.toolCallTrail.map(t =>
+						`${t.completed ? '✓' : '⚠'} ${t.tool}${t.outputPreview ? ` → ${t.outputPreview}` : ''}`
+					).join('\n');
+					result.output = `[Tool Calls (${result.toolCallTrail.length}):
 ${trail}
 ]
 
 ` + result.output;
-		}
-
-			// Extract audit trail
-			const audit = extractAuditFromOutput(result.output);
-			if (audit) {
-				const auditParts = [];
-				if (audit.problems.length > 0 && audit.problems[0] !== 'none') {
-					auditParts.push(`Problems: ${audit.problems.join('; ')}`);
-					auditParts.push(`Resolution: ${audit.resolution.join('; ')}`);
 				}
-				if (!audit.scope_stayed) {
-					auditParts.push(`Scope deviation: ${audit.scope_notes}`);
-				}
-				if (auditParts.length > 0) {
-					result.output = `[Audit: ${auditParts.join(' | ')}]\n` + result.output;
-				}
-			}
 
-			// NOTE: scope stays cached after coder runs (not cleared) so user can
-			// re-iterate on same files without re-calling scout.
-			// Scope is cleared on session reset (before_agent_start).
+				// Extract audit trail
+				const audit = extractAuditFromOutput(result.output);
+				if (audit) {
+					const auditParts = [];
+					if (audit.problems.length > 0 && audit.problems[0] !== 'none') {
+						auditParts.push(`Problems: ${audit.problems.join('; ')}`);
+						auditParts.push(`Resolution: ${audit.resolution.join('; ')}`);
+					}
+					if (!audit.scope_stayed) {
+						auditParts.push(`Scope deviation: ${audit.scope_notes}`);
+					}
+					if (auditParts.length > 0) {
+						result.output = `[Audit: ${auditParts.join(' | ')}]\n` + result.output;
+					}
+				}
 
-			if (result.output?.startsWith("[error]")) {
-				errorPlanStep(ctx);
-			} else {
-				completePlanStep(ctx);
+				// Build status note — first line of returned text so orchestrator sees outcome at a glance
+				const turns = result.turns || 0;
+				const toolCalls = result.toolCallTrail?.length || 0;
+				const outcomeStatus = result.output?.startsWith("[error]") ? "error" : "ok";
+				const aborted = signal?.aborted || false;
+				const turnWord = turns === 1 ? "turn" : "turns";
+				const toolWord = toolCalls === 1 ? "tool call" : "tool calls";
+				let statusNote = "";
+				if (outcomeStatus === "error") {
+					statusNote = `✗ Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+				} else if (aborted) {
+					statusNote = `■ Aborted (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+				} else {
+					statusNote = `✓ Completed (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+				}
+				result.output = `${statusNote}\n${result.output}`;
+
+				// NOTE: scope stays cached after coder runs (not cleared) so user can
+				// re-iterate on same files without re-calling scout.
+				// Scope is cleared on session reset (before_agent_start).
+
+				if (result.output?.startsWith("[error]")) {
+					errorPlanStep(ctx);
+				} else {
+					completePlanStep(ctx);
+				}
+			} finally {
+				completeOrchestratorStep(_orchestratorActivity);
+				decrementDelegationCount();
+				_orchestratorActivity = null;
+				hidePeek();
+				unregisterPeekFeed();
+				// Dynamic status: clear on completion (even if extraction/parsing throws)
+				try {
+					if (orchestratorUi) {
+						orchestratorUi.setWorkingMessage();
+						orchestratorUi.setStatus("orchestrator", undefined);
+					}
+				} catch {}
 			}
 
 			return {

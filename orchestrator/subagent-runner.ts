@@ -31,15 +31,23 @@ import {
 	renderCombinedProgress,
 	toolCallToSubstep,
 	renderSubstepLines,
+	_spinnerIndex,
 } from "./activity-feed.ts";
 import { compressOutput } from "./activity-feed.ts";
 import { updatePlanStepDetail } from "./plan-panel.ts";
+import { registerPeekFeed, updatePeek } from "./peek-overlay.ts";
+
+/** Optional orchestrator UI for dynamic status messages */
+export interface OrchestratorUi {
+	setWorkingMessage: (msg?: string) => void;
+	setStatus: (key: string, value: any) => void;
+	theme: any;
+}
 
 export const SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
 
 /** Module-level guards for orchestrator registration skipping. */
 export let _batchLoadSubagent = 0;
-export let _inSubagentExecution = 0;
 
 const OUTPUT_CAP = 30_000;
 
@@ -94,6 +102,7 @@ export async function runSubagent(
 	onUpdate?: (update: any) => void,
 	orchestratorActivity?: OrchestratorActivity,
 	scope?: Scope | null,
+	orchestratorUi?: OrchestratorUi,
 ): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
 	// Write scope file for scope-guard.ts enforcement
 	writeScopeFile(cwd, scope);
@@ -142,13 +151,18 @@ export async function runSubagent(
 			await loader.reload();
 		} finally {
 			_batchLoadSubagent--;
-			delete process.env[SUBAGENT_ENV_KEY];
+			// Env var stays active — cleaned up in finally after session.prompt()
 		}
+
+		const excludeTools = (specialist.name === "writer" || specialist.name === "researcher")
+			? ["bash"]
+			: undefined;
 
 		const { session } = await createAgentSession({
 			cwd,
 			model,
 			tools: specialist.tools,
+			excludeTools,
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
 			authStorage,
@@ -160,11 +174,18 @@ export async function runSubagent(
 		const feed = createActivityFeed();
 		feed.goal = shortenLabel(task);
 
+		// Register feed for peek overlay (Layer 3)
+		const peekAbort = new AbortController();
+		registerPeekFeed(feed, peekAbort, shortenLabel(task));
+		signal?.addEventListener("abort", () => peekAbort.abort(), { once: true });
+		peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
+
 		const unsubscribe = session.subscribe((event) => {
 			// Standard assistant message delta
 			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 				output += event.assistantMessageEvent.delta;
 				parseTextForFeed(feed, event.assistantMessageEvent.delta);
+				updatePeek(event.assistantMessageEvent.delta);
 			}
 
 			// Assistant message completed
@@ -185,8 +206,14 @@ export async function runSubagent(
 
 				// NEW: Capture lint-guard custom messages from subagent
 				if (event.message?.role === "custom" && event.message?.customType === "lint-guard") {
+					const lintContent = typeof event.message.content === "string"
+						? event.message.content
+						: JSON.stringify(event.message.content ?? "");
+					output += "\n--- " + lintContent + "\n";
 					onUpdate?.({
-						content: event.message.content,
+						content: typeof event.message.content === "string"
+							? [{ type: "text", text: event.message.content }]
+							: (event.message.content ?? []),
 						details: { specialist: specialist.name, status: "lint", ...(event.message.details ?? {}) },
 					});
 				}
@@ -196,6 +223,7 @@ export async function runSubagent(
 			if (event.type === "tool_execution_start") {
 				const substepLabel = toolCallToSubstep(event.toolName, event.args);
 				addSubstep(feed, substepLabel);
+				updatePeek(`\u2192 ${event.toolName}\n`);
 				// Pass substep history lines to plan panel immediately
 				const activeStep = feed.steps[feed.currentStep];
 				if (activeStep) {
@@ -212,6 +240,35 @@ export async function runSubagent(
 				});
 			}
 
+			// Tool execution streaming update
+			if (event.type === "tool_execution_update") {
+				try {
+					// Update the last substep with partial output preview
+					if (event.partialResult && feed.steps.length > 0) {
+						const activeStep = feed.steps[feed.currentStep];
+						if (activeStep && activeStep.substeps.length > 0) {
+							const lastSub = activeStep.substeps[activeStep.substeps.length - 1];
+							if (!lastSub.completed) {
+								// Truncate to 80 chars for display
+								const preview = event.partialResult.length > 80
+									? event.partialResult.slice(0, 77) + "..."
+									: event.partialResult;
+								lastSub.outputPreview = preview;
+
+								// Update plan panel
+								updatePlanStepDetail(renderSubstepLines(activeStep.substeps));
+
+								// Emit onUpdate so UI stays responsive during tool execution
+								const text = orchestratorActivity
+									? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
+									: renderActivityFeed(specialist.name, feed);
+								onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", tool: event.toolName } })
+							}
+						}
+					}
+				} catch {}
+			}
+
 			// Tool execution completed
 			if (event.type === "tool_execution_end") {
 				// Extract truncated output preview from tool result
@@ -225,12 +282,11 @@ export async function runSubagent(
 					}
 				} catch {}
 				completeLastSubstep(feed, outputPreview);
+				updatePeek(`\u2713 ${event.toolName}\n`);
 				// Update plan panel with substep history lines
 				const activeStep = feed.steps[feed.currentStep];
 				if (activeStep && activeStep.substeps.length > 0) {
 					updatePlanStepDetail(renderSubstepLines(activeStep.substeps));
-				} else {
-					updatePlanStepDetail("");
 				}
 				const text = orchestratorActivity
 					? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
@@ -245,19 +301,22 @@ export async function runSubagent(
 		// Periodic re-render timer — animates spinner between events
 		let renderTimer: ReturnType<typeof setInterval> | null = null;
 		let _lastRenderText: string | null = null;
+		let _lastSpinnerIndex = -1;
 		const startRenderTimer = () => {
 			renderTimer = setInterval(() => {
 				if (feed.steps.length > 0 || output.length > 0) {
 					const text = orchestratorActivity
 						? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
 						: renderActivityFeed(specialist.name, feed);
-					// Skip update if content unchanged (only spinner frame changed)
-					if (text === _lastRenderText) return;
-					_lastRenderText = text;
-					onUpdate?.({
-						content: [{ type: "text", text }],
-						details: { specialist: specialist.name, status: "running" },
-					});
+					// Always emit if spinner frame changed or content changed
+					if (_spinnerIndex !== _lastSpinnerIndex || text !== _lastRenderText) {
+						_lastRenderText = text;
+						_lastSpinnerIndex = _spinnerIndex;
+						onUpdate?.({
+							content: [{ type: "text", text }],
+							details: { specialist: specialist.name, status: "running" },
+						});
+					}
 				}
 			}, 80);
 		};
@@ -271,7 +330,6 @@ export async function runSubagent(
 		}
 
 		try {
-			_inSubagentExecution++;
 			await session.prompt(task);
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : String(error);
@@ -284,7 +342,7 @@ export async function runSubagent(
 			});
 			output = `[error] ${errorMsg}`;
 		} finally {
-			_inSubagentExecution--;
+			delete process.env[SUBAGENT_ENV_KEY];
 			unsubscribe();
 			if (renderTimer) {
 				clearInterval(renderTimer);
@@ -304,7 +362,6 @@ export async function runSubagent(
 		}
 		// Reset currentStep to show final state
 		feed.currentStep = Math.max(feed.currentStep, feed.steps.length);
-
 
 		// Compress + cap output before returning to parent
 		let finalOutput = compressOutput(output || "(no output)");

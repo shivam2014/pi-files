@@ -22,7 +22,7 @@ const BOX_INNER_WIDTH = 52;
 const MAX_FEED_STEPS = 6;
 const MAX_FEED_SUBSTEPS = 8;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-let _spinnerIndex = 0;
+export let _spinnerIndex = 0;
 
 // ============================================================================
 // Orchestrator Activity — Layer 1 (plan panel steps)
@@ -64,10 +64,7 @@ function renderOrchestratorActivity(activity: OrchestratorActivity, goal?: strin
 	const completed = activity.steps.filter((s) => s.completed).length;
 
 	if (goal) {
-		const truncated = goal.length > BOX_INNER_WIDTH - 2
-			? goal.slice(0, BOX_INNER_WIDTH - 5) + "..."
-			: goal;
-		lines.push(`◆ ${truncated}`);
+		lines.push(`◆ ${goal}`);
 	}
 
 	const dots = activity.steps.filter((s) => s.completed).map(() => "●").join("");
@@ -105,9 +102,13 @@ export function renderCombinedProgress(
 	_spinnerIndex++;
 
 	if (feedState.errored) {
-		const header = `⚠ Subagent Error`;
 		const msg = feedState.errorMessage ?? "Unknown error";
-		return [header, "", msg].join('\n');
+		const retryCount = (feedState as any).retryCount;
+		if (retryCount) {
+			const reason = (feedState as any).retryReason || msg;
+			return `⠇ Retry ${retryCount}/3: ${reason}`;
+		}
+		return `✗ Step failed: ${msg}`;
 	}
 
 	const lines: string[] = [];
@@ -115,10 +116,7 @@ export function renderCombinedProgress(
 	const completed = orchestratorActivity.steps.filter((s) => s.completed).length;
 
 	if (goal) {
-		const truncated = goal.length > BOX_INNER_WIDTH - 2
-			? goal.slice(0, BOX_INNER_WIDTH - 5) + "..."
-			: goal;
-		lines.push(`◆ ${truncated}`);
+		lines.push(`◆ ${goal}`);
 	}
 
 	const dots = orchestratorActivity.steps.filter((s) => s.completed).map(() => "●").join("");
@@ -146,12 +144,19 @@ export function renderCombinedProgress(
 				// Note: outputPreview intentionally omitted from chat feed for compactness;
 				// it's shown in the plan panel via renderSubstepLines instead.
 				for (const sub of visibleSubs) {
-					lines.push(sub.completed
-						? `  ✓ ${sub.label}`
-						: `  ${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} ${sub.label}...`);
+					if (sub.completed) {
+						const label = sub.label.startsWith("Reading ") ? "Read " + sub.label.slice(8) : sub.label;
+						const dur = sub.startTime && sub.endTime
+							? " (" + formatDuration(sub.endTime - sub.startTime) + ")"
+							: "";
+						lines.push(`  ✓ ${label}${dur}`);
+					} else {
+						lines.push(`  ${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} ${sub.label}`);
+					}
 				}
 			} else {
-				lines.push(`  ${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} Starting...`);
+				const fallbackLabel = feedState.steps[feedState.steps.length - 1]?.label || "";
+				lines.push(`  ${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} ${fallbackLabel || "Working..."}`);
 			}
 		} else if (isPending) {
 			lines.push(`○ ${step.label}`);
@@ -277,16 +282,27 @@ export function addStep(state: ActivityFeedState, label: string): void {
 	}
 
 	if (state.steps.some((s) => s.label === label)) return;
-	if (state.steps.length >= MAX_FEED_STEPS) return;
+	if (state.steps.length >= MAX_FEED_STEPS) {
+		// Remove oldest completed step, shift indices
+		state.steps.shift();
+		if (state.currentStep > 0) state.currentStep--;
+	}
 	state.steps.push({ label, completed: false, substeps: [], startTime: Date.now() });
 	if (state.currentStep === -1) state.currentStep = 0;
 }
 
 export function addSubstep(state: ActivityFeedState, label: string): void {
+	// If current step is completed, create a new step for fresh substeps
+	if (state.currentStep >= 0 && state.currentStep < state.steps.length && state.steps[state.currentStep].completed) {
+		addStep(state, label);
+		return;
+	}
 	if (state.currentStep < 0 || state.steps.length === 0) {
-		const implicitLabel = label.length > 60 ? label.slice(0, 57) + "..." : label;
-		state.steps.push({ label: implicitLabel, completed: false, substeps: [], startTime: Date.now() });
-		state.currentStep = 0;
+		if (state.steps.length === 0) {
+			const stepLabel = label.length > 60 ? label.slice(0, 57) + "..." : label;
+			state.steps.push({ label: stepLabel, completed: false, substeps: [], startTime: Date.now() });
+			state.currentStep = 0;
+		}
 	}
 	if (state.currentStep < 0 || state.currentStep >= state.steps.length) return;
 	const step = state.steps[state.currentStep];
@@ -319,21 +335,52 @@ export function completeCurrentStep(state: ActivityFeedState): void {
 	state.steps[state.currentStep].completed = true;
 	state.steps[state.currentStep].endTime = Date.now();
 	state.currentStep++;
+	// Don't clamp — let currentStep == steps.length so next addSubstep creates a new step
 }
 
 export function markFeedError(state: ActivityFeedState, message: string): void {
 	state.errored = true;
 	state.errorMessage = message;
-	// Force-complete all steps and substeps
+	// Force-complete all steps and substeps with end times
+	const now = Date.now();
 	for (const step of state.steps) {
 		step.completed = true;
+		if (!step.endTime) step.endTime = now;
 		for (const sub of step.substeps) {
 			sub.completed = true;
+			if (!sub.endTime) sub.endTime = now;
 		}
 	}
 	if (state.currentStep >= 0 && state.currentStep < state.steps.length) {
 		state.currentStep = state.steps.length;
 	}
+}
+
+/**
+ * Reset feed error for retry and increment retry count.
+ * Clears errored flag and errorMessage, resets timestamps, and sets retry info.
+ * Returns the retry count for display.
+ */
+export function retryFeedStep(state: ActivityFeedState, reason?: string): number {
+	state.errored = false;
+	state.errorMessage = undefined;
+	const retryCount = ((state as any).retryCount || 0) + 1;
+	(state as any).retryCount = retryCount;
+	(state as any).retryReason = reason || state.errorMessage || "Unknown error";
+	// Reset step timestamps for retry
+	const now = Date.now();
+	for (const step of state.steps) {
+		step.completed = false;
+		step.endTime = undefined;
+		step.startTime = now;
+		for (const sub of step.substeps) {
+			sub.completed = false;
+			sub.endTime = undefined;
+			sub.startTime = now;
+		}
+	}
+	state.currentStep = 0;
+	return retryCount;
 }
 
 export function toolCallToSubstep(toolName: string, input: any): string {
@@ -355,11 +402,25 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 		case "find":
 			return `Finding: ${input?.pattern || "..."}`;
 		case "edit":
-			return `Editing ${normalizePath(input?.path)}`;
+			const edits = input?.edits;
+			return `Editing ${normalizePath(input?.path)}${Array.isArray(edits) ? ` (${edits.length} changes)` : ""}`;
 		case "write":
-			return `Writing ${normalizePath(input?.path)}`;
+			const content = input?.content || "";
+			return `Writing ${normalizePath(input?.path)} (${(typeof content === "string" ? content.length : 0)} chars)`;
+		case "ls":
+			return `Listing ${normalizePath(input?.path)}`;
+		case "lint":
+			return `Linting ${normalizePath(input?.path || "files")}`;
+		case "typecheck":
+			return `Type checking...`;
+		case "web_search":
+			const query = input?.query || "";
+			return `Search web: "${(typeof query === "string" ? query : "").slice(0, 80)}"`;
+		case "fetch_content":
+			const url = input?.url || "";
+			return `Fetch URL: ${(typeof url === "string" ? url : "").slice(0, 80)}`;
 		default:
-			return `Using ${toolName}`;
+			return `Calling ${toolName}...`;
 	}
 }
 
@@ -377,10 +438,13 @@ export function renderSubstepLines(substeps: Substep[], maxLines: number = 5): s
 	}
 	for (const sub of visible) {
 		if (sub.completed) {
-			const preview = sub.outputPreview ? ` → ${sub.outputPreview}` : '';
-			lines.push(`    ✓ ${sub.label}${preview}`);
+			const label = sub.label.startsWith("Reading ") ? "Read " + sub.label.slice(8) : sub.label;
+			const dur = sub.startTime && sub.endTime
+				? " (" + formatDuration(sub.endTime - sub.startTime) + ")"
+				: "";
+			lines.push(`    ✓ ${label}${dur}`);
 		} else {
-			lines.push(`    ▶ ${sub.label} → Running...`);
+			lines.push(`    ▶ ${sub.label}`);
 		}
 	}
 	return lines;
@@ -390,22 +454,28 @@ export function renderActivityFeed(name: string, state: ActivityFeedState): stri
 	_spinnerIndex++;
 
 	if (state.errored) {
-		const header = `⚠ Subagent Error`;
 		const msg = state.errorMessage ?? "Unknown error";
-		return [header, "", msg].join('\n');
+		const retryCount = (state as any).retryCount;
+		if (retryCount) {
+			const reason = (state as any).retryReason || msg;
+			return `⠇ Retry ${retryCount}/3: ${reason}`;
+		}
+		return `✗ Step failed: ${msg}`;
 	}
 
 	const lines: string[] = [];
 
+	if (state.goal && state.steps.length === 0) {
+		lines.push(`◆ ${state.goal}`);
+	}
 	if (state.steps.length === 0) {
-		lines.push(`  ${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} Starting...`);
-		return lines.join("\n");
+		lines.push(`  ${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} Working...`);
 	}
 
 	const total = state.steps.length;
 	const completed = state.steps.filter((s) => s.completed).length;
 
-	if (state.goal) {
+	if (state.goal && state.steps.length > 0) {
 		const boxWidth = Math.max(state.goal.length + 4, 30);
 		const padding = boxWidth - 4;
 		const truncated = state.goal.length > padding ? state.goal.slice(0, padding - 3) + "..." : state.goal;
@@ -415,8 +485,10 @@ export function renderActivityFeed(name: string, state: ActivityFeedState): stri
 		lines.push(`└${("─").repeat(Math.max(0, boxWidth - 2))}┘`);
 	}
 
-	const dots = state.steps.filter((s) => s.completed).map(() => "●").join("");
-	lines.push(`${dots} [${completed}/${total}]`);
+	if (total > 0) {
+		const dots = state.steps.filter((s) => s.completed).map(() => "●").join("");
+		lines.push(`${dots} [${completed}/${total}]`);
+	}
 
 	for (let i = 0; i < total; i++) {
 		const step = state.steps[i];

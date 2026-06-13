@@ -45,7 +45,7 @@
  * 5. renderActivityFeed → formats for UI display (see design spec Layer 2)
  */
 
-import { getModel } from "@earendil-works/pi-ai";
+import { type KnownProvider, getModel } from "@earendil-works/pi-ai";
 import {
 	AuthStorage,
 	createAgentSession,
@@ -56,8 +56,9 @@ import {
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+// @ts-expect-error — @earendil-works/pi-tui not installed in this context
 import { Container, type Component, Text, type TUI } from "@earendil-works/pi-tui";
-import { shortenLabel } from "./token-saver.ts";
+import { shortenLabel } from "../../token-saver.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -1159,7 +1160,7 @@ async function runSubagent(
 			if (slashIdx > 0) {
 				const provider = specialist.model.slice(0, slashIdx);
 				const id = specialist.model.slice(slashIdx + 1);
-				model = getModel(provider, id);
+			model = getModel(provider as KnownProvider, id);
 			}
 		} else if (parentCtx?.model) {
 			// Inherit parent's model
@@ -1625,8 +1626,7 @@ Your response: the synthesized summary — NOT implementation details.
 	// ── Command: /orchestrate — manual task trigger ───────────────────────
 
 	pi.registerCommand("orchestrate", {
-		description: "Run an orchestrated task with multiple specialists",
-		usage: "/orchestrate <task description>",
+		description: "Run an orchestrated task with multiple specialists\nUsage: /orchestrate <task description>",
 		handler: async (args, ctx) => {
 			if (!args || args.trim().length === 0) {
 				ctx.ui.notify("Usage: /orchestrate <task description>", "warning");
@@ -1644,8 +1644,7 @@ Your response: the synthesized summary — NOT implementation details.
 	// ── Command: /specialists — list available specialists ─────────────────
 
 	pi.registerCommand("specialists", {
-		description: "List available specialists and their capabilities",
-		usage: "/specialists",
+		description: "List available specialists and their capabilities\nUsage: /specialists",
 		handler: async (_args, ctx) => {
 			const lines = Object.entries(SPECIALISTS).map(([key, spec]) => {
 				return `${key}: ${spec.tools.join(", ")}`;

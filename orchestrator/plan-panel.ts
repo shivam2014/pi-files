@@ -21,6 +21,12 @@ let _spinnerIndex = 0;
 /** Widget key used for setWidget calls */
 const WIDGET_KEY = "orchestrator-status";
 
+/** Delegation counter — prevents clearPlanPanel() from wiping state mid-delegation */
+let _activeDelegations = 0;
+
+export function incrementDelegationCount(): void { _activeDelegations++; }
+export function decrementDelegationCount(): void { _activeDelegations = Math.max(0, _activeDelegations - 1); }
+
 let planState: {
 	goal: string;
 	steps: PlanStep[];
@@ -80,14 +86,14 @@ let _lastWidgetContent: string[] | null = null;
  * followed by indented substep lines with status icons.
  */
 function _renderPlanRow(lines: string[], r: { icon: string; label: string; detail?: string; detailLines?: string[] }): void {
-	if (r.detailLines && r.detailLines.length > 0) {
+	if (r.icon === "✓" || !r.detailLines || r.detailLines.length === 0) {
+		const suffix = r.detail ? ` — ${r.detail}` : "";
+		lines.push(`  ${r.icon} ${r.label}${suffix}`);
+	} else {
 		lines.push(`  → ${r.label}`);
 		for (const dl of r.detailLines) {
 			lines.push(dl);
 		}
-	} else {
-		const suffix = r.detail ? ` — ${r.detail}` : "";
-		lines.push(`  ${r.icon} ${r.label}${suffix}`);
 	}
 }
 
@@ -103,13 +109,15 @@ function renderPlanLines(): string[] {
 	const total = steps.length;
 	const completedCount = steps.filter((s) => s.completed).length;
 	const erroredCount = steps.filter((s) => s.errored).length;
-	const goalTrunc = goal.length > 55 ? goal.slice(0, 52) + "..." : goal;
+	const goalTrunc = goal;
 
-	// Header: Plan ◆ <goal>  ● N/N  duration
-	const prog = erroredCount > 0
-		? `● ${completedCount}/${total} ✗${erroredCount}`
-		: `● ${completedCount}/${total}`;
-	const lines: string[] = [`Plan: ◆ ${goalTrunc}  ${prog}  ${elapsedStr}`];
+	// Progress count — only show when steps exist
+	const prog = total > 0
+		? (erroredCount > 0
+			? `● ${completedCount}/${total} ✗${erroredCount}`
+			: `● ${completedCount}/${total}`)
+		: '';
+	const lines: string[] = [`Plan: ◆ ${goalTrunc}${prog ? `  ${prog}  ` : '  '}${elapsedStr}`];
 
 	const BUDGET = 9; // widget hard-caps at 10 lines, header uses 1
 
@@ -119,7 +127,12 @@ function renderPlanLines(): string[] {
 	const rows: { icon: string; label: string; detail?: string; detailLines?: string[] }[] = [];
 	for (const s of steps) {
 		if (s.errored) rows.push({ icon: "✗", label: s.label });
-		else if (s.completed) rows.push({ icon: "✓", label: s.label });
+		else if (s.completed) {
+			const dur = (s as any).startTime && (s as any).endTime
+				? " (" + formatDuration((s as any).endTime - (s as any).startTime) + ")"
+				: "";
+			rows.push({ icon: "✓", label: s.label + dur });
+		}
 		else if (s.active) rows.push({
 			icon: frames[idx],
 			label: s.label,
@@ -240,35 +253,15 @@ function stopPlanTimer(): void {
 // Goal summarization — better plan titles from user prompts
 // ============================================================================
 
-export function summarizeGoal(prompt: string): string {
-	// Extract verb + object, drop noise
-	const p = prompt.trim();
-
-	// Common action patterns
-	const actionPatterns = [
-		/(?:create|add|build|implement|fix|update|refactor|improve|optimize|check|investigate|analyze|find|search|debug|test|review|document|explain|set up|configure)\s+(.+)/i,
-		/(?:how (?:do I|to|can I))\s+(.+)/i,
-		/(?:what|which|where|when|who)\s+(?:is|are|does|do|was|were)\s+(.+)/i,
-	];
-
-	for (const pattern of actionPatterns) {
-		const match = p.match(pattern);
-		if (match) {
-			// Clean up the matched part
-			let goal = match[0].trim();
-			// Remove file paths and technical noise
-			goal = goal.replace(/(?:in|at|from|to|for|into)\s+[\w/.~-]+/g, '').trim();
-			goal = goal.replace(/\s+/g, ' ');
-			// Capitalize first letter
-			goal = goal.charAt(0).toUpperCase() + goal.slice(1);
-			// Truncate if too long
-			if (goal.length > 50) goal = goal.slice(0, 47) + '...';
-			return goal;
-		}
-	}
-
-	// Fallback: use shortenLabel
-	return shortenLabel(p);
+export function summarizeGoal(goal: string): string {
+    let cleaned = goal.replace(/https?:\/\/[^\s]+/g, '');
+    cleaned = cleaned.replace(/```[\s\S]*?```/g, '');
+    cleaned = cleaned.replace(/`[^`]+`/g, '');
+    cleaned = cleaned.trim();
+    const firstLine = cleaned.split('\n')[0]?.trim() || cleaned;
+    const maxLen = 80;
+    if (firstLine.length <= maxLen) return firstLine;
+    return firstLine.slice(0, maxLen - 3) + '...';
 }
 
 // ============================================================================
@@ -294,6 +287,7 @@ export function hasActivePlan(): boolean {
 }
 
 export function clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
+	if (_activeDelegations > 0) return;
 	stopPlanTimer();
 	planState = null;
 	_lastWidgetContent = null;
@@ -325,6 +319,10 @@ export function pushPlanStep(label: string): void {
 		active: true,
 	});
 
+	// Set startTime on the new step
+	const newStep = planState.steps[planState.steps.length - 1];
+	(newStep as any).startTime = Date.now();
+
 	_spinnerIndex = 0;
 	_renderWidget();
 }
@@ -348,6 +346,11 @@ export function startDelegationStep(label: string): void {
 	const activeIdx = planState.steps.findIndex((s) => s.active);
 	if (activeIdx >= 0 && !planState.steps[activeIdx].completed) {
 		planState.steps[activeIdx].label = label;
+		planState.steps[activeIdx].active = true;
+		// Set startTime if not already set (e.g. relabel from pre-planned)
+		if (!(planState.steps[activeIdx] as any).startTime) {
+			(planState.steps[activeIdx] as any).startTime = Date.now();
+		}
 		_spinnerIndex = 0;
 		_renderWidget();
 		return;
@@ -360,6 +363,7 @@ export function startDelegationStep(label: string): void {
 	if (pendingIdx >= 0) {
 		planState.steps[pendingIdx].label = label;
 		planState.steps[pendingIdx].active = true;
+		(planState.steps[pendingIdx] as any).startTime = Date.now();
 		_spinnerIndex = 0;
 		_renderWidget();
 		return;
@@ -394,34 +398,33 @@ export function setupPlanPanel(
 	stepLabels: string[],
 	ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } },
 ): void {
-	// Try to restore previous session state
-	const restored = loadPlanState();
-	if (restored && restored.goal === goal) {
-		planState = restored;
-		_setWidget = ctx.ui.setWidget.bind(ctx.ui);
-		_lastWidgetContent = null;
-		startPlanTimer();
-		_renderWidget();
-		return;
-	}
+	// Preserve completion state from existing in-memory plan — only if same goal
+	const sameGoal = planState?.goal === goal;
+	const oldSteps = sameGoal ? (planState?.steps || []) : [];
+	const previousStartTime = planState?.startTime;
 
 	planState = {
 		goal,
-		steps: stepLabels.map((label, i) => ({
-			label,
-			completed: false,
-			errored: false,
-			active: i === 0,
-		})),
-		startTime: Date.now(),
+		steps: stepLabels.map((label, i) => {
+			const old = oldSteps.find(s => s.label === label);
+			const wasCompleted = old?.completed === true;
+			return {
+				label,
+				completed: wasCompleted,
+				errored: false,
+				active: !wasCompleted && i === 0,
+				startTime: wasCompleted ? (old as any).startTime : (!wasCompleted && i === 0 ? Date.now() : undefined),
+				endTime: wasCompleted ? (old as any).endTime : undefined,
+			};
+		}),
+		startTime: sameGoal && previousStartTime ? previousStartTime : Date.now(),
 	};
 
-	// Store setWidget reference for timer updates
 	_setWidget = ctx.ui.setWidget.bind(ctx.ui);
-	_lastWidgetContent = null; // clear cache so initial render always pushes
-
+	_lastWidgetContent = null;
 	startPlanTimer();
 	_renderWidget();
+	savePlanState();
 }
 
 export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
@@ -433,6 +436,7 @@ export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: 
 		planState.steps[idx].active = false;
 		planState.steps[idx].detail = undefined;
 		planState.steps[idx].detailLines = undefined;
+		(planState.steps[idx] as any).endTime = Date.now();
 	}
 	// Don't auto-activate next step — let startDelegationStep consume it
 	// when the next delegation actually begins. This avoids showing a
@@ -448,9 +452,29 @@ export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: str
 		planState.steps[idx].errored = true;
 		planState.steps[idx].active = false;
 		planState.steps[idx].detail = undefined;
+		(planState.steps[idx] as any).endTime = Date.now();
 	}
 	_renderWidget();
 	savePlanState();
+}
+
+/**
+ * Reset a failed plan step for retry.
+ * Clears errored flag and resets timestamps so the step can run again.
+ */
+export function retryPlanStep(): void {
+	if (!planState) return;
+	const idx = planState.steps.findIndex((s) => s.errored);
+	if (idx >= 0) {
+		planState.steps[idx].errored = false;
+		planState.steps[idx].completed = false;
+		planState.steps[idx].active = true;
+		planState.steps[idx].detail = undefined;
+		planState.steps[idx].detailLines = undefined;
+		(planState.steps[idx] as any).startTime = Date.now();
+		(planState.steps[idx] as any).endTime = undefined;
+	}
+	_renderWidget();
 }
 
 export function renderPlanStatusText(): string {

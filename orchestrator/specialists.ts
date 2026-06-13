@@ -26,6 +26,16 @@ BEFORE doing ANY work, output your plan in this EXACT format as your VERY FIRST 
 DO NOT call any tools until you have output the ## Goal and ## Steps sections above.
 The system tracks your progress automatically via tool calls after you output the plan.`;
 
+export const STEPS_MANDATE = `
+
+CRITICAL: You MUST output your plan as ## Steps before doing any work. This is REQUIRED for the orchestrator to track progress. Example:
+
+## Steps
+- Step 1: <action>
+- Step 2: <action>
+- Step 3: <action>
+`;
+
 /**
  * Full caveman instruction — matches JuliusBrussee/caveman SKILL.md "full" intensity.
  * Injected into every specialist's system prompt for token-efficient replies.
@@ -58,7 +68,13 @@ export const SPECIALISTS: Record<string, Specialist> = {
 		name: "scout",
 		description: "Read-only codebase investigator. Uses grep/find to locate code, read to examine files, bash to execute commands. Ideal for architecture discovery, bug investigation, code tracing, running CLI tools, and verifying command output.",
 		tools: ["read", "bash"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
+
+IMPORTANT: Before doing any work, you MUST output ## Steps listing each step you will take. This is REQUIRED for the orchestrator to track progress. Example:
+
+## Steps
+- Step 1: ...
+- Step 2: ...
 
 You are a read-only codebase investigator. You NEVER write or edit files.
 
@@ -69,6 +85,10 @@ Your job:
 - Identify relevant files and their responsibilities
 
 Output format:
+## Steps
+- Step 1: ...
+- Step 2: ...
+
 ## Files Found
 <list key files with paths>
 
@@ -119,7 +139,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "coder",
 		description: "Implementation specialist with full read/write access. Uses edit/write for file changes, bash for verification. Ideal for implementing features and fixing bugs.",
 		tools: ["read", "bash", "edit", "write"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are an implementation specialist. You write and edit code.
 
@@ -165,7 +185,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "reviewer",
 		description: "Read-only code reviewer. Checks for bugs, security issues, performance problems, and style violations. Outputs Critical/Warnings/Suggestions.",
 		tools: ["read", "bash"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a code reviewer. You NEVER make changes.
 
@@ -213,8 +233,8 @@ ${TERSE_INSTRUCTION}`,
 	researcher: {
 		name: "researcher",
 		description: "Read-only research specialist. Reads docs, configs, and code to answer questions with evidence-based answers and source references.",
-		tools: ["read", "bash"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
+		tools: ["read"],
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a research specialist. You NEVER write files.
 
@@ -259,7 +279,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "writer",
 		description: "Documentation specialist with read/write access. Creates and edits markdown docs. Ideal for READMEs, API docs, and project documentation.",
 		tools: ["read", "write", "edit"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a documentation writer. You create and edit docs.
 
@@ -277,6 +297,16 @@ Output format:
 
 
 
+
+
+## Findings
+After completing work, output:
+
+## Findings
+- summary: one-line what you found/did
+- key_files: [important paths]
+- issues: [blocking problems or none]
+- recommendation: next step for orchestrator
 
 ## Audit
 Before finishing, note any problems encountered and how you handled them:

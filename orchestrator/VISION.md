@@ -1,154 +1,222 @@
 # Orchestrator Extension — Vision Document
 
-## Core Concept
+## Core UX Principle
 
-The orchestrator is a **planner and coordinator**, not an executor. It receives a problem, creates a dynamic plan, delegates to specialist subagents, receives their output, recalibrates the approach, and repeats until the goal is achieved.
+The orchestrator provides a **three-layer visibility** system. At every moment, the user can see:
 
-## Architecture
+1. **What** is being done (plan panel — goal + step list)
+2. **How** it's being done (subagent progress — substeps collapsing into completed steps)  
+3. **Peek inside** what the subagent is doing right now (conversation viewer)
 
+The goal is **total transparency without clutter**. The user should never wonder "what is it doing right now?"
+
+---
+
+## Design Constraints
+
+### Cache Safety
+
+The orchestrator must **never cache agent outputs** across delegations. Each subagent runs fresh. Rationale:
+
+- Subagents are stateless by design — caching creates hidden state
+- Cached outputs become stale as project files change
+- The plan panel reflects live execution, not historical runs
+- Exception: User explicitly requests a re-run with `--cache` flag (future)
+
+### Token Efficiency
+
+- Plan panel must fit in <10 lines at all times
+- Substeps collapse aggressively: once a step completes, its substeps are removed from rendering
+- Step labels are short (max ~60 chars) — truncated if longer
+- No debug-level output in plan panel (that's what the peek is for)
+- Status bar is single-line, always visible
+
+---
+
+## Layer 0: Enforcement
+
+Before any delegation occurs, three guard mechanisms enforce invariants across all subagent work:
+
+### lint-guard
+Deterministic lint checking after every file edit or write. Project-agnostic: auto-detects linter from project config (supports 14 linters across 7 languages). Cache-safe: lint results sent via `pi.sendMessage()` without modifying tool output — no side effects on delegation results.
+
+### scope-guard
+Path-restricted write enforcement. All writes and edits validated against allowed paths defined in `.pi/scope.json`. Unauthorized modifications blocked before reaching the filesystem. Prevents subagents from drifting outside project boundaries.
+
+### token-saver
+Token usage reduction layer. Truncates long tool outputs, summarizes goals to fit constraints, and budget-constrains the plan panel. Keeps total context usage predictable and prevents runaway token consumption on large outputs.
+
+Together, these guards run transparently — subagents never see them, but their outputs stay clean, scoped, and efficient.
+
+### Cardinal Rule: Cache Safety
+
+**Cache breaks are the most expensive mistake in the system.** Every cache invalidation costs tokens, adds latency, and increases cost — often by orders of magnitude for a single misplaced change. A single broken cache can turn a 50k-token session into a 500k-token session.
+
+**Every change must be evaluated against its impact on conversation cache.** Before any edit, delegation, or tool call design decision, ask: *does this preserve the cache?* If the answer is uncertain, the answer is no.
+
+The **pi-cache-optimizer** extension is the authoritative mechanism for maintaining cache safety. It is not optional. It is not a suggestion layer. Any behavior that undermines the cache-optimizer invalidates the entire enforcement stack.
+
+**All enforcement mechanisms must preserve cache integrity.** lint-guard, scope-guard, and token-saver must never introduce side effects that break cache. Specifically:
+
+- **lint-guard**: Lint results sent via `pi.sendMessage()` — no modification of tool output that would alter downstream cache keys.
+- **scope-guard**: Path validation is pure/read-only against the filesystem — no write-side effects that change cached state.
+- **token-saver**: Truncation and summarization must produce deterministic output for identical input — non-deterministic summarization poisons cache.
+
+If a new guard or enforcement mechanism is added, it must pass the same cache-safety invariant. No exceptions.
+
+---
+
+## Layer 1: Plan Panel (Orchestrator Level)
+
+The plan panel sits above the editor. It shows:
+
+### Goal
+- One concise line (few words, no overflow)
+- Derived from user's intent (comprehended by the model, not raw prompt text)
+- Example: `◆ Investigate auth middleware` — not `◆ Find and fix the auth bug in the middleware code and write tests for it`
+
+### Steps
+- List of high-level delegations
+- Each step has three states:
+  - `✓ Step label (duration)` — completed (collapsed, no substeps shown)
+  - `⠇ Step label` — active (expanded, showing current substeps)
+  - `○ Step label` — pending (waiting)
+- Steps never overflow to multiple lines
+- Active step shows live substep progress beneath it
+
+### Example
 ```
-User Problem
-     │
-     ▼
-┌─────────────────────────────┐
-│      ORCHESTRATOR            │
-│  ┌─────────────────────┐    │
-│  │ Dynamic Step List    │    │  ← plans, updates, recalibrates
-│  │ 1. Investigate ...   │    │
-│  │ 2. Implement ...     │    │
-│  │ 3. Review ...        │    │
-│  └─────────────────────┘    │
-│                              │
-│  Tool: delegate(specialist)  │  ← ONLY tool available
-│                              │
-│  Receives: output + scope    │  ← subagent findings
-│  Updates: step list          │  ← recalibrates plan
-│  Repeats: until goal met     │
-└─────────────────────────────┘
-     │              │              │
-     ▼              ▼              ▼
-┌─────────┐  ┌─────────┐  ┌─────────┐
-│  Scout   │  │  Coder   │  │Reviewer │
-│          │  │          │  │         │
-│ Goal:    │  │ Goal:    │  │ Goal:   │
-│ "Find    │  │ "Create  │  │ "Check  │
-│  auth    │  │  auth    │  │  auth   │
-│  files"  │  │  module" │  │  code"  │
-│          │  │          │  │         │
-│ Steps:   │  │ Steps:   │  │ Steps:  │
-│ 1. grep  │  │ 1. read  │  │ 1. read │
-│ 2. read  │  │ 2. edit  │  │ 2. check│
-│ 3. trace │  │ 3. write │  │ 3. flag │
-│          │  │          │  │         │
-│ Output → │  │ Output → │  │ Output→ │
-│ orchstr  │  │ orchstr  │  │ orchstr │
-└─────────┘  └─────────┘  └─────────┘
-```
-
-## Principles
-
-### 1. Orchestrator = Planner Only
-- Creates dynamic step list from user problem
-- Each step involves calling a subagent or comprehending received data
-- Steps are NOT predetermined — they update based on what subagents find
-- Can ask user for clarification before starting if something is uncertain
-- Only tool available: `delegate(specialist, task)` — deterministic measure to enforce workflow
-
-### 2. Context Window Protection
-- Orchestrator never reads files, runs commands, or does implementation
-- Each delegation is isolated — subagent has its own context window
-- Orchestrator receives only the final output (compressed, capped)
-- Prevents context pollution that causes models to get lost
-- Enables non-SOTA models to follow a deterministic workflow effectively
-
-### 3. Subagents = Goal-Oriented Executors
-When a subagent receives a task:
-- Creates its own goal (what it's trying to achieve)
-- Lists its own steps (what it thinks it needs to do)
-- Executes those steps (reads files, searches code, runs commands)
-- Updates steps dynamically if findings change the approach
-- Returns structured output to orchestrator
-
-### 4. Full Visibility to User
-The user should see:
-- **Orchestrator level**: Dynamic step list, which step is active, what was completed
-- **Subagent level**: What the delegate is currently doing (reading file X, searching for Y, analyzing Z)
-- **Tool level**: Individual tool calls and their results within subagents
-
-### 5. Dynamic Recalibration
-- Orchestrator doesn't follow a fixed script
-- After each delegation, it comprehends the output
-- Updates remaining steps based on new information
-- Can change approach entirely if subagent finds unexpected things
-- Can spawn additional subagents if needed
-
-## Communication: Caveman Mode
-
-Both the orchestrator and all subagents (except writer/creative tasks) operate in caveman mode by default.
-
-### Rules
-- Short, efficient, no mental filler
-- Think caveman too: reasoning and output both terse
-- Drop: articles (a/an/the), filler (just/really/basics), pleasantries (sure/certainly), hedging
-- Fragments OK. Short synonyms (big not extensive, fix not "implement a solution for")
-- Technical terms exact. Code blocks unchanged. Errors quoted exact
-- Pattern: [thing] [action] [reason]. [next step].
-
-### Auto-Clarity
-Drop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after clear part done.
-
-### Boundaries
-- Orchestrator planning/reasoning: caveman
-- Subagent execution/output: caveman
-- Code/commits/PRs: write normal English
-- Creative writing tasks: normal mode (writer specialist exempt)
-- User says "stop caveman" or "normal mode": revert everywhere
-
-### Why
-- Reduces token usage (context window protection)
-- Faster reasoning loops
-- Non-SOTA models perform better with concise instructions
-- Deterministic workflow + terse communication = maximum efficiency
-
-## User Experience
-
-### What the user should see:
-
-```
-Plan: ◆ Implement user authentication  ● 2/5     45s
-  ✓ Scout  Discover auth architecture
-  ⠼ Scout  Analyze existing patterns
-      → Reading src/auth/middleware.ts
-      → Running: grep -r "authenticate" src/
-      → Reading src/types/auth.ts
-  ○ Coder  Implement JWT token flow
-  ○ Reviewer  Security review
-  ○ Scout  Verify tests pass
+Plan: ◆ Investigate auth middleware  ● 2/4  1m 30s
+✓ Scout: Read middleware files (25s)
+⠇ Coder: Fix token expiry
+  → Reading auth.ts                     ← live substep
+  → Reading middleware.ts (✓)           ← completed substep
+○ Reviewer: Verify fix
+○ Write summary
 ```
 
-### What the user should NOT see:
-- Raw prompt text as plan title
-- Phantom steps that never execute
-- Mechanical task descriptions
-- Missing subagent activity details
+---
 
-## Current State vs Vision
+## Layer 2: Subagent Activity (Subagent Level)
 
-| Aspect | Current | Vision |
-|--------|---------|--------|
-| Plan title | Raw prompt shortened | Meaningful goal summary |
-| Steps | Hardcoded template + additions | Fully dynamic from orchestrator |
-| Step labels | `Specialist: shortenLabel(task)` | Human-readable descriptions |
-| Subagent activity | Tool calls shown in feed | Goal + steps + tool activity |
-| Subagent output | Flat text blob to orchestrator | Structured: goal, steps, findings, scope |
-| Recalibration | None — linear scout→coder→review | Dynamic — steps update based on findings |
-| Caveman mode | Only in subagent TERSE_INSTRUCTION | Orchestrator + all subagents (except writer) |
-| User visibility | Plan panel + activity feed | Rich: orchestrator + subagent + tool levels |
+When a subagent (scout, coder, etc.) is delegated:
 
-## Implementation Priorities
+1. Subagent outputs its own **goal** (few words) and **steps** as `## Steps`
+2. Each subagent step executes with **substeps** (individual tool calls)
+3. Completed substeps **collapse** — they disappear from the view and the step is marked `✓`
+4. Active step shows live tool calls as substeps beneath it
+5. Next step becomes active only after current step fully completes
 
-1. **Plan title summarization** — meaningful goal text, not raw prompt
-2. **Dynamic step generation** — orchestrator creates steps from problem, not template
-3. **Subagent activity visibility** — show what delegate is doing in real-time
-4. **Subagent self-planning** — delegate creates own goal + steps on receipt
-5. **Recalibration feedback** — orchestrator updates steps based on subagent output
+### Flow
+```
+Subagent receives: "Read the auth middleware files"
+  → Outputs: ## Goal: Read auth files
+             ## Steps:
+             - Find all auth-related files
+             - Read each file
+             - Summarize findings
+
+  → During execution:
+    ● [1/3]
+    ✓ Find auth files (2s)
+    ⠇ Read each file
+      → Reading auth.ts                  ← currently executing
+      → Reading middleware.ts (✓)        ← completed
+      → Reading permissions.ts (pending)
+    ○ Summarize findings
+
+  → After all substeps complete:
+    ✓ Find auth files (2s)
+    ✓ Read each file (12s)               ← collapsed, no substeps visible
+    ⠇ Summarize findings
+```
+
+Key rule: **substeps collapse into their parent step** when that step completes. This keeps the feed clean while providing real-time granularity.
+
+---
+
+## Layer 3: Subagent Peek (Conversation Viewer)
+
+At any time during delegation, the user can **peek inside** the subagent's conversation to see exactly what it's doing:
+
+### What the viewer shows
+- Subagent's reasoning (its chain of thought)
+- Every tool call it makes and what it returns
+- Results in real-time (streaming)
+- Errors immediately visible
+
+### How to access
+- Keyboard shortcut (e.g., `Ctrl+P` to peek)
+- Opens an overlay showing the subagent's live conversation
+- Auto-scrolls as new content arrives
+- Two-press `x` to abort the subagent
+
+### Why this matters
+Without the peek, the user sees only orchestration-level steps. With the peek, they can verify the subagent is on the right track, catch errors early, or abort a misbehaving subagent.
+
+---
+
+## Visual Layout
+
+```
+┌─────────────────────────────────────────────────┐
+│ Plan: ◆ Investigate auth middleware  ● 2/4  90s │  ← Layer 1: Plan panel
+│ ✓ Scout: Read middleware files (25s)            │
+│ ⠇ Coder: Fix token expiry                      │
+│   → Reading auth.ts                             │  ← Layer 2: Substeps
+│ ○ Reviewer: Verify fix                          │
+└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│ [Chat content...]                               │
+│                                                 │
+│ delegate Coder: Fix the token expiry bug         │
+│ ┌─ Task ────────────────────────────────────┐   │
+│ │ Coder: Fix token expiry in auth middleware │   │
+│ ├──── Steps ────────────────────────────────┤   │
+│ │ ● [2/3]                                    │   │
+│ │ ✓ Find auth files (2s)                     │   │
+│ │ ⠇ Fix token expiry                         │   │
+│ │   → Reading auth.ts                        │   │
+│ │   ✓ Read middleware.ts (1s)                │   │
+│ │ ○ Verify fix                               │   │
+│ └────────────────────────────────────────────┘   │
+│                                                 │
+│ [Peek: Ctrl+P to see subagent conversation]      │  ← Layer 3 indicator
+└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│ ↑2.7k ↓903 R15k CH84% deepseek-v4-flash-2 • hi │  ← Status bar
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## Anti-Patterns (What NOT to do)
+
+1. **Raw prompt as goal**: Never use the user's raw input as the goal. The model must comprehend and summarize.
+2. **Tool calls as step labels**: Never show `Running: ls -la` as a step name. Tool calls are substeps, not steps.
+3. **Substep clear on completion**: Never erase substep history. Completed substeps collapse cleanly, don't vanish.
+4. **Overflowing text**: Never let goal or step labels overflow to multiple lines. Use smart truncation if needed.
+5. **Silent execution**: Never leave the user wondering "what is it doing?" Always show:
+   - What's currently executing (active step + substep)
+   - What's completed
+   - What's next
+6. **No peek**: Never hide the subagent's activity behind a black box. The peek is essential for trust.
+7. **Cache poisoning**: Never reuse a subagent's output from a prior run without explicit user consent.
+8. **Token bloat**: Never render full tool output in the plan panel. Full output belongs in the peek overlay.
+
+---
+
+## Implementation Status
+
+| Feature | Status | Priority |
+|---------|--------|----------|
+| Plan panel with goal + steps | ✅ Working | P0 |
+| Subagent outputs ## Steps | ✅ Working | P0 |
+| Substeps shown under active step | ⚠️ Partial — sometimes replaces step labels | P0 |
+| Completed substeps collapse | ❌ Substeps erased instead of collapsing | P0 |
+| Smart goal summarization | ❌ Using raw prompt text | P0 |
+| Cache safety (no cross-delegation caching) | ✅ Working by design | P0 |
+| Conversation viewer peek | ❌ Not implemented | P1 |
+| Keyboard shortcut for peek | ❌ Not implemented | P1 |
+| Token-efficient rendering (<10 lines) | ⚠️ Partial — some overflow edge cases | P1 |
+| Status bar subagent count | ❌ Not implemented | P2 |

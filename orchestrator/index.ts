@@ -16,9 +16,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY } from "./subagent-runner.ts";
-import { clearPlanPanel, generatePlanFromPrompt, setupPlanPanel, summarizeGoal } from "./plan-panel.ts";
+import { clearPlanPanel } from "./plan-panel.ts";
 import { registerDelegateTool } from "./delegate-tool.ts";
+import { registerPlanTool } from "./plan-tool.ts";
 import { registerCommands } from "./commands.ts";
+import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
 import { SPECIALISTS, listSpecialists } from "./specialists.ts";
 
@@ -35,16 +37,11 @@ export default function (pi: ExtensionAPI) {
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
 		clearPlanPanel(ctx);
-		pi.setActiveTools(["delegate"]);
+		pi.setActiveTools(["plan", "delegate"]);
 
 		const cleanedPrompt = event.systemPrompt;
 
-		// Generate and show the full plan upfront from the user's prompt
-		const prompt = event.prompt || "";
-		if (prompt) {
-			const steps = generatePlanFromPrompt(prompt);
-			setupPlanPanel(summarizeGoal(prompt), steps, ctx);
-		}
+		// Wait for orchestrator to declare plan via the plan() tool
 
 		// Build dynamic specialist roster
 		const rosterLines = listSpecialists().map(name => {
@@ -78,11 +75,27 @@ ${rosterLines}
 ${skillsSection}
 
 ### Workflow:
-1. Analyze the request
-2. If task is investigation or CLI execution → delegate(scout, ...)
-3. If task involves file changes → delegate(scout, ...) first for scope, then delegate(coder, ...)
-4. If task is code review → delegate(reviewer, ...)
-5. Synthesize all results into final answer
+1. FIRST: Call plan(goal, steps) to declare the overall plan. The goal is a one-line summary. The steps are the actions you will delegate. Example:
+   plan("Fix auth bug", ["Read auth middleware", "Fix token validation", "Write tests", "Verify"])
+
+2. SECOND: For each step, call delegate(specialist, task, scope) to execute work.
+
+3. THIRD: Synthesize results.
+
+NOTE: delegate() auto-creates a plan if plan() was not called first. Call plan() first for multi-step work.
+
+### Scope requirement:
+When calling delegate(coder, ...), you MUST include a \`scope\` parameter with the files the coder is allowed to modify/create. Get this from scout's \`## Scope\` output, or declare it yourself based on your analysis.
+
+Example:
+\`\`\`
+delegate("coder", "fix the token expiry", {
+    scope: {
+        filesToModify: ["src/auth.ts"],
+        filesToCreate: []
+    }
+})
+\`\`\`
 
 You decide next step AFTER seeing previous result. NOT before.
 
@@ -145,12 +158,31 @@ If task ambiguous before starting:
 	// ── Safety net: Block non-delegation tool calls ──
 	pi.on("tool_call", async (event, ctx) => {
 		if (_batchLoadSubagent > 0) return; // Don't block subagent tools
-		if (event.toolName !== "delegate") {
-			return { block: true, reason: `Orchestrator mode: use delegate() instead of ${event.toolName}` };
+		if (event.toolName !== "delegate" && event.toolName !== "plan") {
+			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
 		}
 	});
 
-	// ── Register tools and commands ──
+	
+
+	// Lint-guard dependency check
+	debugLog("lint-guard: expected to be loaded as required dependency. If lint/typecheck tools missing, check extension loading.");
+
+	// ── Register tools, commands, and shortcuts ──
 	registerDelegateTool(pi);
+	registerPlanTool(pi);
 	registerCommands(pi);
+
+	// ── Ctrl+Q: Peek overlay (Layer 3, mnemonic "quick peek") ──
+	pi.registerShortcut("ctrl+q", {
+		description: "Peek inside the current subagent conversation",
+		handler: (ctx) => {
+			if (isPeekOpen()) {
+				hidePeek();
+				return;
+			}
+			if (ctx.mode !== "tui") return;
+			showPeek(ctx);
+		},
+	});
 }
