@@ -150,8 +150,13 @@ If task ambiguous before starting:
 - Wait for answer before delegating
 - Don't guess — clarifying upfront saves context window`;
 
+		const basePrompt = event.systemPrompt ?? "";
+		const marker = "## Orchestrator Mode";
+		if (basePrompt.includes(marker)) {
+			return { systemPrompt: basePrompt };
+		}
 		return {
-			systemPrompt: cleanedPrompt + delegationInstructions,
+			systemPrompt: basePrompt + "\n\n" + delegationInstructions,
 		};
 	});
 

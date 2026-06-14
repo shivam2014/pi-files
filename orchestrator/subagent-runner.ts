@@ -23,7 +23,8 @@ import type { Specialist, OrchestratorActivity, SubagentContext, Scope } from ".
 import {
 	createActivityFeed,
 	parseTextForFeed,
-	addSubstep,
+	setToolDetail,
+	clearToolDetail,
 	completeLastSubstep,
 	completeCurrentStep,
 	markFeedError,
@@ -31,11 +32,11 @@ import {
 	renderCombinedProgress,
 	toolCallToSubstep,
 	renderSubstepLines,
-	_spinnerIndex,
 } from "./activity-feed.ts";
 import { compressOutput } from "./activity-feed.ts";
+import { _spinnerIndex } from "./spinner-state.ts";
 import { updatePlanStepDetail } from "./plan-panel.ts";
-import { registerPeekFeed, updatePeek } from "./peek-overlay.ts";
+import { registerPeekFeed, updatePeek, updatePeekFeed } from "./peek-overlay.ts";
 
 /** Optional orchestrator UI for dynamic status messages */
 export interface OrchestratorUi {
@@ -151,7 +152,9 @@ export async function runSubagent(
 			await loader.reload();
 		} finally {
 			_batchLoadSubagent--;
-			// Env var stays active — cleaned up in finally after session.prompt()
+			if (_batchLoadSubagent <= 0) {
+				delete process.env[SUBAGENT_ENV_KEY];
+			}
 		}
 
 		const excludeTools = (specialist.name === "writer" || specialist.name === "researcher")
@@ -171,8 +174,9 @@ export async function runSubagent(
 
 		let output = "";
 		let turns = 0;
-		const feed = createActivityFeed();
-		feed.goal = shortenLabel(task);
+		let feed = createActivityFeed();
+		const goal = shortenLabel(task);
+		feed.goal = goal;
 
 		// Register feed for peek overlay (Layer 3)
 		const peekAbort = new AbortController();
@@ -184,8 +188,16 @@ export async function runSubagent(
 			// Standard assistant message delta
 			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 				output += event.assistantMessageEvent.delta;
-				parseTextForFeed(feed, event.assistantMessageEvent.delta);
+				feed = parseTextForFeed(feed, event.assistantMessageEvent.delta);
+				updatePeekFeed(feed);
 				updatePeek(event.assistantMessageEvent.delta);
+				const textDelta = orchestratorActivity
+					? renderCombinedProgress(specialist.name, feed, goal || "")
+					: renderActivityFeed(specialist.name, feed);
+				onUpdate?.({
+					content: [{ type: "text", text: textDelta }],
+					details: { status: "running", streaming: true },
+				});
 			}
 
 			// Assistant message completed
@@ -193,10 +205,11 @@ export async function runSubagent(
 				if (event.message?.role === "assistant") {
 					turns++;
 					if (feed.steps.length > 0 && feed.currentStep < feed.steps.length) {
-						completeCurrentStep(feed);
+						feed = completeCurrentStep(feed);
+					updatePeekFeed(feed);
 					}
 					const text = orchestratorActivity
-						? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
+						? renderCombinedProgress(specialist.name, feed, "")
 						: renderActivityFeed(specialist.name, feed);
 					onUpdate?.({
 						content: [{ type: "text", text }],
@@ -222,7 +235,8 @@ export async function runSubagent(
 			// Tool execution started
 			if (event.type === "tool_execution_start") {
 				const substepLabel = toolCallToSubstep(event.toolName, event.args);
-				addSubstep(feed, substepLabel);
+				feed = setToolDetail(feed, substepLabel);
+				updatePeekFeed(feed);
 				updatePeek(`\u2192 ${event.toolName}\n`);
 				// Pass substep history lines to plan panel immediately
 				const activeStep = feed.steps[feed.currentStep];
@@ -232,7 +246,7 @@ export async function runSubagent(
 					updatePlanStepDetail(substepLabel);
 				}
 				const text = orchestratorActivity
-					? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
+					? renderCombinedProgress(specialist.name, feed, "")
 					: renderActivityFeed(specialist.name, feed);
 				onUpdate?.({
 					content: [{ type: "text", text }],
@@ -260,7 +274,7 @@ export async function runSubagent(
 
 								// Emit onUpdate so UI stays responsive during tool execution
 								const text = orchestratorActivity
-									? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
+									? renderCombinedProgress(specialist.name, feed, "")
 									: renderActivityFeed(specialist.name, feed);
 								onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", tool: event.toolName } })
 							}
@@ -281,7 +295,9 @@ export async function runSubagent(
 						outputPreview = stripped.length > 80 ? stripped.slice(0, 77) + "..." : stripped || undefined;
 					}
 				} catch {}
-				completeLastSubstep(feed, outputPreview);
+				feed = clearToolDetail(feed);
+				feed = completeLastSubstep(feed, outputPreview);
+				updatePeekFeed(feed);
 				updatePeek(`\u2713 ${event.toolName}\n`);
 				// Update plan panel with substep history lines
 				const activeStep = feed.steps[feed.currentStep];
@@ -289,7 +305,7 @@ export async function runSubagent(
 					updatePlanStepDetail(renderSubstepLines(activeStep.substeps));
 				}
 				const text = orchestratorActivity
-					? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
+					? renderCombinedProgress(specialist.name, feed, "")
 					: renderActivityFeed(specialist.name, feed);
 				onUpdate?.({
 					content: [{ type: "text", text }],
@@ -306,7 +322,7 @@ export async function runSubagent(
 			renderTimer = setInterval(() => {
 				if (feed.steps.length > 0 || output.length > 0) {
 					const text = orchestratorActivity
-						? renderCombinedProgress(orchestratorActivity, specialist.name, feed, "")
+						? renderCombinedProgress(specialist.name, feed, "")
 						: renderActivityFeed(specialist.name, feed);
 					// Always emit if spinner frame changed or content changed
 					if (_spinnerIndex !== _lastSpinnerIndex || text !== _lastRenderText) {
@@ -334,7 +350,8 @@ export async function runSubagent(
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			// Surface error in activity feed before cleanup
-			markFeedError(feed, errorMsg);
+			feed = markFeedError(feed, errorMsg);
+			updatePeekFeed(feed);
 			const errorText = renderActivityFeed(specialist.name, feed) ?? errorMsg;
 			onUpdate?.({
 				content: [{ type: "text", text: errorText }],
@@ -342,7 +359,9 @@ export async function runSubagent(
 			});
 			output = `[error] ${errorMsg}`;
 		} finally {
-			delete process.env[SUBAGENT_ENV_KEY];
+			if (_batchLoadSubagent <= 0) {
+				delete process.env[SUBAGENT_ENV_KEY];
+			}
 			unsubscribe();
 			if (renderTimer) {
 				clearInterval(renderTimer);

@@ -10,13 +10,11 @@
 import { shortenLabel } from "../token-saver.ts";
 import { formatDuration } from "./ui-utils.ts";
 import type { PlanStep } from "./types.ts";
+import { SPINNER_FRAMES, getSpinnerIndex, resetSpinner, advanceSpinner } from "./spinner-state.ts";
 
 // ============================================================================
 // Constants
 // ============================================================================
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-let _spinnerIndex = 0;
 
 /** Widget key used for setWidget calls */
 const WIDGET_KEY = "orchestrator-status";
@@ -86,14 +84,16 @@ let _lastWidgetContent: string[] | null = null;
  * followed by indented substep lines with status icons.
  */
 function _renderPlanRow(lines: string[], r: { icon: string; label: string; detail?: string; detailLines?: string[] }): void {
-	if (r.icon === "✓" || !r.detailLines || r.detailLines.length === 0) {
-		const suffix = r.detail ? ` — ${r.detail}` : "";
-		lines.push(`  ${r.icon} ${r.label}${suffix}`);
-	} else {
-		lines.push(`  → ${r.label}`);
+	if (r.detailLines && r.detailLines.length > 0) {
+		// Active step uses →, completed step keeps ✓
+		const headerIcon = (r.icon === "✓") ? "✓" : "→";
+		lines.push(`  ${headerIcon} ${r.label}`);
 		for (const dl of r.detailLines) {
 			lines.push(dl);
 		}
+	} else {
+		const suffix = r.detail ? ` — ${r.detail}` : "";
+		lines.push(`  ${r.icon} ${r.label}${suffix}`);
 	}
 }
 
@@ -123,7 +123,7 @@ function renderPlanLines(): string[] {
 
 	// Build display rows in CHRONOLOGICAL order — each step in its original position
 	const frames = SPINNER_FRAMES;
-	const idx = _spinnerIndex % frames.length;
+	const idx = getSpinnerIndex() % frames.length;
 	const rows: { icon: string; label: string; detail?: string; detailLines?: string[] }[] = [];
 	for (const s of steps) {
 		if (s.errored) rows.push({ icon: "✗", label: s.label });
@@ -131,7 +131,11 @@ function renderPlanLines(): string[] {
 			const dur = (s as any).startTime && (s as any).endTime
 				? " (" + formatDuration((s as any).endTime - (s as any).startTime) + ")"
 				: "";
-			rows.push({ icon: "✓", label: s.label + dur });
+			rows.push({
+				icon: "✓",
+				label: s.label + dur,
+				detailLines: (s as any).substepLines,
+			});
 		}
 		else if (s.active) rows.push({
 			icon: frames[idx],
@@ -162,9 +166,26 @@ function renderPlanLines(): string[] {
 				kept.unshift(rows[i]);
 				budget -= needed;
 			} else if (budget >= 1) {
-				// Can fit at least the header line — drop detailLines
-				kept.unshift({ icon: rows[i].icon, label: rows[i].label });
-				budget = 0;
+				// Partial substep retention: keep last 3 substeps + … +N more
+				if (rows[i].detailLines && rows[i].detailLines.length > 0 && budget >= 2) {
+					const totalSubs = rows[i].detailLines!.length;
+					const canFit = Math.min(totalSubs, budget - 1); // -1 for header
+					const keptSubs = rows[i].detailLines!.slice(-canFit);
+					const droppedSubs = totalSubs - canFit;
+					const truncatedLines: string[] = [];
+					if (droppedSubs > 0) {
+						truncatedLines.push(`    … +${droppedSubs} more`);
+					}
+					for (const line of keptSubs) {
+						truncatedLines.push(line);
+					}
+					kept.unshift({ icon: rows[i].icon, label: rows[i].label, detailLines: truncatedLines });
+					budget = 0;
+				} else {
+					// Can fit at least the header line — drop detailLines
+					kept.unshift({ icon: rows[i].icon, label: rows[i].label });
+					budget = 0;
+				}
 			}
 		}
 		const hidden = rows.length - kept.length;
@@ -214,7 +235,7 @@ function startPlanTimer(): void {
 			return;
 		}
 		if (planState) {
-			_spinnerIndex++;
+			advanceSpinner();
 			_renderWidget();
 		} else {
 			stopPlanTimer();
@@ -323,7 +344,7 @@ export function pushPlanStep(label: string): void {
 	const newStep = planState.steps[planState.steps.length - 1];
 	(newStep as any).startTime = Date.now();
 
-	_spinnerIndex = 0;
+	resetSpinner();
 	_renderWidget();
 }
 
@@ -351,7 +372,7 @@ export function startDelegationStep(label: string): void {
 		if (!(planState.steps[activeIdx] as any).startTime) {
 			(planState.steps[activeIdx] as any).startTime = Date.now();
 		}
-		_spinnerIndex = 0;
+		resetSpinner();
 		_renderWidget();
 		return;
 	}
@@ -364,7 +385,7 @@ export function startDelegationStep(label: string): void {
 		planState.steps[pendingIdx].label = label;
 		planState.steps[pendingIdx].active = true;
 		(planState.steps[pendingIdx] as any).startTime = Date.now();
-		_spinnerIndex = 0;
+		resetSpinner();
 		_renderWidget();
 		return;
 	}
@@ -431,12 +452,18 @@ export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: 
 	if (!planState) return;
 	const idx = planState.steps.findIndex((s) => s.active);
 	if (idx >= 0) {
-		planState.steps[idx].completed = true;
-		planState.steps[idx].errored = false;
-		planState.steps[idx].active = false;
-		planState.steps[idx].detail = undefined;
-		planState.steps[idx].detailLines = undefined;
-		(planState.steps[idx] as any).endTime = Date.now();
+		// Save substep history before clearing — show collapsed under completed step
+		const step = planState.steps[idx];
+		if (step.detailLines && step.detailLines.length > 0) {
+			// Cap to 3 substeps for completed display (save budget for active step)
+			(step as any).substepLines = step.detailLines.slice(-3);
+		}
+		step.completed = true;
+		step.errored = false;
+		step.active = false;
+		step.detail = undefined;
+		step.detailLines = undefined;
+		(step as any).endTime = Date.now();
 	}
 	// Don't auto-activate next step — let startDelegationStep consume it
 	// when the next delegation actually begins. This avoids showing a

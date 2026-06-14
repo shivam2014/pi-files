@@ -38,7 +38,7 @@ The orchestrator must **never cache agent outputs** across delegations. Each sub
 Before any delegation occurs, three guard mechanisms enforce invariants across all subagent work:
 
 ### lint-guard
-Deterministic lint checking after every file edit or write. Project-agnostic: auto-detects linter from project config (supports 14 linters across 7 languages). Cache-safe: lint results sent via `pi.sendMessage()` without modifying tool output — no side effects on delegation results.
+Deterministic lint checking after every file edit or write. Runs automatically after `edit`/`write` tool calls. Project-agnostic: auto-detects linter from project config (supports 14 linters across 7 languages). **Extension-aware**: validates file extension against the linter's supported patterns before selecting it — only runs linters on files they actually support. Non-code files (`.md`, `.txt`, `.json`, etc.) are skipped entirely when no linter handles them. Cache-safe: lint results sent via `pi.sendMessage()` without modifying tool output — no side effects on delegation results.
 
 ### scope-guard
 Path-restricted write enforcement. All writes and edits validated against allowed paths defined in `.pi/scope.json`. Unauthorized modifications blocked before reaching the filesystem. Prevents subagents from drifting outside project boundaries.

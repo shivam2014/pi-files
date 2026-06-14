@@ -28,12 +28,12 @@ export function registerPlanTool(pi: ExtensionAPI) {
             };
         },
         renderCall(args, theme, context) {
-            return new Text(`Plan: ${args.goal} (${args.steps.length} steps)`, 0, 0);
+            return new Text(`⠋ Plan: ${args.goal} (${args.steps.length} steps)`, 0, 0);
         },
         renderResult(result, options, theme, context) {
             const first = result.content?.[0];
             const text = first && first.type === "text" ? first.text : "Plan set";
-            return new Text(text, 0, 0);
+            return new Text(`✓ ${text}`, 0, 0);
         },
     });
 }

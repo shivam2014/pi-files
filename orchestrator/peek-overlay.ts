@@ -12,6 +12,7 @@
  */
 
 import type { ActivityFeedState } from "./types.ts";
+import { SPINNER_FRAMES, getSpinnerIndex, advanceSpinner, resetSpinner } from "./spinner-state.ts";
 
 // Local interface subset — avoids module resolution issues with pi-tui imports.
 // At runtime these are the same types from @earendil-works/pi-tui.
@@ -35,7 +36,6 @@ interface TUI {
 
 const MAX_PEEK_LINES = 50;
 const X_PRESS_WINDOW_MS = 600;
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // ============================================================================
 // Module-level state
@@ -45,7 +45,6 @@ let _peekLines: string[] = [];
 let _peekGoal: string = "";
 let _peekAbort: AbortController | null = null;
 let _lastXPress: number = 0;
-let _spinnerIndex: number = 0;
 let _spinnerTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Stored refs for controlling the live overlay */
@@ -81,13 +80,13 @@ class PeekComponent implements Component {
             const feed = _peekFeedState;
             if (feed.steps.length > 0 && feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
                 const step = feed.steps[feed.currentStep];
-                const icon = step.completed ? "✓" : SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length];
+                const icon = step.completed ? "✓" : SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length];
                 lines.push(`${icon} Step: ${truncate(step.label, innerWidth - 8)}`);
 
                 // Show recent substeps (last 3)
                 const recentSubs = step.substeps.slice(-3);
                 for (const sub of recentSubs) {
-                    const subIcon = sub.completed ? "✓" : SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length];
+                    const subIcon = sub.completed ? "✓" : SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length];
                     const subLabel = truncate(sub.label, innerWidth - 6);
                     lines.push(`  ${subIcon} ${subLabel}`);
                 }
@@ -164,7 +163,7 @@ function truncate(text: string, maxLen: number): string {
 function startSpinnerTimer(): void {
     stopSpinnerTimer();
     _spinnerTimer = setInterval(() => {
-        _spinnerIndex++;
+        advanceSpinner();
         _peekTui?.requestRender();
     }, 80);
 }
@@ -186,7 +185,7 @@ function clearPeekState(): void {
     _peekTui = null;
     _peekDone = null;
     _lastXPress = 0;
-    _spinnerIndex = 0;
+    resetSpinner();
     stopSpinnerTimer();
 }
 

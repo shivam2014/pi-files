@@ -8,33 +8,58 @@ import { type Specialist } from "./types.ts";
 
 /**
  * Activity feed instruction template.
- * Forces subagents to output ## Goal / ## Steps before any tool calls.
+ * Forces subagents to output ## Goal / ## Steps with canonical Step N: format.
  */
 export const ACTIVITY_FEED_INSTRUCTION = `
 
-## ══ CRITICAL: Plan First ══
-BEFORE doing ANY work, output your plan in this EXACT format as your VERY FIRST response:
+## ══ Output Format Requirements ══
+
+When given a task, you MUST structure your response with:
+
+1. **## Goal** — A one-line goal description starting on the line after this heading.
+
+2. **## Steps** — Numbered steps using the format \`Step N: <intent description>\`.
+   Each step should describe WHAT you need to accomplish (the intent), NOT the specific commands.
+
+   Good: Step 1: Read auth middleware
+   Bad:  Step 1: cat src/auth/middleware.ts
+
+3. Under each step, list substeps as indented \`- bullet\` items.
+   These are the logical actions you'll take or checks you'll perform.
+
+   Example:
+   Step 2: Check token validation
+     - Read src/auth/validate.ts
+     - Check JWT decode flow
+     - Find missing expiry check
+
+4. When you discover important findings during execution, add them as:
+   - Report: <finding description>
+   
+   These can be added mid-execution as you discover things.
+
+5. Do NOT list tool commands as steps. Tool calls are tracked automatically.
+   Only list the logical intent.
+
+6. Complete the \`## Steps\` section BEFORE making any tool calls.
+   The steps serve as your plan of action.`;
+
+export const STEPS_MANDATE = `
+
+CRITICAL: You MUST output your plan as ## Goal / ## Steps before doing any work. This is REQUIRED for the orchestrator to track progress. Example:
 
 ## Goal
 <one line describing the goal>
 
 ## Steps
-- Step 1 description
-- Step 2 description
-- Step 3 description
+Step 1: <intent description>
+  - <logical action>
+  - <another action>
+Step 2: <intent description>
+  - <action>
 
 DO NOT call any tools until you have output the ## Goal and ## Steps sections above.
 The system tracks your progress automatically via tool calls after you output the plan.`;
-
-export const STEPS_MANDATE = `
-
-CRITICAL: You MUST output your plan as ## Steps before doing any work. This is REQUIRED for the orchestrator to track progress. Example:
-
-## Steps
-- Step 1: <action>
-- Step 2: <action>
-- Step 3: <action>
-`;
 
 /**
  * Full caveman instruction — matches JuliusBrussee/caveman SKILL.md "full" intensity.
@@ -79,7 +104,9 @@ IMPORTANT: Before doing any work, you MUST output ## Steps listing each step you
 You are a read-only codebase investigator. You NEVER write or edit files.
 
 Your job:
-- Be fast. Use \`grep\`/\`find\` to locate relevant code, then \`read\` key sections
+- Be fast. Use \`rg\` (ripgrep) or \`rg --glob\` to search code, then \`read\` key sections
+- Use \`gh\` (GitHub CLI) for GitHub operations instead of \`git\` commands
+- NEVER use \`cat\` — use the \`read\` tool instead
 - Understand the architecture, not just surface details
 - Trace execution paths
 - Identify relevant files and their responsibilities
@@ -146,7 +173,9 @@ You are an implementation specialist. You write and edit code.
 Rules:
 - Make exactly the described changes, nothing extra
 - ALWAYS use \`edit\` or \`write\` to modify files — NEVER \`bash\`+sed/awk
-- Read relevant files first, then make targeted edits
+- Use \`rg\` (ripgrep) to search code instead of \`grep\`/\`find\`/\`ls\`
+- Use \`gh\` (GitHub CLI) for GitHub operations instead of \`git commit/push/branch\`
+- Read relevant files first (use \`read\` tool, NOT \`cat\`), then make targeted edits
 - Verify your changes compile/work
 
 Output format:
@@ -191,6 +220,7 @@ You are a code reviewer. You NEVER make changes.
 
 Your job:
 - Read the changed files
+- Search with \`rg\` (ripgrep) instead of \`grep\`/\`find\`
 - Check for: bugs, security issues, performance problems, style violations
 - Compare against the design spec if provided
 - Be thorough but concise

@@ -26,6 +26,8 @@ export interface Substep {
 	startTime?: number;
 	endTime?: number;
 	outputPreview?: string;
+	isReport?: boolean;
+	toolDetail?: string;
 }
 
 /** A step in the activity feed (Layer 2 chat blocks) */
@@ -45,6 +47,8 @@ export interface ActivityFeedState {
 	rawText: string;
 	errored?: boolean;
 	errorMessage?: string;
+	retryCount?: number;
+	retryReason?: string;
 }
 
 /** Specialist definition */

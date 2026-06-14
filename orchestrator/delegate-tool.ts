@@ -19,11 +19,19 @@ import { hasActivePlan, setupPlanPanel, startDelegationStep, completePlanStep, e
 import type { Scope } from "./types.ts";
 import { debugLog } from "./debug.ts";
 import { hidePeek, unregisterPeekFeed } from "./peek-overlay.ts";
+import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
 
-// Local spinner state for renderResult animation
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-let _spinnerIndex = 0;
+// Shared spinner — imported from spinner-state.ts
 let _orchestratorActivity: ReturnType<typeof createOrchestratorActivity> | null = null;
+
+// Verb mapping for working loader messages during delegation lifecycle
+const PRESENT_PARTICIPLE: Record<string, string> = {
+	scout: 'Scouting',
+	coder: 'Coding',
+	reviewer: 'Reviewing',
+	researcher: 'Researching',
+	writer: 'Writing',
+};
 
 // Scope caching: after a scout/researcher outputs scope info, store it for the next coder call
 let _cachedScope: Scope | null = null;
@@ -124,10 +132,10 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			const text = result?.content?.[0]?.type === "text" ? result.content[0].text : "";
 
 			if (isPartial && !state.interval) {
-				state.interval = setInterval(() => {
-					_spinnerIndex++;
-					context.invalidate();
-				}, 80);
+					state.interval = setInterval(() => {
+						getSpinnerIndex(); // tick shared spinner
+						context.invalidate();
+					}, 80);
 			}
 			if (!isPartial && state.interval) {
 				clearInterval(state.interval);
@@ -140,7 +148,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				if (text) state.lastFeedText = text;
 				comp.setText(text
 					? theme.fg("warning", text)
-					: theme.fg("warning", `${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} working...`));
+					: theme.fg("warning", `${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} working...`));
 			} else {
 				const feedText = state.lastFeedText || text || "✓ done";
 				comp.setText(theme.fg("success", feedText));
@@ -203,7 +211,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 			}
 
 			onUpdate?.({
-				content: [{ type: "text", text: `${SPINNER_FRAMES[_spinnerIndex % SPINNER_FRAMES.length]} ${specialist.name}...` }],
+				content: [{ type: "text", text: `${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} ${specialist.name}...` }],
 				details: { status: "running", specialist: specialist.name },
 			});
 
@@ -212,17 +220,25 @@ The scope tells the coder exactly which files it's allowed to touch.`
 
 			// Dynamic status: delegating
 			const orchestratorUi: OrchestratorUi | undefined = ctx?.ui ? ctx.ui : undefined;
+			const verb = PRESENT_PARTICIPLE[specialist.name] || 'Working';
 			try {
 				if (orchestratorUi) {
 					orchestratorUi.setWorkingMessage(`Sending to ${specialist.name}...`);
-					orchestratorUi.setStatus("orchestrator", orchestratorUi.theme.fg("accent", "\u25cf Delegating"));
 				}
 			} catch {}
 
-			_orchestratorActivity = createOrchestratorActivity();
+			const stepName = specialist.name + ": " + params.task.substring(0, 60);
+			_orchestratorActivity = createOrchestratorActivity(stepName);
 			incrementDelegationCount();
-			addOrchestratorStep(_orchestratorActivity, specialist.name + ": " + params.task.substring(0, 60));
 			const startTime = Date.now();
+
+			// Dynamic status: subagent session starting
+			try {
+				if (orchestratorUi) {
+					orchestratorUi.setWorkingMessage(`${verb}...`);
+				}
+			} catch {}
+
 			const result = await runSubagent(
 				specialist, params.task, ctx.cwd,
 				{ modelRegistry: ctx.modelRegistry, model: ctx.model },
@@ -230,94 +246,97 @@ The scope tells the coder exactly which files it's allowed to touch.`
 			);
 			const elapsedMs = Date.now() - startTime;
 
+			// Dynamic status: subagent completed, sending result back
 			try {
-				// Dynamic status: analyzing output
-				try {
-					if (orchestratorUi) {
-						orchestratorUi.setWorkingMessage("Reviewing output...");
-						orchestratorUi.setStatus("orchestrator", orchestratorUi.theme.fg("accent", "\u25cf Analyzing"));
+				if (orchestratorUi) {
+					orchestratorUi.setWorkingMessage('Sending to orchestrator...');
+				}
+			} catch {}
+
+			// === Check for errors/abort BEFORE any parsing ===
+			const isAborted = signal?.aborted || false;
+			const isError = !result || !result.output || result.output.startsWith("[error]");
+			const hasError = isAborted || isError;
+
+			try {
+				// Only do analysis if no error
+				if (!hasError && result?.output) {
+					// Dynamic status: processing result
+					try {
+						if (orchestratorUi) {
+							orchestratorUi.setWorkingMessage('Processing...');
+						}
+					} catch {}
+
+					if (result.output) {
+						debugLog("delegate-tool: subagent completed", { specialist: params.specialist, outputLength: result.output.length });
 					}
-				} catch {}
 
-				if (result.output) {
-					debugLog("delegate-tool: subagent completed", { specialist: params.specialist, outputLength: result.output.length });
-				}
-
-				// Dynamic status: parsing findings/audit
-				try {
-					if (orchestratorUi) {
-						orchestratorUi.setWorkingMessage("Parsing findings...");
-						orchestratorUi.setStatus("orchestrator", orchestratorUi.theme.fg("accent", "\u25cf Parsing"));
+					const findings = extractFindingsFromOutput(result.output);
+					if (findings && findings.summary) {
+						const summaryParts = [`[Findings: ${findings.summary}]`];
+						if (findings.key_files.length > 0) summaryParts.push(`Files: ${findings.key_files.join(', ')}`);
+						if (findings.issues.length > 0 && findings.issues[0] !== 'none') summaryParts.push(`Issues: ${findings.issues.join('; ')}`);
+						if (findings.recommendation) summaryParts.push(`Next: ${findings.recommendation}`);
+						result.output = summaryParts.join('\n') + '\n\n' + result.output;
 					}
-				} catch {}
 
-				const findings = extractFindingsFromOutput(result.output);
-				if (findings && findings.summary) {
-					const summaryParts = [`[Findings: ${findings.summary}]`];
-					if (findings.key_files.length > 0) summaryParts.push(`Files: ${findings.key_files.join(', ')}`);
-					if (findings.issues.length > 0 && findings.issues[0] !== 'none') summaryParts.push(`Issues: ${findings.issues.join('; ')}`);
-					if (findings.recommendation) summaryParts.push(`Next: ${findings.recommendation}`);
-					result.output = summaryParts.join('\n') + '\n\n' + result.output;
-				}
+					// Prepend execution metadata for orchestrator visibility
+					const execStatus = result.output?.startsWith("[error]") ? "error" : "ok";
+					const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${result.turns || 0}, status=${execStatus}]`];
+					if (execStatus === "error") {
+						execMeta.push(`[Error: ${result.output.slice(0, 200)}]`);
+					}
+					result.output = execMeta.join('\n') + '\n\n' + result.output;
 
-				// Prepend execution metadata for orchestrator visibility
-				const execStatus = result.output?.startsWith("[error]") ? "error" : "ok";
-				const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${result.turns || 0}, status=${execStatus}]`];
-				if (execStatus === "error") {
-					execMeta.push(`[Error: ${result.output.slice(0, 200)}]`);
-				}
-				result.output = execMeta.join('\n') + '\n\n' + result.output;
-
-				// Prepend tool call trail for orchestrator visibility
-				if (result.toolCallTrail && result.toolCallTrail.length > 0) {
-					const trail = result.toolCallTrail.map(t =>
-						`${t.completed ? '✓' : '⚠'} ${t.tool}${t.outputPreview ? ` → ${t.outputPreview}` : ''}`
-					).join('\n');
-					result.output = `[Tool Calls (${result.toolCallTrail.length}):
+					// Prepend tool call trail for orchestrator visibility
+					if (result.toolCallTrail && result.toolCallTrail.length > 0) {
+						const trail = result.toolCallTrail.map(t =>
+							`${t.completed ? '✓' : '⚠'} ${t.tool}${t.outputPreview ? ` → ${t.outputPreview}` : ''}`
+						).join('\n');
+						result.output = `[Tool Calls (${result.toolCallTrail.length}):
 ${trail}
 ]
 
 ` + result.output;
+					}
+
+					// Extract audit trail
+					const audit = extractAuditFromOutput(result.output);
+					if (audit) {
+						const auditParts = [];
+						if (audit.problems.length > 0 && audit.problems[0] !== 'none') {
+							auditParts.push(`Problems: ${audit.problems.join('; ')}`);
+							auditParts.push(`Resolution: ${audit.resolution.join('; ')}`);
+						}
+						if (!audit.scope_stayed) {
+							auditParts.push(`Scope deviation: ${audit.scope_notes}`);
+						}
+						if (auditParts.length > 0) {
+							result.output = `[Audit: ${auditParts.join(' | ')}]\n` + result.output;
+						}
+					}
+
+					// Build status note — first line of returned text so orchestrator sees outcome at a glance
+					const turns = result.turns || 0;
+					const toolCalls = result.toolCallTrail?.length || 0;
+					const outcomeStatus = result.output?.startsWith("[error]") ? "error" : "ok";
+					const aborted = signal?.aborted || false;
+					const turnWord = turns === 1 ? "turn" : "turns";
+					const toolWord = toolCalls === 1 ? "tool call" : "tool calls";
+					let statusNote = "";
+					if (outcomeStatus === "error") {
+						statusNote = `✗ Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+					} else if (aborted) {
+						statusNote = `■ Aborted (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+					} else {
+						statusNote = `✓ Completed (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+					}
+					result.output = `${statusNote}\n${result.output}`;
 				}
 
-				// Extract audit trail
-				const audit = extractAuditFromOutput(result.output);
-				if (audit) {
-					const auditParts = [];
-					if (audit.problems.length > 0 && audit.problems[0] !== 'none') {
-						auditParts.push(`Problems: ${audit.problems.join('; ')}`);
-						auditParts.push(`Resolution: ${audit.resolution.join('; ')}`);
-					}
-					if (!audit.scope_stayed) {
-						auditParts.push(`Scope deviation: ${audit.scope_notes}`);
-					}
-					if (auditParts.length > 0) {
-						result.output = `[Audit: ${auditParts.join(' | ')}]\n` + result.output;
-					}
-				}
-
-				// Build status note — first line of returned text so orchestrator sees outcome at a glance
-				const turns = result.turns || 0;
-				const toolCalls = result.toolCallTrail?.length || 0;
-				const outcomeStatus = result.output?.startsWith("[error]") ? "error" : "ok";
-				const aborted = signal?.aborted || false;
-				const turnWord = turns === 1 ? "turn" : "turns";
-				const toolWord = toolCalls === 1 ? "tool call" : "tool calls";
-				let statusNote = "";
-				if (outcomeStatus === "error") {
-					statusNote = `✗ Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
-				} else if (aborted) {
-					statusNote = `■ Aborted (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
-				} else {
-					statusNote = `✓ Completed (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
-				}
-				result.output = `${statusNote}\n${result.output}`;
-
-				// NOTE: scope stays cached after coder runs (not cleared) so user can
-				// re-iterate on same files without re-calling scout.
-				// Scope is cleared on session reset (before_agent_start).
-
-				if (result.output?.startsWith("[error]")) {
+				// Mark plan step — now always runs correctly
+				if (hasError) {
 					errorPlanStep(ctx);
 				} else {
 					completePlanStep(ctx);
@@ -332,19 +351,18 @@ ${trail}
 				try {
 					if (orchestratorUi) {
 						orchestratorUi.setWorkingMessage();
-						orchestratorUi.setStatus("orchestrator", undefined);
 					}
 				} catch {}
 			}
 
 			return {
-				content: [{ type: "text", text: result.output }],
+				content: [{ type: "text", text: result?.output || "[error] Subagent returned no output" }],
 				details: {
 					specialist: specialist.name,
 					task: params.task,
 					status: "done",
-					turns: result.turns,
-					outputLength: result.output.length,
+					turns: result?.turns || 0,
+					outputLength: result?.output?.length || 0,
 				},
 			};
 		},
