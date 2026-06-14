@@ -600,3 +600,30 @@ Verified against actual pi SDK source code:
 - **lint-guard.ts template:** `~/.pi/agent/extensions/lint-guard.ts` — blocking pattern
 - **Pi SDK audit:** `agent-session.js` + `types.d.ts` + `extensions.md` — verified tool_call
   isolation, loader behavior, process architecture
+
+---
+
+## v2: Adaptive Gating
+
+After the refactoring stabilized, the next evolution was **adaptive gating** — enforcing the scout-first pattern at the tool level rather than relying on prompts.
+
+### Motivation
+The orchestrator's system prompt told the LLM to "analyze first, then delegate scout, then coder" — but this was soft guidance. LLMs frequently skipped the scout step, leading to:
+- Hallucinated file paths
+- Missing dependency analysis
+- Architectural inconsistencies
+
+### Implementation
+- **delegate-tool.ts**: Added scope gate check before coder execution. If `_cachedScope` is null, returns block message.
+- **scope-guard.ts**: Added `gateMode` awareness. `relaxed` mode skips `maxLinesPerFile` for single-file changes.
+- **subagent-runner.ts**: Derives `gateMode` from `changeType` when writing scope file.
+- **specialists.ts**: Scout prompt now requires structured `## Scope` output with `changeType` field.
+
+### Key Design Decisions
+1. **Block, don't warn**: Research showed soft prompts degrade under context pressure (Constraint Decay paper). Hard block at tool level is deterministic.
+2. **Persist scope across coder calls**: Debugging requires multiple code → test cycles. Clearing scope after each coder call would force re-scouting.
+3. **changeType drives gateMode**: Scout judges complexity. Single-file changes get relaxed enforcement (no line limits). Multi-file changes get strict enforcement.
+4. **Self-correction, not crash**: Block message is informative — tells LLM exactly what to do next. Single-turn recovery.
+
+### Relationship to scope-guard.ts
+Scope guard is a **separate extension** with zero imports from orchestrator. It reads `.pi/scope.json` from filesystem. Adaptive gating is an orchestrator-level concern (which subagent to call) — scope guard handles enforcement (which files to allow).

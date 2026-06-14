@@ -208,7 +208,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...originalBash,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const result = await originalBash.execute(toolCallId, params, signal, onUpdate, ctx);
+			const result = await originalBash.execute(toolCallId, params, signal, onUpdate);
 			if (!enabled || !result.content) return result;
 
 			const text = result.content
@@ -229,7 +229,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...originalRead,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const result = await originalRead.execute(toolCallId, params, signal, onUpdate, ctx);
+			const result = await originalRead.execute(toolCallId, params, signal, onUpdate);
 			if (!enabled || !result.content) return result;
 
 			const text = result.content
@@ -265,7 +265,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...originalGrep,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const result = await originalGrep.execute(toolCallId, params, signal, onUpdate, ctx);
+			const result = await originalGrep.execute(toolCallId, params, signal, onUpdate);
 			if (!enabled || !result.content) return result;
 
 			const text = result.content
@@ -285,7 +285,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...originalFind,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const result = await originalFind.execute(toolCallId, params, signal, onUpdate, ctx);
+			const result = await originalFind.execute(toolCallId, params, signal, onUpdate);
 			if (!enabled || !result.content) return result;
 
 			const text = result.content
@@ -305,7 +305,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		...originalLs,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const result = await originalLs.execute(toolCallId, params, signal, onUpdate, ctx);
+			const result = await originalLs.execute(toolCallId, params, signal, onUpdate);
 			if (!enabled || !result.content) return result;
 
 			const text = result.content

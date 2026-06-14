@@ -13,13 +13,15 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, isAbsolute } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 interface Scope {
 	filesToModify: string[];
 	filesToCreate: string[];
+	changeType?: "single-file" | "multi-file";
 	maxLinesPerFile: number;
+	gateMode?: "strict" | "relaxed";
 }
 
 /** Throttle re-reads: check file at most once per N ms */
@@ -56,9 +58,12 @@ function isPathInScope(filePath: string, scope: Scope, cwd: string): boolean {
 	const allApproved = [...scope.filesToModify, ...scope.filesToCreate];
 
 	for (const approved of allApproved) {
-		if (approved.endsWith("/*") && relPath.startsWith(approved.slice(0, -1))) return true;
-		if (approved === relPath) return true;
-		if (relPath.endsWith(`/${approved}`)) return true;
+		// Normalize: if approved is absolute, convert to relative
+		const approvedRel = isAbsolute(approved) ? relative(cwd, approved) : approved;
+
+		if (approvedRel.endsWith("/*") && relPath.startsWith(approvedRel.slice(0, -1))) return true;
+		if (approvedRel === relPath) return true;
+		if (relPath.endsWith(`/${approvedRel}`)) return true;
 	}
 	return false;
 }
@@ -85,8 +90,8 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		// Check line count limit for write
-		if (event.toolName === "write" && scope.maxLinesPerFile > 0) {
+		// Check line count limit for write (skip in relaxed mode)
+		if (event.toolName === "write" && scope.maxLinesPerFile > 0 && scope.gateMode !== "relaxed") {
 			const content = ((event.input as any)?.content || "") as string;
 			const lines = content.split("\n").length;
 			if (lines > scope.maxLinesPerFile) {

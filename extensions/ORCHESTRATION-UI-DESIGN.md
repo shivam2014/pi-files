@@ -369,3 +369,48 @@ If a user needs direct tool access:
 1. Temporarily move `orchestrator.ts` out of `~/.pi/agent/extensions/`
 2. Or add a `/direct` command that temporarily disables enforcement
 3. Or use `pi -e ./my-task.ts` to run a script without extensions
+
+---
+
+## Adaptive Gating (v2)
+
+### Problem
+Orchestrator agents often skip the planning phase and call `delegate(coder, ...)` directly, bypassing codebase analysis. This leads to hallucinated file paths, missing dependencies, and architectural inconsistencies.
+
+### Solution: Scope-First Enforcement
+The `delegate()` tool enforces a **scope-first gate**: `delegate(coder, ...)` is blocked unless a prior `delegate(scout, ...)` call has established a structured `## Scope` output.
+
+Flow:
+```
+User request
+  → delegate(scout, "investigate ...")
+    → scout reads codebase, outputs ## Scope with:
+      - filesToModify: string[]
+      - filesToCreate: string[]
+      - changeType: "single-file" | "multi-file"
+      - maxLinesPerFile: number
+  → delegate(coder, "implement ...")
+    → ALLOWED only if scope exists. Coder locked to scope's file list.
+  → delegate(reviewer, "review ...")
+    → ALLOWED (read-only, no scope check)
+```
+
+### Gate Modes
+| Mode | Trigger | Enforcement |
+|------|---------|-------------|
+| `strict` | changeType: "multi-file" | Full scope enforcement + maxLinesPerFile limit |
+| `relaxed` | changeType: "single-file" | Files allowed only. Line limit skipped. |
+
+### Scope Cache Lifecycle
+- **Set**: When scout subagent completes and `## Scope` is extracted from output
+- **Persisted**: Across multiple coder calls (supports debugging iteration)
+- **Cleared**: On `before_agent_start` event (new session)
+
+### Self-Correction Flow
+When the LLM calls `delegate(coder, ...)` without prior scout:
+1. Tool returns block message: "Scope required before coding"
+2. LLM sees the message, calls `delegate(scout, ...)` instead
+3. Scout outputs scope
+4. LLM retries `delegate(coder, ...)` — now allowed
+
+This is a single-turn self-correction, not a hard crash.
