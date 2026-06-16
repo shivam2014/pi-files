@@ -7,6 +7,7 @@ node_modules/
 
 # Temp files
 *.log
+*.tmp
 /tmp/
 
 # Session data (don't sync sessions)
