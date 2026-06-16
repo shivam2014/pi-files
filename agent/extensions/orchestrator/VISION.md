@@ -220,3 +220,9 @@ Without the peek, the user sees only orchestration-level steps. With the peek, t
 | Keyboard shortcut for peek | ✅ Ctrl+Q | P1 |
 | Token-efficient rendering (9-line budget) | ⚠️ Partial — some overflow edge cases | P1 |
 | Status bar subagent count | ❌ Not implemented | P2 |
+
+## See Also
+
+- [BASH-TOKEN-SAVER-SPEC.md](./BASH-TOKEN-SAVER-SPEC.md) — RTK integration, token-saver compression, per-specialist bash restriction approach
+- [SPEC-UI.md](./SPEC-UI.md) — 3-layer UI/UX rendering specification
+- [LINT-SPEC.md](./LINT-SPEC.md) — Deterministic lint guard specification
