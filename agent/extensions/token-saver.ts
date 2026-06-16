@@ -20,6 +20,7 @@
 import { createHash } from "node:crypto";
 import { createBashTool, createReadTool, createGrepTool, createFindTool, createLsTool } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { spawnSync } from "node:child_process";
 
 // ============================================================================
 // ANSI regex
@@ -192,6 +193,51 @@ let currentTerseMode: "off" | "lite" | "full" | "ultra" = "full";
 let enabled = true;
 
 // ============================================================================
+// RTK (Rust Token Killer) integration
+// ============================================================================
+
+let rtkAvailable = false;
+let rtkEnabled = true;
+let rtkWarned = false;
+
+function checkRtkVersion(): boolean {
+	try {
+		const result = spawnSync("rtk", ["--version"], {
+			timeout: 2000,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		if (result.status !== 0) return false;
+		const version = (result.stdout || "").trim();
+		const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
+		if (!match) return false;
+		const major = parseInt(match[1], 10);
+		const minor = parseInt(match[2], 10);
+		return major > 0 || (major === 0 && minor >= 23);
+	} catch {
+		return false;
+	}
+}
+
+function rtkRewrite(command: string): string | null {
+	try {
+		const result = spawnSync("rtk", ["rewrite", command], {
+			timeout: 2000,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		// Exit codes: 0=rewritten, 1=no rewrite, 2=deny, 3=rewritten advisory
+		if (result.status === 0 || result.status === 3) {
+			const output = (result.stdout || "").trim();
+			return output || null;
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+// ============================================================================
 // The Extension
 // ============================================================================
 
@@ -200,10 +246,12 @@ export default function (pi: ExtensionAPI) {
 	// ── 0. Visual feedback on load ────────────────────────────────────────
 
 	pi.on("session_start", async () => {
+		rtkAvailable = checkRtkVersion();
 		if (enabled) {
+			const rtkStatus = rtkAvailable ? "rtk ✓" : "";
 			pi.sendMessage({
 				customType: "token-saver-status",
-				content: `[token-saver] Active — ${currentTerseMode} mode`,
+				content: `[token-saver] Active — ${currentTerseMode} mode${rtkStatus ? ` (${rtkStatus})` : ""}`,
 				display: true,
 			}, { deliverAs: "steer" });
 		}
@@ -223,8 +271,15 @@ export default function (pi: ExtensionAPI) {
 
 	const cwd = process.cwd();
 
-	// ── bash: ANSI strip + tail 80 lines ──
-	const originalBash = createBashTool(cwd);
+	// ── bash: RTK rewrite + ANSI strip + tail 80 lines ──
+	const originalBash = createBashTool(cwd, {
+		spawnHook: ({ command, cwd, env }) => {
+			if (!rtkEnabled || !rtkAvailable) return { command, cwd, env };
+			if (command.startsWith("rtk ")) return { command, cwd, env };
+			const rewritten = rtkRewrite(command);
+			return { command: rewritten ?? command, cwd, env };
+		},
+	});
 	pi.registerTool({
 		...originalBash,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -386,8 +441,33 @@ export default function (pi: ExtensionAPI) {
 				...Object.entries(BUDGETS).map(
 					([name, b]) => `  ${name}: ${b.maxLines} lines${b.stripAnsi ? " (ansi strip)" : ""}${b.tailOnly ? " (tail)" : ""}`
 				),
+				`RTK: ${rtkAvailable ? "✓" : "✗"} (rewrite ${rtkEnabled ? "ON" : "OFF"})`,
 			];
 			ctx.ui.notify(lines.join("\n"), "info");
+		},
+	});
+
+	pi.registerCommand("rtk", {
+		description: "Toggle RTK rewrite (on/off/status)",
+		handler: async (args, ctx) => {
+			const arg = args.trim().toLowerCase();
+			if (!rtkAvailable) {
+				ctx.ui.notify("RTK binary not found. Install rtk: brew install rtk-ai/rtk/rtk", "warn");
+				return;
+			}
+			if (arg === "on") {
+				rtkEnabled = true;
+				ctx.ui.notify("RTK rewrite: ON", "info");
+			} else if (arg === "off") {
+				rtkEnabled = false;
+				ctx.ui.notify("RTK rewrite: OFF", "info");
+			} else {
+				ctx.ui.notify(
+					`RTK: ${rtkAvailable ? "✓ binary found" : "✗ binary missing"} | rewrite: ${rtkEnabled ? "ON" : "OFF"}\n` +
+					`Usage: /rtk [on|off]`,
+					"info"
+				);
+			}
 		},
 	});
 }

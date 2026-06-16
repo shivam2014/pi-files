@@ -14912,11 +14912,11 @@
     "83cf1905570d400c": {
       "nyro/deepseek-v4-flash-2": {
         "day": "2026-06-16",
-        "totalRequests": 34,
-        "hitRequests": 26,
-        "cachedInputTokens": 729856,
+        "totalRequests": 49,
+        "hitRequests": 40,
+        "cachedInputTokens": 1665024,
         "cacheWriteInputTokens": 0,
-        "totalInputTokens": 763950
+        "totalInputTokens": 1784756
       }
     },
     "530d13b4fe2c6270": {
@@ -15062,11 +15062,101 @@
     "30d56f3ca97944a4": {
       "nyro/deepseek-v4-flash-2": {
         "day": "2026-06-16",
-        "totalRequests": 18,
-        "hitRequests": 18,
-        "cachedInputTokens": 94976,
+        "totalRequests": 28,
+        "hitRequests": 28,
+        "cachedInputTokens": 278784,
         "cacheWriteInputTokens": 0,
-        "totalInputTokens": 100400
+        "totalInputTokens": 299584
+      }
+    },
+    "8cc58e2736a93c9e": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 11,
+        "hitRequests": 11,
+        "cachedInputTokens": 81408,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 96195
+      }
+    },
+    "ef14232da45ae2d6": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 3,
+        "hitRequests": 3,
+        "cachedInputTokens": 8960,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 12859
+      }
+    },
+    "55c9fd9d3bb0e4b8": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 14,
+        "hitRequests": 14,
+        "cachedInputTokens": 389760,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 431912
+      }
+    },
+    "3ee8de9091b42fd5": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 22,
+        "hitRequests": 22,
+        "cachedInputTokens": 799744,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 860153
+      }
+    },
+    "2e2a51fd54e911b3": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 10,
+        "hitRequests": 10,
+        "cachedInputTokens": 292096,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 329898
+      }
+    },
+    "e21ababb1c08b83d": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 8,
+        "hitRequests": 8,
+        "cachedInputTokens": 65664,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 76255
+      }
+    },
+    "5591ec500e6c8ae1": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 17,
+        "hitRequests": 17,
+        "cachedInputTokens": 263296,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 277821
+      }
+    },
+    "9e6780abe5eca609": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 55,
+        "hitRequests": 55,
+        "cachedInputTokens": 1412992,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 1441466
+      }
+    },
+    "e72cfa1fc949c4f5": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 2,
+        "hitRequests": 2,
+        "cachedInputTokens": 4608,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 6710
       }
     }
   },

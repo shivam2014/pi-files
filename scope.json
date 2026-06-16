@@ -3,12 +3,9 @@
     "~/.pi",
     "~/pi-files"
   ],
-  "filesToModify": [
-    "~/.pi/agent/settings.json",
-    "~/pi-files/agent/settings.json"
-  ],
+  "filesToModify": [],
   "filesToCreate": [],
-  "boundaries": "Only remove npm:pi-restrict-bash from settings.json packages array in both locations",
+  "boundaries": "Sync ~/.pi to ~/pi-files and commit",
   "requiresApprovalBeyondScope": true,
   "maxFiles": 10,
   "gateMode": "strict"

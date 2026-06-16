@@ -1,11 +1,11 @@
 {
-  "goal": "Remove `pi-restrict-bash` npm package reference from settings.json in two loc...",
+  "goal": "Sync ~/.pi to ~/pi-files and commit the changes.\n\nSteps:\n1. rsync: `rsync -av...",
   "steps": [
     {
-      "label": "coder: Remove `pi-restrict-bash` npm package reference from sett...",
+      "label": "coder: Sync ~/.pi to ~/pi-files and commit the changes.\n\nSteps:\n...",
       "completed": false,
       "errored": false
     }
   ],
-  "startTime": 1781640824886
+  "startTime": 1781642280603
 }

@@ -86,7 +86,7 @@ export const SPECIALISTS: Record<string, Specialist> = {
 	scout: {
 		name: "scout",
 		description: "Read-only codebase investigator. Uses grep/find/ls tools to locate code, read to examine files. Ideal for architecture discovery, bug investigation, code tracing, and verifying file contents.",
-		tools: ["read", "grep", "find", "ls"],
+		tools: ["read", "grep", "find", "ls", "git-read", "gh"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 IMPORTANT: Before doing any work, you MUST call planSteps() to register your plan. This is REQUIRED for the orchestrator to track progress. Example:

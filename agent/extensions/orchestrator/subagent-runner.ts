@@ -39,6 +39,7 @@ import { compressOutput, inspectFeedState, snapshotFeedRender } from "./activity
 import { _spinnerIndex, resetSpinner } from "./spinner-state.ts";
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { registerPeekFeed, updatePeek, updatePeekFeed } from "./peek-overlay.ts";
+import { gitReadTool, ghTool } from "./scout-tools.ts";
 
 /** Optional orchestrator UI for dynamic status messages */
 export interface OrchestratorUi {
@@ -284,7 +285,12 @@ export async function runSubagent(
 			cwd,
 			model,
 			tools: allTools,
-			customTools: [planStepsTool, advanceStepTool, reportFindingTool],
+			customTools: [
+				planStepsTool,
+				advanceStepTool,
+				reportFindingTool,
+				...(specialist.name === "scout" ? [gitReadTool, ghTool] : []),
+			],
 			excludeTools,
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
