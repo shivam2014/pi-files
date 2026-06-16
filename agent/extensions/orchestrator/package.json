@@ -1,9 +1,0 @@
-{
-  "name": "orchestrator-extension",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "node node_modules/vitest/vitest.mjs run",
-    "typecheck": "tsc --noEmit"
-  }
-}
