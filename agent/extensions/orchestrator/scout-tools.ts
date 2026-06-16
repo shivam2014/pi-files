@@ -78,11 +78,11 @@ const GH_READ_COMMANDS = new Set([
 ]);
 
 const GH_SEARCH_SUBCOMMANDS = new Set(["issues", "prs", "repos", "code", "commits"]);
-const GH_REPO_SUBCOMMANDS = new Set(["view", "list", "clone"]);
+const GH_REPO_SUBCOMMANDS = new Set(["view", "list"]);
 const GH_ISSUE_SUBCOMMANDS = new Set(["list", "view", "status"]);
 const GH_PR_SUBCOMMANDS = new Set(["list", "view", "status", "diff", "checks"]);
 const GH_RELEASE_SUBCOMMANDS = new Set(["list", "view"]);
-const GH_AUTH_SUBCOMMANDS = new Set(["status", "login", "logout", "token", "refresh"]);
+const GH_AUTH_SUBCOMMANDS = new Set(["status"]);
 
 export const ghTool = defineTool({
 	name: "gh",
