@@ -52,7 +52,14 @@ function writeScopeFile(cwd: string, scope?: Scope | null): void {
 	if (!scope) return;
 	const dir = join(cwd, ".pi");
 	try { mkdirSync(dir, { recursive: true }); } catch {}
-	writeFileSync(join(dir, "scope.json"), JSON.stringify(scope, null, 2));
+	// Set defaults for hybrid scope fields
+	const scopeWithDefaults = {
+		...scope,
+		directories: scope.directories ?? [],
+		maxFiles: scope.maxFiles ?? 10,
+		requiresApprovalBeyondScope: scope.requiresApprovalBeyondScope ?? true,
+	};
+	writeFileSync(join(dir, "scope.json"), JSON.stringify(scopeWithDefaults, null, 2));
 }
 
 /**

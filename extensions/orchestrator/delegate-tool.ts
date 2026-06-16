@@ -40,12 +40,15 @@ function extractScopeFromOutput(output: string): Scope | null {
 	if (jsonMatch) {
 		try {
 			const parsed = JSON.parse(jsonMatch[1]);
-			if (parsed.filesToModify || parsed.filesToCreate) {
+			if (parsed.filesToModify || parsed.filesToCreate || parsed.directories) {
 				const filesToModify: string[] = parsed.filesToModify || [];
 				const filesToCreate: string[] = parsed.filesToCreate || [];
 				return {
 					filesToModify,
 					filesToCreate,
+					directories: parsed.directories || [],
+					maxFiles: parsed.maxFiles ?? 10,
+					requiresApprovalBeyondScope: parsed.requiresApprovalBeyondScope ?? true,
 					changeType: (filesToModify.length + filesToCreate.length) <= 1 ? "single-file" : "multi-file",
 					maxLinesPerFile: parsed.maxLinesPerFile || 400,
 				};
@@ -83,6 +86,9 @@ function extractScopeFromOutput(output: string): Scope | null {
 			return {
 				filesToModify,
 				filesToCreate,
+				directories: [],
+				maxFiles: 10,
+				requiresApprovalBeyondScope: true,
 				changeType: (filesToModify.length + filesToCreate.length) <= 1 ? "single-file" : "multi-file",
 				maxLinesPerFile,
 			};

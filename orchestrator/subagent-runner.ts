@@ -33,9 +33,9 @@ import {
 	toolCallToSubstep,
 	renderSubstepLines,
 } from "./activity-feed.ts";
-import { compressOutput } from "./activity-feed.ts";
+import { compressOutput, inspectFeedState, snapshotFeedRender } from "./activity-feed.ts";
 import { _spinnerIndex } from "./spinner-state.ts";
-import { updatePlanStepDetail } from "./plan-panel.ts";
+import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { registerPeekFeed, updatePeek, updatePeekFeed } from "./peek-overlay.ts";
 
 /** Optional orchestrator UI for dynamic status messages */
@@ -67,8 +67,12 @@ function writeScopeFile(cwd: string, scope?: Scope | null): void {
 	try { mkdirSync(dir, { recursive: true }); } catch {}
 
 	// Derive gateMode from changeType if not set
+	// Set defaults for hybrid scope fields
 	const scopeWithGate = {
 		...scope,
+		directories: scope.directories ?? [],
+		maxFiles: scope.maxFiles ?? 10,
+		requiresApprovalBeyondScope: scope.requiresApprovalBeyondScope ?? true,
 		gateMode: scope.gateMode ?? (scope.changeType === "single-file" ? "relaxed" : "strict"),
 	};
 
@@ -189,6 +193,7 @@ export async function runSubagent(
 			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 				output += event.assistantMessageEvent.delta;
 				feed = parseTextForFeed(feed, event.assistantMessageEvent.delta);
+				recordTimelineFrame("step_started", inspectFeedState(feed), snapshotFeedRender(feed));
 				updatePeekFeed(feed);
 				updatePeek(event.assistantMessageEvent.delta);
 				const textDelta = orchestratorActivity
@@ -206,6 +211,7 @@ export async function runSubagent(
 					turns++;
 					if (feed.steps.length > 0 && feed.currentStep < feed.steps.length) {
 						feed = completeCurrentStep(feed);
+					recordTimelineFrame("step_completed", inspectFeedState(feed), snapshotFeedRender(feed));
 					updatePeekFeed(feed);
 					}
 					const text = orchestratorActivity
@@ -236,6 +242,7 @@ export async function runSubagent(
 			if (event.type === "tool_execution_start") {
 				const substepLabel = toolCallToSubstep(event.toolName, event.args);
 				feed = setToolDetail(feed, substepLabel);
+				recordTimelineFrame("tool_start", inspectFeedState(feed), snapshotFeedRender(feed));
 				updatePeekFeed(feed);
 				updatePeek(`\u2192 ${event.toolName}\n`);
 				// Pass substep history lines to plan panel immediately
@@ -297,6 +304,7 @@ export async function runSubagent(
 				} catch {}
 				feed = clearToolDetail(feed);
 				feed = completeLastSubstep(feed, outputPreview);
+				recordTimelineFrame("tool_end", inspectFeedState(feed), snapshotFeedRender(feed));
 				updatePeekFeed(feed);
 				updatePeek(`\u2713 ${event.toolName}\n`);
 				// Update plan panel with substep history lines

@@ -886,3 +886,42 @@ export function compressOutput(output: string): string {
 	result = result.trim();
 	return result;
 }
+
+
+// ============================================================================
+// Feed snapshot helpers — used by plan-panel timeline
+// ============================================================================
+
+/**
+ * Return a JSON-safe snapshot of the activity feed state.
+ * Strips runtime-only fields (rawText) to keep snapshots compact.
+ */
+export function inspectFeedState(state: ActivityFeedState): Record<string, unknown> | null {
+	if (!state) return null;
+	return {
+		goal: state.goal,
+		steps: state.steps.map(s => ({
+			label: s.label,
+			completed: s.completed,
+			substeps: s.substeps.map(sub => ({
+				label: sub.label,
+				completed: sub.completed,
+				outputPreview: sub.outputPreview,
+				isReport: sub.isReport,
+				toolDetail: sub.toolDetail,
+			})),
+		})),
+		currentStep: state.currentStep,
+		errored: state.errored,
+		errorMessage: state.errorMessage,
+	};
+}
+
+/**
+ * Return the rendered activity feed string for this state.
+ * Uses the specialist name "subagent" for a generic label.
+ */
+export function snapshotFeedRender(state: ActivityFeedState): string {
+	if (!state) return "";
+	return renderActivityFeed("subagent", state);
+}

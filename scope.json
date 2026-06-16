@@ -1,0 +1,12 @@
+{
+  "filesToModify": [],
+  "filesToCreate": [],
+  "directories": [
+    "~/.pi",
+    "~/pi-files"
+  ],
+  "boundaries": "Sync ~/.pi to ~/pi-files. Use rsync or cp. Then git add/commit/push.",
+  "requiresApprovalBeyondScope": true,
+  "maxFiles": 100,
+  "gateMode": "strict"
+}

@@ -7,6 +7,7 @@
  * Widget sits above editor, doesn't consume chat scroll space.
  */
 
+import { writeFileSync } from "node:fs";
 import { shortenLabel } from "../token-saver.ts";
 import { formatDuration } from "./ui-utils.ts";
 import type { PlanStep } from "./types.ts";
@@ -309,6 +310,8 @@ export function hasActivePlan(): boolean {
 
 export function clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 	if (_activeDelegations > 0) return;
+	dumpTimelineToDisk();
+	_sessionId = null;
 	stopPlanTimer();
 	planState = null;
 	_lastWidgetContent = null;
@@ -419,6 +422,7 @@ export function setupPlanPanel(
 	stepLabels: string[],
 	ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } },
 ): void {
+	_sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 	// Preserve completion state from existing in-memory plan — only if same goal
 	const sameGoal = planState?.goal === goal;
 	const oldSteps = sameGoal ? (planState?.steps || []) : [];
@@ -512,4 +516,101 @@ export function renderPlanStatusText(): string {
 	const completed = steps.filter((s) => s.completed).length;
 	const dots = steps.filter((s) => s.completed || s.errored).map((s) => (s.errored ? "✗" : "●")).join("");
 	return `⚡ ${shortenLabel(goal)} ${dots} [${completed}/${total}] ${formatDuration(elapsed)}`;
+}
+// ============================================================================
+// Timeline — ordered frame history for orchestrator debug view
+// ============================================================================
+
+const MAX_TIMELINE_FRAMES = 200;
+
+export interface TimelineEntry {
+	t: number;
+	event: string;
+	render: string;
+	state: Record<string, unknown> | null;
+	feedState?: Record<string, unknown> | null;
+	feedRender?: string;
+}
+
+const _timeline: TimelineEntry[] = [];
+let _timelineStart = Date.now();
+let _sessionId: string | null = null;
+
+/** Snapshot current plan render lines as single string. */
+function snapshotPlanRender(): string {
+	return renderPlanLines().join("\n");
+}
+
+/** Snapshot current plan state as JSON-safe record. */
+function inspectPlanState(): Record<string, unknown> | null {
+	if (!planState) return null;
+	return {
+		goal: planState.goal,
+		steps: planState.steps.map(s => ({
+			label: s.label,
+			completed: s.completed,
+			active: s.active,
+			errored: s.errored,
+		})),
+		startTime: planState.startTime,
+	};
+}
+
+/**
+ * Record a frame in the shared timeline.
+ * Called by subagent-runner to push feed state snapshots alongside plan state.
+ */
+export function recordTimelineFrame(
+	event: string,
+	feedState?: Record<string, unknown> | null,
+	feedRender?: string,
+): void {
+	if (_timeline.length >= MAX_TIMELINE_FRAMES) _timeline.shift();
+	_timeline.push({
+		t: Date.now() - _timelineStart,
+		event,
+		render: snapshotPlanRender(),
+		state: inspectPlanState(),
+		...(feedState !== undefined ? { feedState } : {}),
+		...(feedRender !== undefined ? { feedRender } : {}),
+	});
+}
+
+
+
+/** Return all recorded timeline entries. */
+export function getTimeline(): TimelineEntry[] {
+	return _timeline;
+}
+
+/** Return first and last timeline entries for diff inspection. */
+export function getTimelineDiff(): { first: TimelineEntry | null; last: TimelineEntry | null; count: number } {
+	return {
+		first: _timeline.length > 0 ? _timeline[0] : null,
+		last: _timeline.length > 0 ? _timeline[_timeline.length - 1] : null,
+		count: _timeline.length,
+	};
+}
+
+/**
+ * Dump timeline to disk as JSON when a plan session completes.
+ * Writes to /tmp/orchestrator-timeline-<sessionId>.json
+ */
+export function dumpTimelineToDisk(): void {
+	if (_timeline.length === 0) return;
+	const id = _sessionId ?? "unknown";
+	const path = "/tmp/orchestrator-timeline-" + id + ".json";
+	try {
+		const data = JSON.stringify({
+			sessionId: id,
+			recordedAt: Date.now(),
+			totalFrames: _timeline.length,
+			events: getTimeline(),
+			diff: getTimelineDiff(),
+		}, null, 2);
+		writeFileSync(path, data, "utf-8");
+		console.error("[timeline] " + _timeline.length + " frames -> " + path);
+	} catch (e) {
+		console.error("[timeline] failed to write: " + e);
+	}
 }

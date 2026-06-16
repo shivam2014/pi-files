@@ -19,6 +19,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 interface Scope {
 	filesToModify: string[];
 	filesToCreate: string[];
+	directories: string[];
+	maxFiles: number;
+	requiresApprovalBeyondScope: boolean;
 	changeType?: "single-file" | "multi-file";
 	maxLinesPerFile: number;
 	gateMode?: "strict" | "relaxed";
@@ -53,6 +56,9 @@ function readScope(cwd: string): Scope | null {
 	}
 }
 
+/** Track files touched during this session for directory-level count enforcement */
+const _touchedFiles: string[] = [];
+
 function isPathInScope(filePath: string, scope: Scope, cwd: string): boolean {
 	const relPath = relative(cwd, filePath);
 	const allApproved = [...scope.filesToModify, ...scope.filesToCreate];
@@ -68,6 +74,21 @@ function isPathInScope(filePath: string, scope: Scope, cwd: string): boolean {
 	return false;
 }
 
+function isPathAllowed(path: string, scope: Scope, touchedFiles: string[]): boolean {
+	// Direct file allowlist check
+	if (scope.filesToModify.includes(path)) return true;
+	if (scope.filesToCreate.includes(path)) return true;
+
+	// Directory-level check
+	for (const dir of scope.directories) {
+		if (path.startsWith(dir)) {
+			const touchedCount = touchedFiles.filter(f => f.startsWith(dir)).length;
+			if (touchedCount < scope.maxFiles) return true;
+		}
+	}
+	return false;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "write" && event.toolName !== "edit") return;
@@ -78,16 +99,26 @@ export default function (pi: ExtensionAPI) {
 		const path = ((event.input as any)?.path || (event.input as any)?.file_path || "") as string;
 		if (!path) return;
 
-		// Check file is in approved scope
-		if (!isPathInScope(path, scope, ctx.cwd)) {
+		// Check file is in approved scope (both direct file-list and directory-level)
+		const inScope = isPathInScope(path, scope, ctx.cwd);
+		const allowed = inScope || isPathAllowed(path, scope, _touchedFiles);
+
+		if (!allowed) {
 			return {
 				block: true,
 				reason:
 					`[scope-guard] File not in approved scope: ${path}\n` +
 					`Approved to modify: ${scope.filesToModify.join(", ") || "(none)"}\n` +
 					`Approved to create: ${scope.filesToCreate.join(", ") || "(none)"}\n` +
+					`Directories allowed: ${scope.directories.join(", ") || "(none)"}\n` +
+					`Max files per directory: ${scope.maxFiles}\n` +
 					`Request scope expansion if needed.`,
 			};
+		}
+
+		// Track touched files for directory-level count enforcement
+		if (!_touchedFiles.includes(path)) {
+			_touchedFiles.push(path);
 		}
 
 		// Check line count limit for write (skip in relaxed mode)

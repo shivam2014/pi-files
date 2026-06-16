@@ -89,6 +89,9 @@ export type ScopeGateMode = "strict" | "relaxed";
 export interface Scope {
 	filesToModify: string[];
 	filesToCreate: string[];
+	directories: string[];
+	maxFiles: number;
+	requiresApprovalBeyondScope: boolean;
 	changeType: "single-file" | "multi-file";
 	maxLinesPerFile: number;
 	gateMode?: ScopeGateMode;

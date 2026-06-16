@@ -106,6 +106,15 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				filesToCreate: Type.Array(Type.String(), {
 					description: "New files the specialist may create",
 				}),
+				directories: Type.Optional(Type.Array(Type.String(), {
+					description: "Directory-level scope boundaries",
+				})),
+				maxFiles: Type.Optional(Type.Number({
+					description: "Max files allowed across all directories",
+				})),
+				requiresApprovalBeyondScope: Type.Optional(Type.Boolean({
+					description: "If true, user must approve scope deviations",
+				})),
 				boundaries: Type.Optional(Type.String({
 					description: "Free-text scope boundaries the specialist must respect",
 				})),
@@ -164,7 +173,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 
 			// === SCOPE VALIDATION: require scope for coder ===
 			if (params.specialist === "coder") {
-				if (!params.scope || (!params.scope.filesToModify?.length && !params.scope.filesToCreate?.length)) {
+				if (!params.scope || (!params.scope.filesToModify?.length && !params.scope.filesToCreate?.length && !params.scope.directories?.length)) {
 					return {
 						content: [{
 							type: "text" as const,
@@ -176,7 +185,9 @@ You must pass a \`scope\` parameter when calling coder. Get this from scout's ou
 delegate("coder", "fix the auth middleware", {
     scope: {
         filesToModify: ["src/auth.ts"],
-        filesToCreate: []
+        filesToCreate: [],
+        directories: ["src/"],
+        maxFiles: 10
     }
 })
 \`\`\`
@@ -187,7 +198,13 @@ The scope tells the coder exactly which files it's allowed to touch.`
 					} as any;
 				}
 				// Use scope from params — no text parsing needed
-				_cachedScope = params.scope;
+				// Fill in defaults for hybrid scope fields
+				_cachedScope = {
+					...params.scope,
+					directories: params.scope.directories ?? [],
+					maxFiles: params.scope.maxFiles ?? 10,
+					requiresApprovalBeyondScope: params.scope.requiresApprovalBeyondScope ?? true,
+				};
 			}
 
 			const specialist: Specialist | undefined = SPECIALISTS[params.specialist];

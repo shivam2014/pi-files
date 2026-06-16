@@ -1,0 +1,14 @@
+{
+  "provider": "kimi",
+  "model": "kimi-k2.6-2",
+  "label": "Kimi K2.6 Vision",
+  "baseUrl": "http://localhost:19530/v1",
+  "api": "openai-responses",
+  "instructions": "You are a vision-specialist model. Analyze images and answer questions about them with detailed, accurate descriptions.",
+  "contextWindow": 128000,
+  "maxTokens": 8192,
+  "costInput": 0.6,
+  "costOutput": 3,
+  "costCacheRead": 0.3,
+  "costCacheWrite": 0.9
+}

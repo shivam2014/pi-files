@@ -1,0 +1,11 @@
+{
+  "goal": "Sync pi orchestrator extension from ~/.pi to ~/pi-files, review diff, commit,...",
+  "steps": [
+    {
+      "label": "coder: Sync pi orchestrator extension from ~/.pi to ~/pi-files, ...",
+      "completed": false,
+      "errored": false
+    }
+  ],
+  "startTime": 1781639213561
+}
