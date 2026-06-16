@@ -461,12 +461,16 @@ export default function (pi: ExtensionAPI) {
 			} else if (arg === "off") {
 				rtkEnabled = false;
 				ctx.ui.notify("RTK rewrite: OFF", "info");
-			} else {
+			} else if (arg === "status") {
 				ctx.ui.notify(
-					`RTK: ${rtkAvailable ? "✓ binary found" : "✗ binary missing"} | rewrite: ${rtkEnabled ? "ON" : "OFF"}\n` +
-					`Usage: /rtk [on|off]`,
+					`RTK: ${rtkAvailable ? "✓" : "✗"} | rewrite: ${rtkEnabled ? "ON" : "OFF"}\n` +
+					`Usage: /rtk [on|off|status]`,
 					"info"
 				);
+			} else {
+				// Toggle
+				rtkEnabled = !rtkEnabled;
+				ctx.ui.notify(`RTK rewrite: ${rtkEnabled ? "ON" : "OFF"}`, "info");
 			}
 		},
 	});
