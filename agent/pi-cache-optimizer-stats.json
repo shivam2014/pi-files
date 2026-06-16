@@ -14912,11 +14912,11 @@
     "83cf1905570d400c": {
       "nyro/deepseek-v4-flash-2": {
         "day": "2026-06-16",
-        "totalRequests": 9,
-        "hitRequests": 6,
-        "cachedInputTokens": 29696,
+        "totalRequests": 34,
+        "hitRequests": 26,
+        "cachedInputTokens": 729856,
         "cacheWriteInputTokens": 0,
-        "totalInputTokens": 36309
+        "totalInputTokens": 763950
       }
     },
     "530d13b4fe2c6270": {
@@ -14942,11 +14942,131 @@
     "b158d863de7f3e52": {
       "nyro/deepseek-v4-flash-2": {
         "day": "2026-06-16",
-        "totalRequests": 2,
-        "hitRequests": 2,
-        "cachedInputTokens": 4480,
+        "totalRequests": 23,
+        "hitRequests": 23,
+        "cachedInputTokens": 249856,
         "cacheWriteInputTokens": 0,
-        "totalInputTokens": 6772
+        "totalInputTokens": 270431
+      }
+    },
+    "2a9b412190f4025e": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 6,
+        "hitRequests": 6,
+        "cachedInputTokens": 27392,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 33145
+      }
+    },
+    "3158be43148543e8": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 25,
+        "hitRequests": 25,
+        "cachedInputTokens": 115456,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 119616
+      }
+    },
+    "8c77826b2ed2142f": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 22,
+        "hitRequests": 22,
+        "cachedInputTokens": 755072,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 806003
+      }
+    },
+    "2563ced256f5d2ad": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 22,
+        "hitRequests": 22,
+        "cachedInputTokens": 703872,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 749324
+      }
+    },
+    "3af3b3023fce32ae": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 8,
+        "hitRequests": 8,
+        "cachedInputTokens": 97536,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 111922
+      }
+    },
+    "27638b660d51a4d9": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 8,
+        "hitRequests": 8,
+        "cachedInputTokens": 30720,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 32115
+      }
+    },
+    "9c2d8e92973626ba": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 11,
+        "hitRequests": 11,
+        "cachedInputTokens": 88320,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 102259
+      }
+    },
+    "e2fb9180298358c4": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 11,
+        "hitRequests": 11,
+        "cachedInputTokens": 96512,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 104319
+      }
+    },
+    "03a1650454bebcee": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 11,
+        "hitRequests": 11,
+        "cachedInputTokens": 66944,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 75067
+      }
+    },
+    "584471ae836e84f4": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 10,
+        "hitRequests": 10,
+        "cachedInputTokens": 75136,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 85924
+      }
+    },
+    "8496622fff6bb253": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 19,
+        "hitRequests": 19,
+        "cachedInputTokens": 668928,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 735435
+      }
+    },
+    "30d56f3ca97944a4": {
+      "nyro/deepseek-v4-flash-2": {
+        "day": "2026-06-16",
+        "totalRequests": 18,
+        "hitRequests": 18,
+        "cachedInputTokens": 94976,
+        "cacheWriteInputTokens": 0,
+        "totalInputTokens": 100400
       }
     }
   },

@@ -1,12 +1,15 @@
 {
-  "filesToModify": [],
-  "filesToCreate": [],
   "directories": [
     "~/.pi",
     "~/pi-files"
   ],
-  "boundaries": "Sync ~/.pi to ~/pi-files. Use rsync or cp. Then git add/commit/push.",
+  "filesToModify": [
+    "~/.pi/agent/settings.json",
+    "~/pi-files/agent/settings.json"
+  ],
+  "filesToCreate": [],
+  "boundaries": "Only remove npm:pi-restrict-bash from settings.json packages array in both locations",
   "requiresApprovalBeyondScope": true,
-  "maxFiles": 100,
+  "maxFiles": 10,
   "gateMode": "strict"
 }

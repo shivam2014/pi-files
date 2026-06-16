@@ -1,11 +1,11 @@
 {
-  "goal": "Sync pi orchestrator extension from ~/.pi to ~/pi-files, review diff, commit,...",
+  "goal": "Remove `pi-restrict-bash` npm package reference from settings.json in two loc...",
   "steps": [
     {
-      "label": "coder: Sync pi orchestrator extension from ~/.pi to ~/pi-files, ...",
+      "label": "coder: Remove `pi-restrict-bash` npm package reference from sett...",
       "completed": false,
       "errored": false
     }
   ],
-  "startTime": 1781639213561
+  "startTime": 1781640824886
 }

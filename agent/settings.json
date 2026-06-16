@@ -7,8 +7,7 @@
     "npm:pi-cache-optimizer",
     "npm:pi-web-access",
     "npm:pi-codex-goal",
-    "npm:pi-interactive-shell",
-    "npm:pi-restrict-bash"
+    "npm:pi-interactive-shell"
   ],
   "permissionLevel": "high",
   "lsp": {
