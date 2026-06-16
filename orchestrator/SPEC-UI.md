@@ -136,6 +136,7 @@ This rendering shows:
 |-------------|--------|----------------------------------------|
 | Completed   | `●`    | Step is locked completed (checked)     |
 | Active      | `●`/`○`| Blinks between filled and unfilled at spinner rate (80ms) |
+| Errored    | `✗`    | Step encountered an error (substep shows error) |
 | Not reached | `○`    | Step has not started yet               |
 
 **N/M count:**
@@ -144,6 +145,7 @@ This rendering shows:
 - Example: `●○○ 1/3` means 1 of 3 steps completed
 - Example: `●●○ 2/3` means 2 of 3 steps completed
 - Example: `●●● 3/3` means all steps completed
+- Example: `●✗○ 1/3` means 1 step completed, 1 step errored, 1 step pending
 
 **Blink rule:** The active step's dot alternates between `●` and `○` at 80ms, synchronized with the spinner animation. On even frames (frame 0, 2, 4, 6, 8) — `○`. On odd frames (1, 3, 5, 7, 9) — `●`.
 
@@ -241,6 +243,30 @@ Only ONE substep can be active at a time — the one currently executing.
 
 - 4 spaces + `○` + space + planned action text
 - Example: `    ○ Check JWT decode flow`
+
+### Errored Substep
+
+```
+    ✗ <action>
+```
+
+- 4 spaces + `✗` + space + action text
+- Shows the substep that was active when the error occurred
+- Completed substeps before the error remain visible with `✓`
+- Pending substeps after the errored one are not shown (they weren't reached)
+- An error message may appear below the substeps as `⚠ <message>`
+
+**Example — Step with error during execution:**
+
+```
+  ✗ Step 2: Check token validation (20s)
+    ✓ Read src/auth/validate.ts
+    ✓ Check JWT decode flow
+    ✗ Find missing expiry check
+    ⚠ File not found: src/auth/validate.ts
+```
+
+Note: The `✗` substep indicates exactly which action failed, while `⚠` provides the error details.
 
 ### No Substeps for Completed/Pending Steps
 
@@ -464,6 +490,18 @@ Completed elements remain visible. They do not disappear.
 - Tool detail shows the currently running tool for the active substep
 - When the tool completes, the detail line is removed
 - This is the only transient element in the rendering
+
+---
+
+### Two-Tier Rule (Layer 1 vs Layer 2)
+
+The collapse-not-erase principle applies differently across layers:
+
+**Layer 2 (Chat History):** All completed steps and their substeps remain fully visible forever. No trimming. This is the durable record.
+
+**Layer 1 (Plan Panel, 9-line budget):** When the panel exceeds the 9-line budget, oldest completed steps (with their substeps) are trimmed from the top. The goal line, progress dots row, and active step are always retained regardless of budget. Completed substeps under the active step are the first candidates for trimming if the active step itself still overflows.
+
+The Layer 1 trimming is purely a budget constraint — it does not change the rule that completed elements are never erased from the history layer.
 
 ---
 
@@ -748,3 +786,222 @@ Returns a `string[]` where each element is one line of text. This array is used 
 - [ ] No duration shown on active steps or substeps
 - [ ] Spinner: 10 frames, 80ms cycle
 - [ ] Plan panel capped at 9 lines
+
+---
+
+## 16. Lint Tool Call (Auto-Lint)
+
+After every `edit` or `write` tool call completes, a `lint` tool call
+is automatically emitted to verify the edited file for errors.
+
+### 16.1 Position in Feed
+
+The lint tool call appears IMMEDIATELY after the edit/write result,
+before the assistant's next response:
+
+```
+[tool: edit auth.ts]           → ✓ patch applied
+[tool: lint auth.ts]           → ✓ [tsc] OK
+[assistant]                    → "Now let me check the next file..."
+```
+
+### 16.2 Rendering States
+
+#### Running State (lint in progress)
+
+```
+⠋ [tsc] checking auth.ts...
+```
+
+- Spinner animates at 80ms (same as step spinner)
+- Shows the tool name in brackets
+- Shows the file being checked
+
+#### Success State
+
+```
+✓ [tsc] auth.ts: OK
+```
+
+- `✓` icon (green/success)
+- Tool name in brackets: `[tsc]`, `[ruff]`, `[go vet]`, `[javac]`, `[ruby -c]`, `[node]`
+- Filename
+- `OK` suffix
+
+#### Failure State (errors found)
+
+```
+✗ [tsc] auth.ts:
+  Type 'number' is not assignable to type 'string' at line 15
+```
+
+- `✗` icon (red/error)
+- Tool name in brackets
+- Filename with colon
+- Error message on next line(s), indented with 2 spaces
+
+#### Warning State (tool unavailable)
+
+```
+⚠ [esbuild] auth.ts: esbuild not installed
+```
+
+- `⚠` icon (yellow/warning)
+- Tool name in brackets
+- Descriptive message
+
+### 16.3 Tool Name Mapping
+
+| Tool | Display Name | When Used |
+|------|-------------|-----------|
+| tsc | `tsc` | TypeScript files (standalone or project) |
+| node | `node` | JavaScript files (standalone) |
+| node --check | `node` | JavaScript syntax check |
+| ruff | `ruff` | Python files |
+| go vet | `go vet` | Go files |
+| cargo check | `cargo` | Rust files |
+| javac | `javac` | Java files |
+| ruby -c | `ruby` | Ruby files (standalone) |
+| rubocop | `rubocop` | Ruby files (project) |
+
+### 16.4 Integration with Subagent Activity Feed
+
+When the auto-lint fires within a subagent session (inside a
+delegation), the lint tool call appears as part of the subagent's
+tool call sequence:
+
+```
+delegate Coder: Fix auth middleware
+  ◆ Fix auth middleware                        ●●○ 2/3
+  ✓ Step 1: Find auth files (12s)
+  ✓ Step 2: Fix token expiry
+      → read auth.ts ✓
+      → edit auth.ts ✓
+      → lint auth.ts ✓ ✓ [tsc] OK
+  ⠇ Step 3: Verify fix
+      → running tests
+```
+
+The lint call appears as a substep under the current step, right
+after the edit that triggered it.
+
+### 16.5 LLM Self-Correction
+
+The lint result is visible to the LLM as a tool result. This enables
+self-correction:
+
+```
+Turn 1:
+  [tool: edit]  auth.ts → patch applied
+  [tool: lint]  auth.ts → ✗ [tsc] Type 'number' not assignable
+Turn 2:
+  [assistant]   "Let me fix that type error..."
+  [tool: edit]  auth.ts → patch applied (fixed)
+  [tool: lint]  auth.ts → ✓ [tsc] OK
+```
+
+The LLM sees the lint failure, understands the error, and fixes it
+in the next turn. This happens without user intervention.
+
+### 16.6 Visual Examples
+
+#### Example A: Successful Edit → Lint
+
+```
+[tool: edit auth.ts]
+  ✓ Applied patch: changed return type
+[tool: lint auth.ts]
+  ✓ [tsc] auth.ts: OK
+```
+
+#### Example B: Edit with Syntax Error → Lint Failure → Self-Correction
+
+```
+[tool: edit auth.ts]
+  ✓ Applied patch: added new function
+[tool: lint auth.ts]
+  ✗ [tsc] auth.ts:15:3 - error TS1005: ';' expected
+[assistant]
+  "I see the syntax error. Missing semicolon at line 15. Fixing..."
+[tool: edit auth.ts]
+  ✓ Applied patch: added missing semicolon
+[tool: lint auth.ts]
+  ✓ [tsc] auth.ts: OK
+```
+
+#### Example C: Python Edit
+
+```
+[tool: edit main.py]
+  ✓ Applied patch: updated greeting function
+[tool: lint main.py]
+  ✓ [ruff] main.py: OK
+```
+
+#### Example D: Go Edit with Error
+
+```
+[tool: edit server.go]
+  ✓ Applied patch: added new route
+[tool: lint server.go]
+  ✗ [go vet] server.go: unreachable code at line 42
+[assistant]
+  "The go vet check found unreachable code after return statement..."
+```
+
+### 16.7 Implementation Notes
+
+- The lint tool call is auto-generated by lint-guard.ts, NOT by the LLM
+- The tool name in the feed is `lint` (not the underlying linter name)
+- The underlying tool name (tsc, ruff, go vet, etc.) appears in brackets
+- The lint result is sent via `pi.sendMessage()` — it's a real message
+  in the conversation that the LLM can see
+- The lint check runs AFTER the edit/write tool result is committed,
+  so the LLM sees both the edit result and the lint result together
+
+---
+
+## 17. Retry State
+
+When a errored step is retried, the rendering transitions through three states.
+
+### 17.1 Retry Indicator
+
+During a retry, a single-line indicator replaces the full step tree:
+
+```
+⠇ Retry 2/3: File not found: src/auth/validate.ts
+```
+
+- `⠇` spinner (uses same 10-frame, 80ms cycle as step spinner)
+- `Retry N/M:` — N = current retry attempt (1-indexed), M = max retries
+- `:` space + reason for the retry (the error message that triggered it)
+
+### 17.2 Retry Appearance
+
+The retry indicator appears when:
+1. A step errors (shows ✗ at step level)
+2. The orchestrator decides to retry instead of failing
+3. The step tree is temporarily replaced by the retry indicator
+
+### 17.3 Retry Success
+
+If the retry succeeds, normal rendering resumes. The step shows as active (spinner) with its substeps, as if the error never happened:
+
+```
+  ⠋ Step 2: Check token validation
+    ✓ Read src/auth/validate.ts
+    ⠋ Check JWT decode flow
+```
+
+The previous error and retry indicator are replaced — they do not remain in the feed.
+
+### 17.4 Retry Exhaustion
+
+If all N/M retries fail, the step returns to error state (✗ with error message). The retry count is shown in the indicator.
+
+### 17.5 Rendering Priority
+
+The retry indicator takes priority over all other rendering — when retry is active, the entire feed renders as the single retry line. This ensures the user sees the retry status immediately.
+
+Implementation: In `renderActivityFeed`, the `state.errored` block checks for `retryCount` first and returns early with the retry indicator line.

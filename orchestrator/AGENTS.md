@@ -2,7 +2,7 @@
 
 ## Design Philosophy
 
-Require scout before coder. Tool-level gate, not prompt-level. Prompts degrade.
+Coder requires a `scope` argument. Tool-level gate, not prompt-level. Scope can derive from scout output OR be declared directly by the orchestrator. Prompts degrade.
 
 Scope means architecture plan, not file restriction. Scout outputs changeType, approach, files.
 
@@ -47,19 +47,14 @@ Test snapshots, not exit codes. Verify actual TUI output, not pass/fail.
 
 ```
 User request
-  → delegate(scout, "investigate ...")         ← ALWAYS ALLOWED
-    → scout reads codebase, outputs ## Scope
-  → delegate(coder, "implement ...")            ← ALLOWED only if scope exists
-    → scope-guard.ts enforces file list + line limits
-  → delegate(reviewer, "review ...")            ← ALWAYS ALLOWED (read-only)
+  → delegate(scout, "investigate ...")         ← READ-ONLY, always allowed
+    → scout reads codebase, outputs ## Scope with files + approach
+  → delegate(coder, "implement ...", scope)    ← REQUIRES scope param
+    → scope-guard.ts enforces file list + line limits via .pi/scope.json
+  → delegate(reviewer, "review ...")           ← READ-ONLY, always allowed
 ```
 
-If coder is called without scout:
-
-```
-  → BLOCKED: "Scope required before coding. Call delegate(scout, ...) first."
-  → LLM self-corrects: calls scout → gets scope → retries coder → succeeds
-```
+The `coder` tool blocks if no `scope` argument is provided. The orchestrator derives scope from scout output (files listed in `## Scope`) or declares it directly based on analysis. The scope file (`.pi/scope.json`) is written before each coder delegation and enforces file-level boundaries via the scope-guard interceptor.
 
 ---
 
@@ -70,7 +65,7 @@ If coder is called without scout:
 Run `tui-smoke.sh` with targeted prompts to verify adaptive gating:
 
 ```bash
-# Test direct coder call gets blocked
+# Test direct coder call without scope gets blocked
 bash ~/.pi/tui-smoke.sh pi "create /tmp/test.txt with content hello"
 
 # Test scout-first flow works
@@ -85,7 +80,7 @@ Always check snapshot files (`00-startup.txt` through `04-final-state.txt`) — 
 
 ## Anti-Patterns
 
-- **Don't** weaken the gate to pass tests. The gate is the core mechanism.
+- **Don't** weaken the scope enforcement to pass tests. The scope-guard is the core mechanism.
 - **Don't** add prompt-level reminders to "call scout first" — they decay. The tool-level gate is the enforcement.
 - **Don't** let the gate crash the agent — it must self-correct in one turn.
 - **Don't** test with mock scope files — test with actual `delegate()` calls end-to-end.

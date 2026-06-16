@@ -15,7 +15,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY } from "./subagent-runner.ts";
+import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed } from "./subagent-runner.ts";
 import { clearPlanPanel } from "./plan-panel.ts";
 import { registerDelegateTool } from "./delegate-tool.ts";
 import { registerPlanTool } from "./plan-tool.ts";
@@ -162,13 +162,29 @@ If task ambiguous before starting:
 
 	// ── Safety net: Block non-delegation tool calls ──
 	pi.on("tool_call", async (event, ctx) => {
-		if (_batchLoadSubagent > 0) return; // Don't block subagent tools
+		// Subagent: enforce planSteps-first before any other tool
+		if (_batchLoadSubagent > 0 && !isPlanParsed()) {
+			if (event.toolName !== "planSteps") {
+				return { block: true, reason: `Call planSteps({ goal, steps }) first before using ${event.toolName}.` };
+			}
+		}
+		if (_batchLoadSubagent > 0) return; // Don't block other subagent tools
 		if (event.toolName !== "delegate" && event.toolName !== "plan") {
 			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
 		}
 	});
 
 	
+
+	// ── Agent end: flush timeline recording to disk ──
+	pi.on("agent_end", async (event, ctx) => {
+		try {
+			const { clearPlanPanel } = await import("./plan-panel.ts");
+			clearPlanPanel(ctx);
+		} catch (err) {
+			debugLog("agent_end: failed to dump timeline", err);
+		}
+	});
 
 	// Lint-guard dependency check
 	debugLog("lint-guard: expected to be loaded as required dependency. If lint/typecheck tools missing, check extension loading.");

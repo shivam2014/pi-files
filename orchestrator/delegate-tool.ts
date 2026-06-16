@@ -9,20 +9,20 @@
  */
 
 import { Type } from "typebox";
-import { shortenLabel } from "../token-saver.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Specialist } from "./types.ts";
+import type { Specialist, DelegationMetrics } from "./types.ts";
 import { SPECIALISTS } from "./specialists.ts";
 import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
-import { createOrchestratorActivity, addOrchestratorStep, completeOrchestratorStep } from "./activity-feed.ts";
-import { hasActivePlan, setupPlanPanel, startDelegationStep, completePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount } from "./plan-panel.ts";
+
+import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete } from "./plan-panel.ts";
 import type { Scope } from "./types.ts";
 import { debugLog } from "./debug.ts";
 import { hidePeek, unregisterPeekFeed } from "./peek-overlay.ts";
 import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
+import { Text } from "@earendil-works/pi-tui";
 
 // Shared spinner — imported from spinner-state.ts
-let _orchestratorActivity: ReturnType<typeof createOrchestratorActivity> | null = null;
+// (orchestratorActivity is now a local variable in execute())
 
 // Verb mapping for working loader messages during delegation lifecycle
 const PRESENT_PARTICIPLE: Record<string, string> = {
@@ -125,7 +125,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 
 		// ── Render: what shows when tool is invoked ──
 		renderCall(args: any, theme: any, context: any) {
-			const comp = context.lastComponent ?? new (require("@earendil-works/pi-tui").Text)("", 0, 0);
+			const comp = context.lastComponent ?? new Text("", 0, 0);
 			const name = (args.specialist || "").charAt(0).toUpperCase() + (args.specialist || "").slice(1);
 			const task = args.task ? args.task.slice(0, 60) : "";
 			const content = theme.fg("toolTitle", theme.bold(`delegate ${name}`)) +
@@ -141,6 +141,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			const text = result?.content?.[0]?.type === "text" ? result.content[0].text : "";
 
 			if (isPartial && !state.interval) {
+					context.invalidate(); // first paint so spinner shows before ✓
 					state.interval = setInterval(() => {
 						getSpinnerIndex(); // tick shared spinner
 						context.invalidate();
@@ -151,7 +152,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				state.interval = undefined;
 			}
 
-			const comp = context.lastComponent ?? new (require("@earendil-works/pi-tui").Text)("", 0, 0);
+			const comp = context.lastComponent ?? new Text("", 0, 0);
 
 			if (isPartial) {
 				if (text) state.lastFeedText = text;
@@ -215,12 +216,12 @@ The scope tells the coder exactly which files it's allowed to touch.`
 
 			// Set up plan panel — consume or append a step for each delegation
 			const specName = specialist.name.charAt(0).toUpperCase() + specialist.name.slice(1);
-			const stepLabel = `${specName}: ${shortenLabel(params.task)}`;
+			const stepLabel = `${specName}: ${params.task}`;
 
 			if (!hasActivePlan()) {
 				// Auto-create a 1-step plan from the delegation task (plan tool may have failed to register)
-				const autoGoal = params.task.length > 80 ? params.task.slice(0, 77) + "..." : params.task;
-				const autoSteps = [params.specialist + ": " + (params.task.length > 60 ? params.task.slice(0, 57) + "..." : params.task)];
+				const autoGoal = params.task;
+				const autoSteps = [params.specialist + ": " + params.task];
 				setupPlanPanel(autoGoal, autoSteps, ctx);
 				startDelegationStep(stepLabel);
 			} else {
@@ -244,9 +245,33 @@ The scope tells the coder exactly which files it's allowed to touch.`
 				}
 			} catch {}
 
-			const stepName = specialist.name + ": " + params.task.substring(0, 60);
-			_orchestratorActivity = createOrchestratorActivity(stepName);
-			incrementDelegationCount();
+				incrementDelegationCount();
+			// Per-delegation metrics tracking
+			const metrics: DelegationMetrics = {
+				readCalls: 0,
+				grepCalls: 0,
+				findCalls: 0,
+				editCalls: 0,
+				writeCalls: 0,
+				bashCalls: 0,
+				lsCalls: 0,
+				scopeViolations: 0,
+			};
+			const wrappedOnUpdate = (update: any) => {
+				if (update.details?.tool) {
+					switch (update.details.tool) {
+						case "read": metrics.readCalls++; break;
+						case "grep": metrics.grepCalls++; break;
+						case "find": metrics.findCalls++; break;
+						case "edit": metrics.editCalls++; break;
+						case "write": metrics.writeCalls++; break;
+						case "bash": metrics.bashCalls++; break;
+						case "ls": metrics.lsCalls++; break;
+					}
+				}
+				onUpdate?.(update);
+			};
+
 			const startTime = Date.now();
 
 			// Dynamic status: subagent session starting
@@ -259,7 +284,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 			const result = await runSubagent(
 				specialist, params.task, ctx.cwd,
 				{ modelRegistry: ctx.modelRegistry, model: ctx.model },
-				signal, onUpdate, _orchestratorActivity ?? undefined, scopeToUse, orchestratorUi,
+				signal, wrappedOnUpdate, scopeToUse, orchestratorUi,
 			);
 			const elapsedMs = Date.now() - startTime;
 
@@ -271,8 +296,8 @@ The scope tells the coder exactly which files it's allowed to touch.`
 			} catch {}
 
 			// === Check for errors/abort BEFORE any parsing ===
-			const isAborted = signal?.aborted || false;
-			const isError = !result || !result.output || result.output.startsWith("[error]");
+			const isAborted = (signal?.aborted || false) || (result?.output?.startsWith("[aborted]") ?? false);
+			const isError = !result || !result.output || result.output.startsWith("[error]") || result.output.startsWith("[aborted]");
 			const hasError = isAborted || isError;
 
 			try {
@@ -328,40 +353,53 @@ ${trail}
 						}
 						if (!audit.scope_stayed) {
 							auditParts.push(`Scope deviation: ${audit.scope_notes}`);
+							metrics.scopeViolations++;
 						}
 						if (auditParts.length > 0) {
 							result.output = `[Audit: ${auditParts.join(' | ')}]\n` + result.output;
 						}
 					}
 
+					// Prepend metrics line
+					const metricsLine = `[Metrics: read=${metrics.readCalls}, grep=${metrics.grepCalls}, find=${metrics.findCalls}, edit=${metrics.editCalls}, write=${metrics.writeCalls}, bash=${metrics.bashCalls}, ls=${metrics.lsCalls}, scopeViolations=${metrics.scopeViolations}]`;
+					result.output = metricsLine + '\n' + result.output;
+
 					// Build status note — first line of returned text so orchestrator sees outcome at a glance
 					const turns = result.turns || 0;
 					const toolCalls = result.toolCallTrail?.length || 0;
-					const outcomeStatus = result.output?.startsWith("[error]") ? "error" : "ok";
-					const aborted = signal?.aborted || false;
 					const turnWord = turns === 1 ? "turn" : "turns";
 					const toolWord = toolCalls === 1 ? "tool call" : "tool calls";
-					let statusNote = "";
-					if (outcomeStatus === "error") {
-						statusNote = `✗ Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
-					} else if (aborted) {
-						statusNote = `■ Aborted (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
-					} else {
-						statusNote = `✓ Completed (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
-					}
+					const statusNote = `✓ Completed (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
 					result.output = `${statusNote}\n${result.output}`;
+				} else if (result?.output) {
+					// Error/Abort path: include tool call trail + status note
+					const trail = result.toolCallTrail;
+					const turns = result.turns ?? 0;
+					const toolCalls = trail?.length ?? 0;
+					const turnWord = turns === 1 ? "turn" : "turns";
+					const toolWord = toolCalls === 1 ? "tool call" : "tool calls";
+
+					let trailStr = "";
+					if (trail && trail.length > 0) {
+						trailStr = "\nCompleted tool calls:\n" + trail.map(t => `${t.completed ? '✓' : '⚠'} ${t.tool}`).join("\n");
+					}
+
+					const statusNote = isAborted
+						? `■ Aborted — interrupted by user (${turns} ${turnWord}, ${toolCalls} ${toolWord})`
+						: `✗ Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+
+					result.output = `${statusNote}${trailStr}\n\n${result.output}`;
 				}
 
 				// Mark plan step — now always runs correctly
 				if (hasError) {
-					errorPlanStep(ctx);
+					errorPlanStep(ctx, isAborted);
 				} else {
-					completePlanStep(ctx);
+					finalizePlanStep(ctx);
 				}
 			} finally {
-				completeOrchestratorStep(_orchestratorActivity);
 				decrementDelegationCount();
-				_orchestratorActivity = null;
+				clearPlanIfComplete(ctx);  // Clear widget if all steps done (count is now 0)
 				hidePeek();
 				unregisterPeekFeed();
 				// Dynamic status: clear on completion (even if extraction/parsing throws)

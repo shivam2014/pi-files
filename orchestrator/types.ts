@@ -27,6 +27,7 @@ export interface Substep {
 	endTime?: number;
 	outputPreview?: string;
 	isReport?: boolean;
+	errored?: boolean;
 	toolDetail?: string;
 }
 
@@ -45,6 +46,7 @@ export interface ActivityFeedState {
 	steps: Step[];
 	currentStep: number;
 	rawText: string;
+	planParsed: boolean;  // true after planSteps() tool is called
 	errored?: boolean;
 	errorMessage?: string;
 	retryCount?: number;
@@ -95,4 +97,16 @@ export interface Scope {
 	changeType: "single-file" | "multi-file";
 	maxLinesPerFile: number;
 	gateMode?: ScopeGateMode;
+}
+
+/** Per-delegation tool usage metrics */
+export interface DelegationMetrics {
+	readCalls: number;
+	grepCalls: number;
+	findCalls: number;
+	editCalls: number;
+	writeCalls: number;
+	bashCalls: number;
+	lsCalls: number;
+	scopeViolations: number;
 }

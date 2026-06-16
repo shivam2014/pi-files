@@ -7,11 +7,32 @@
  * Widget sits above editor, doesn't consume chat scroll space.
  */
 
-import { writeFileSync } from "node:fs";
-import { shortenLabel } from "../token-saver.ts";
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { truncateLabel } from "../token-saver.ts";
 import { formatDuration } from "./ui-utils.ts";
 import type { PlanStep } from "./types.ts";
+import type { ActivityFeedState, Step, Substep } from "./types.ts";
+import { renderActivityFeed } from "./activity-feed.ts";
 import { SPINNER_FRAMES, getSpinnerIndex, resetSpinner, advanceSpinner } from "./spinner-state.ts";
+
+// ============================================================================
+// Timeline types and buffer (Layer 3)
+// ============================================================================
+
+export interface TimelineEntry {
+    t: number;
+    event: string;
+    render: string;
+    state: Record<string, unknown> | null;
+    feedState?: Record<string, unknown> | null;
+    feedRender?: string;
+}
+
+const _timeline: TimelineEntry[] = [];
+const _timelineStart = Date.now();
+let _sessionId: string | null = null;
+const MAX_TIMELINE_FRAMES = 500;
 
 // ============================================================================
 // Constants
@@ -26,6 +47,9 @@ let _activeDelegations = 0;
 export function incrementDelegationCount(): void { _activeDelegations++; }
 export function decrementDelegationCount(): void { _activeDelegations = Math.max(0, _activeDelegations - 1); }
 
+/** Widget hard-cap: 9 lines of content */
+const BUDGET = 9;
+
 let planState: {
 	goal: string;
 	steps: PlanStep[];
@@ -35,11 +59,9 @@ let planState: {
 function savePlanState(): void {
 	if (!planState) return;
 	try {
-		const fs = require('fs');
-		const path = require('path');
-		const dir = path.join(process.cwd(), '.pi');
-		if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-		fs.writeFileSync(path.join(dir, 'orchestrator-plan.json'), JSON.stringify({
+		const dir = join(process.cwd(), '.pi');
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, 'orchestrator-plan.json'), JSON.stringify({
 			goal: planState.goal,
 			steps: planState.steps.map(s => ({ label: s.label, completed: s.completed, errored: s.errored })),
 			startTime: planState.startTime,
@@ -49,11 +71,9 @@ function savePlanState(): void {
 
 function loadPlanState(): typeof planState {
 	try {
-		const fs = require('fs');
-		const path = require('path');
-		const statePath = path.join(process.cwd(), '.pi', 'orchestrator-plan.json');
-		if (!fs.existsSync(statePath)) return null;
-		const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+		const statePath = join(process.cwd(), '.pi', 'orchestrator-plan.json');
+		if (!existsSync(statePath)) return null;
+		const saved = JSON.parse(readFileSync(statePath, 'utf8'));
 		if (!saved?.goal || !saved?.steps) return null;
 		return {
 			goal: saved.goal,
@@ -79,23 +99,77 @@ let _lastWidgetContent: string[] | null = null;
 // Widget content generation
 // ============================================================================
 
-/**
- * Render a single plan step row into the lines array.
- * When detailLines are present (substep history), shows step header with → icon
- * followed by indented substep lines with status icons.
- */
-function _renderPlanRow(lines: string[], r: { icon: string; label: string; detail?: string; detailLines?: string[] }): void {
-	if (r.detailLines && r.detailLines.length > 0) {
-		// Active step uses →, completed step keeps ✓
-		const headerIcon = (r.icon === "✓") ? "✓" : "→";
-		lines.push(`  ${headerIcon} ${r.label}`);
-		for (const dl of r.detailLines) {
-			lines.push(dl);
+function toFeedState(planState: { goal: string; steps: PlanStep[]; startTime: number }): ActivityFeedState {
+	const steps: Step[] = planState.steps.map(ps => ({
+		label: truncateLabel(ps.label, 120),
+		completed: ps.completed,
+		startTime: undefined,
+		endTime: undefined,
+		// detailLines are already-formatted renderSubstepLines output
+		// They should NOT be re-wrapped as substeps (causes double-formatting)
+		substeps: [],
+	}));
+	return {
+		goal: planState.goal,
+		steps,
+		currentStep: planState.steps.findIndex(s => s.active),
+		rawText: "",
+		planParsed: false,
+	};
+}
+
+function trimToBudget(lines: string[], budget: number): string[] {
+	if (lines.length <= budget) return lines;
+
+	// Always keep: goal line (◆), progress dots (●○○), and active step (has spinner)
+	// Trim oldest completed step headers from top
+	const keepIndices = new Set<number>();
+
+	// Goal line is always line 0
+	keepIndices.add(0);
+	// Progress dots is always line 1
+	if (lines.length > 1) keepIndices.add(1);
+
+	// Find active step (has a spinner character)
+	let activeIdx = -1;
+	for (let i = 2; i < lines.length; i++) {
+		const trimmed = lines[i].trimStart();
+		if (/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(trimmed)) {
+			activeIdx = i;
+			break;
+		}
+	}
+
+	// Always keep active step and everything after it
+	if (activeIdx >= 0) {
+		for (let i = activeIdx; i < lines.length; i++) {
+			keepIndices.add(i);
+		}
+	}
+
+	// We have keepIndices + everything before activeIdx that fits budget
+	// Strategy: trim oldest rows from top before activeIdx
+	const result: string[] = [];
+	let remaining = budget - (lines.length - (activeIdx >= 0 ? activeIdx : lines.length));
+
+	if (activeIdx >= 0) {
+		// Keep goal, dots, then whatever fits before active step
+		for (let i = 0; i < activeIdx && remaining > 0; i++) {
+			result.push(lines[i]);
+			remaining--;
+		}
+		// Then add active step and everything after it
+		for (let i = activeIdx; i < lines.length; i++) {
+			result.push(lines[i]);
 		}
 	} else {
-		const suffix = r.detail ? ` — ${r.detail}` : "";
-		lines.push(`  ${r.icon} ${r.label}${suffix}`);
+		// No active step found — just trim from top
+		for (let i = lines.length - budget; i < lines.length; i++) {
+			result.push(lines[i]);
+		}
 	}
+
+	return result;
 }
 
 /**
@@ -104,99 +178,9 @@ function _renderPlanRow(lines: string[], r: { icon: string; label: string; detai
  */
 function renderPlanLines(): string[] {
 	if (!planState) return [];
-	const { goal, steps, startTime } = planState;
-	const elapsed = Date.now() - startTime;
-	const elapsedStr = formatDuration(elapsed).padStart(6);
-	const total = steps.length;
-	const completedCount = steps.filter((s) => s.completed).length;
-	const erroredCount = steps.filter((s) => s.errored).length;
-	const goalTrunc = goal;
-
-	// Progress count — only show when steps exist
-	const prog = total > 0
-		? (erroredCount > 0
-			? `● ${completedCount}/${total} ✗${erroredCount}`
-			: `● ${completedCount}/${total}`)
-		: '';
-	const lines: string[] = [`Plan: ◆ ${goalTrunc}${prog ? `  ${prog}  ` : '  '}${elapsedStr}`];
-
-	const BUDGET = 9; // widget hard-caps at 10 lines, header uses 1
-
-	// Build display rows in CHRONOLOGICAL order — each step in its original position
-	const frames = SPINNER_FRAMES;
-	const idx = getSpinnerIndex() % frames.length;
-	const rows: { icon: string; label: string; detail?: string; detailLines?: string[] }[] = [];
-	for (const s of steps) {
-		if (s.errored) rows.push({ icon: "✗", label: s.label });
-		else if (s.completed) {
-			const dur = (s as any).startTime && (s as any).endTime
-				? " (" + formatDuration((s as any).endTime - (s as any).startTime) + ")"
-				: "";
-			rows.push({
-				icon: "✓",
-				label: s.label + dur,
-				detailLines: (s as any).substepLines,
-			});
-		}
-		else if (s.active) rows.push({
-			icon: frames[idx],
-			label: s.label,
-			detail: s.detailLines?.length ? undefined : s.detail,
-			detailLines: s.detailLines,
-		});
-		else rows.push({ icon: "○", label: s.label });
-	}
-
-	// Calculate display lines per row (1 for header + N for detail lines)
-	const lineCounts = rows.map((r) => 1 + (r.detailLines?.length ?? 0));
-	const totalDisplayLines = lineCounts.reduce((a, b) => a + b, 0);
-
-	if (totalDisplayLines <= BUDGET) {
-		// All fit — render everything
-		for (const r of rows) {
-			_renderPlanRow(lines, r);
-		}
-	} else {
-		// Trim oldest rows from the top to fit within budget
-		let budget = BUDGET;
-		const kept: typeof rows = [];
-		// Build from the bottom (newest) upward
-		for (let i = rows.length - 1; i >= 0; i--) {
-			const needed = lineCounts[i];
-			if (needed <= budget) {
-				kept.unshift(rows[i]);
-				budget -= needed;
-			} else if (budget >= 1) {
-				// Partial substep retention: keep last 3 substeps + … +N more
-				if (rows[i].detailLines && rows[i].detailLines.length > 0 && budget >= 2) {
-					const totalSubs = rows[i].detailLines!.length;
-					const canFit = Math.min(totalSubs, budget - 1); // -1 for header
-					const keptSubs = rows[i].detailLines!.slice(-canFit);
-					const droppedSubs = totalSubs - canFit;
-					const truncatedLines: string[] = [];
-					if (droppedSubs > 0) {
-						truncatedLines.push(`    … +${droppedSubs} more`);
-					}
-					for (const line of keptSubs) {
-						truncatedLines.push(line);
-					}
-					kept.unshift({ icon: rows[i].icon, label: rows[i].label, detailLines: truncatedLines });
-					budget = 0;
-				} else {
-					// Can fit at least the header line — drop detailLines
-					kept.unshift({ icon: rows[i].icon, label: rows[i].label });
-					budget = 0;
-				}
-			}
-		}
-		const hidden = rows.length - kept.length;
-		if (hidden > 0) lines.push(`  … +${hidden} more`);
-		for (const r of kept) {
-			_renderPlanRow(lines, r);
-		}
-	}
-
-	return lines;
+	const feed = toFeedState(planState);
+	const full = renderActivityFeed("", feed).split("\n");
+	return trimToBudget(full, BUDGET);
 }
 
 /**
@@ -281,7 +265,7 @@ export function summarizeGoal(goal: string): string {
     cleaned = cleaned.replace(/`[^`]+`/g, '');
     cleaned = cleaned.trim();
     const firstLine = cleaned.split('\n')[0]?.trim() || cleaned;
-    const maxLen = 80;
+    const maxLen = 120;
     if (firstLine.length <= maxLen) return firstLine;
     return firstLine.slice(0, maxLen - 3) + '...';
 }
@@ -303,6 +287,87 @@ export function generatePlanFromPrompt(prompt: string): string[] {
 // ============================================================================
 // Public API
 // ============================================================================
+
+// ============================================================================
+// Layer 1: State Inspector
+// ============================================================================
+
+export function inspectPlanState(): Record<string, unknown> | null {
+    if (!planState) return null;
+    const steps = planState.steps.map((s, i) => ({
+        index: i,
+        label: s.label,
+        state: s.completed ? "completed" : s.errored ? "errored" : s.active ? "active" : "pending",
+        substepCount: (s as any).detailLines?.length ?? 0,
+        detail: s.detail ?? null,
+    }));
+    return {
+        goal: planState.goal,
+        steps,
+        completedCount: planState.steps.filter(s => s.completed).length,
+        totalCount: planState.steps.length,
+        activeDelegations: _activeDelegations,
+        elapsedMs: Date.now() - planState.startTime,
+    };
+}
+
+// ============================================================================
+// Layer 2: Render Snapshot
+// ============================================================================
+
+export function snapshotPlanRender(): string {
+    if (!_lastWidgetContent) return "";
+    return _lastWidgetContent.join("\n");
+}
+
+// ============================================================================
+// Layer 3: Timeline Recorder
+// ============================================================================
+
+export function recordTimelineFrame(
+    event: string,
+    feedState?: Record<string, unknown> | null,
+    feedRender?: string,
+): void {
+    const entry = {
+        t: Date.now() - _timelineStart,
+        event,
+        render: snapshotPlanRender(),
+        state: inspectPlanState(),
+        ...(feedState !== undefined ? { feedState } : {}),
+        ...(feedRender !== undefined ? { feedRender } : {}),
+    };
+
+    // Dedup: skip if last frame has same event + identical logical state
+    const last = _timeline[_timeline.length - 1];
+    if (last && last.event === entry.event) {
+        // Compare state ignoring time-variant fields (elapsedMs, t)
+        const stripTime = (s: Record<string, unknown> | null) => {
+            if (!s) return null;
+            const { elapsedMs, ...rest } = s as any;
+            // Also strip the substep detail which changes per-tool
+            return rest;
+        };
+        const stateSame = JSON.stringify(stripTime(last.state)) === JSON.stringify(stripTime(entry.state));
+        const feedSame = JSON.stringify(last.feedState ?? null) === JSON.stringify(entry.feedState ?? null);
+        if (stateSame && feedSame) return;
+    }
+
+    if (_timeline.length >= MAX_TIMELINE_FRAMES) _timeline.shift();
+    _timeline.push(entry);
+}
+
+export function getTimeline(): TimelineEntry[] {
+	return [..._timeline];
+}
+
+export function getTimelineDiff(): { first: TimelineEntry | null; last: TimelineEntry | null; count: number } {
+	return {
+		first: _timeline.length > 0 ? _timeline[0] : null,
+		last: _timeline.length > 0 ? _timeline[_timeline.length - 1] : null,
+		count: _timeline.length,
+	};
+}
 
 export function hasActivePlan(): boolean {
 	return planState !== null;
@@ -377,6 +442,7 @@ export function startDelegationStep(label: string): void {
 		}
 		resetSpinner();
 		_renderWidget();
+		recordTimelineFrame("delegation_start");
 		return;
 	}
 
@@ -390,11 +456,15 @@ export function startDelegationStep(label: string): void {
 		(planState.steps[pendingIdx] as any).startTime = Date.now();
 		resetSpinner();
 		_renderWidget();
+		recordTimelineFrame("delegation_start");
 		return;
 	}
 
 	// Case 3: No pre-planned steps left — append dynamically
 	pushPlanStep(label);
+	resetSpinner();
+	_renderWidget();
+	recordTimelineFrame("delegation_start");
 }
 
 /**
@@ -474,19 +544,57 @@ export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: 
 	// spinner on a step that the agent may never run.
 	_renderWidget();
 	savePlanState();
+	recordTimelineFrame("step_complete");
 }
 
-export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
+/**
+ * Mark current step complete and re-render the widget.
+ * Does NOT auto-clear — call clearPlanIfComplete separately after delegation count drops.
+ */
+export function finalizePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
+	if (!planState) return;
+	
+	const idx = planState.steps.findIndex((s) => s.active);
+	if (idx >= 0) {
+		const step = planState.steps[idx];
+		if (step.detailLines && step.detailLines.length > 0) {
+			(step as any).substepLines = step.detailLines.slice(-3);
+		}
+		step.completed = true;
+		step.errored = false;
+		step.active = false;
+		step.detail = undefined;
+		step.detailLines = undefined;
+		(step as any).endTime = Date.now();
+	}
+	
+	_renderWidget();
+	savePlanState();
+	recordTimelineFrame("step_complete");
+}
+
+/**
+ * Check if the plan is fully complete and clear the widget if so.
+ * Call this AFTER decrementDelegationCount() so _activeDelegations is 0.
+ */
+export function clearPlanIfComplete(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
+	if (!planState) return;
+	if (!planState.steps.every(s => s.completed)) return; // Not all done yet
+	clearPlanPanel(ctx);
+}
+
+export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, aborted?: boolean): void {
 	if (!planState) return;
 	const idx = planState.steps.findIndex((s) => s.active);
 	if ( idx >= 0) {
-		planState.steps[idx].errored = true;
+		planState.steps[idx].errored = !aborted;  // don't mark errored if user aborted
 		planState.steps[idx].active = false;
 		planState.steps[idx].detail = undefined;
 		(planState.steps[idx] as any).endTime = Date.now();
 	}
 	_renderWidget();
 	savePlanState();
+	recordTimelineFrame(aborted ? "step_aborted" : "step_error");
 }
 
 /**
@@ -515,82 +623,12 @@ export function renderPlanStatusText(): string {
 	const total = steps.length;
 	const completed = steps.filter((s) => s.completed).length;
 	const dots = steps.filter((s) => s.completed || s.errored).map((s) => (s.errored ? "✗" : "●")).join("");
-	return `⚡ ${shortenLabel(goal)} ${dots} [${completed}/${total}] ${formatDuration(elapsed)}`;
+	return `⚡ ${truncateLabel(goal, 120)} ${dots} [${completed}/${total}] ${formatDuration(elapsed)}`;
 }
+
 // ============================================================================
-// Timeline — ordered frame history for orchestrator debug view
+// Timeline dump to disk
 // ============================================================================
-
-const MAX_TIMELINE_FRAMES = 200;
-
-export interface TimelineEntry {
-	t: number;
-	event: string;
-	render: string;
-	state: Record<string, unknown> | null;
-	feedState?: Record<string, unknown> | null;
-	feedRender?: string;
-}
-
-const _timeline: TimelineEntry[] = [];
-let _timelineStart = Date.now();
-let _sessionId: string | null = null;
-
-/** Snapshot current plan render lines as single string. */
-function snapshotPlanRender(): string {
-	return renderPlanLines().join("\n");
-}
-
-/** Snapshot current plan state as JSON-safe record. */
-function inspectPlanState(): Record<string, unknown> | null {
-	if (!planState) return null;
-	return {
-		goal: planState.goal,
-		steps: planState.steps.map(s => ({
-			label: s.label,
-			completed: s.completed,
-			active: s.active,
-			errored: s.errored,
-		})),
-		startTime: planState.startTime,
-	};
-}
-
-/**
- * Record a frame in the shared timeline.
- * Called by subagent-runner to push feed state snapshots alongside plan state.
- */
-export function recordTimelineFrame(
-	event: string,
-	feedState?: Record<string, unknown> | null,
-	feedRender?: string,
-): void {
-	if (_timeline.length >= MAX_TIMELINE_FRAMES) _timeline.shift();
-	_timeline.push({
-		t: Date.now() - _timelineStart,
-		event,
-		render: snapshotPlanRender(),
-		state: inspectPlanState(),
-		...(feedState !== undefined ? { feedState } : {}),
-		...(feedRender !== undefined ? { feedRender } : {}),
-	});
-}
-
-
-
-/** Return all recorded timeline entries. */
-export function getTimeline(): TimelineEntry[] {
-	return _timeline;
-}
-
-/** Return first and last timeline entries for diff inspection. */
-export function getTimelineDiff(): { first: TimelineEntry | null; last: TimelineEntry | null; count: number } {
-	return {
-		first: _timeline.length > 0 ? _timeline[0] : null,
-		last: _timeline.length > 0 ? _timeline[_timeline.length - 1] : null,
-		count: _timeline.length,
-	};
-}
 
 /**
  * Dump timeline to disk as JSON when a plan session completes.

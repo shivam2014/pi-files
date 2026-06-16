@@ -25,8 +25,8 @@ The orchestrator must **never cache agent outputs** across delegations. Each sub
 
 ### Token Efficiency
 
-- Plan panel must fit in <10 lines at all times
-- Substeps collapse aggressively: once a step completes, its substeps are removed from rendering
+- Plan panel must fit in 9 lines max (hard cap) — see SPEC-UI.md §1
+- Substeps collapse under their parent header, never erased. Layer 2 (chat history) keeps all completed substeps fully visible; Layer 1 (plan panel) trims oldest completed steps when over budget — see SPEC-UI.md §13 for the two-tier rule
 - Step labels are short (max ~60 chars) — truncated if longer
 - No debug-level output in plan panel (that's what the peek is for)
 - Status bar is single-line, always visible
@@ -103,7 +103,7 @@ When a subagent (scout, coder, etc.) is delegated:
 
 1. Subagent outputs its own **goal** (few words) and **steps** as `## Steps`
 2. Each subagent step executes with **substeps** (individual tool calls)
-3. Completed substeps **collapse** — they disappear from the view and the step is marked `✓`
+3. Completed substeps remain visible under their parent step. They are never removed — see SPEC-UI.md §13 for the two-tier rule (Layer 1 may trim oldest completed steps when over budget)
 4. Active step shows live tool calls as substeps beneath it
 5. Next step becomes active only after current step fully completes
 
@@ -127,7 +127,7 @@ Subagent receives: "Read the auth middleware files"
 
   → After all substeps complete:
     ✓ Find auth files (2s)
-    ✓ Read each file (12s)               ← collapsed, no substeps visible
+    ✓ Read each file (12s)               ← completed substeps remain visible
     ⠇ Summarize findings
 ```
 
@@ -146,7 +146,7 @@ At any time during delegation, the user can **peek inside** the subagent's conve
 - Errors immediately visible
 
 ### How to access
-- Keyboard shortcut (e.g., `Ctrl+P` to peek)
+- Keyboard shortcut (e.g., `Ctrl+Q` to peek — mnemonic "quick peek")
 - Opens an overlay showing the subagent's live conversation
 - Auto-scrolls as new content arrives
 - Two-press `x` to abort the subagent
@@ -181,7 +181,7 @@ Without the peek, the user sees only orchestration-level steps. With the peek, t
 │ │ ○ Verify fix                               │   │
 │ └────────────────────────────────────────────┘   │
 │                                                 │
-│ [Peek: Ctrl+P to see subagent conversation]      │  ← Layer 3 indicator
+│ [Peek: Ctrl+Q to see subagent conversation]      │  ← Layer 3 indicator
 └─────────────────────────────────────────────────┘
 ┌─────────────────────────────────────────────────┐
 │ ↑2.7k ↓903 R15k CH84% deepseek-v4-flash-2 • hi │  ← Status bar
@@ -212,11 +212,17 @@ Without the peek, the user sees only orchestration-level steps. With the peek, t
 |---------|--------|----------|
 | Plan panel with goal + steps | ✅ Working | P0 |
 | Subagent outputs ## Steps | ✅ Working | P0 |
-| Substeps shown under active step | ⚠️ Partial — sometimes replaces step labels | P0 |
-| Completed substeps collapse | ❌ Substeps erased instead of collapsing | P0 |
+| Substeps shown under active step | ⚠️ Partial — F1 bug (active substep + pending substeps silently dropped in renderActivityFeed) | P0 |
+| Completed substeps collapse | ⚠️ Partial — see SPEC-UI.md §13 (two-tier rule) | P0 |
 | Smart goal summarization | ❌ Using raw prompt text | P0 |
 | Cache safety (no cross-delegation caching) | ✅ Working by design | P0 |
-| Conversation viewer peek | ❌ Not implemented | P1 |
-| Keyboard shortcut for peek | ❌ Not implemented | P1 |
-| Token-efficient rendering (<10 lines) | ⚠️ Partial — some overflow edge cases | P1 |
+| Conversation viewer peek | ✅ Implemented (Layer 3) | P1 |
+| Keyboard shortcut for peek | ✅ Ctrl+Q | P1 |
+| Token-efficient rendering (9-line budget) | ⚠️ Partial — some overflow edge cases | P1 |
 | Status bar subagent count | ❌ Not implemented | P2 |
+
+## See Also
+
+- [BASH-TOKEN-SAVER-SPEC.md](./BASH-TOKEN-SAVER-SPEC.md) — RTK integration, token-saver compression, per-specialist bash restriction approach
+- [SPEC-UI.md](./SPEC-UI.md) — 3-layer UI/UX rendering specification
+- [LINT-SPEC.md](./LINT-SPEC.md) — Deterministic lint guard specification
