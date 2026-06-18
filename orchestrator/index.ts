@@ -20,9 +20,11 @@ import { clearPlanPanel } from "./plan-panel.ts";
 import { registerDelegateTool } from "./delegate-tool.ts";
 import { registerPlanTool } from "./plan-tool.ts";
 import { registerCommands } from "./commands.ts";
+import { registerFusionCommands } from "./fusion-commands.ts";
 import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
 import { SPECIALISTS, listSpecialists } from "./specialists.ts";
+import { registerFusionTool } from "./fusion-tool.ts";
 
 export default function (pi: ExtensionAPI) {
 	// ── Guard: Skip registration when loading for a subagent session ──
@@ -37,7 +39,13 @@ export default function (pi: ExtensionAPI) {
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
 		clearPlanPanel(ctx);
-		pi.setActiveTools(["plan", "delegate"]);
+		const activeTools = ["plan", "delegate"];
+		// Register fusion tool if config enables it
+		registerFusionTool(pi, ctx.cwd);
+		if (pi.getAllTools().some((t: any) => t.name === "fusion")) {
+			activeTools.push("fusion");
+		}
+		pi.setActiveTools(activeTools);
 
 		const cleanedPrompt = event.systemPrompt;
 
@@ -81,6 +89,20 @@ ${skillsSection}
 2. SECOND: For each step, call delegate(specialist, task, scope) to execute work.
 
 3. THIRD: Synthesize results.
+
+### Fusion Tool
+After scout/researcher return findings, call:
+fusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })
+for multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.
+
+When to use fusion:
+- After gathering research findings, before writing the final plan
+- When the plan has high cost of error (destructive operations, broad file changes)
+- When you need multiple perspectives on architectural decisions
+
+When to skip fusion:
+- Simple, tactical tasks with clear solutions
+- After delegation results that are straightforward
 
 NOTE: delegate() auto-creates a plan if plan() was not called first. Call plan() first for multi-step work.
 
@@ -169,7 +191,7 @@ If task ambiguous before starting:
 			}
 		}
 		if (_batchLoadSubagent > 0) return; // Don't block other subagent tools
-		if (event.toolName !== "delegate" && event.toolName !== "plan") {
+		if (event.toolName !== "delegate" && event.toolName !== "plan" && event.toolName !== "fusion") {
 			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
 		}
 	});
@@ -193,6 +215,7 @@ If task ambiguous before starting:
 	registerDelegateTool(pi);
 	registerPlanTool(pi);
 	registerCommands(pi);
+	registerFusionCommands(pi);
 
 	// ── Ctrl+Q: Peek overlay (Layer 3, mnemonic "quick peek") ──
 	pi.registerShortcut("ctrl+q", {

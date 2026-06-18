@@ -100,15 +100,51 @@ let _lastWidgetContent: string[] | null = null;
 // ============================================================================
 
 function toFeedState(planState: { goal: string; steps: PlanStep[]; startTime: number }): ActivityFeedState {
-	const steps: Step[] = planState.steps.map(ps => ({
-		label: truncateLabel(ps.label, 120),
-		completed: ps.completed,
-		startTime: undefined,
-		endTime: undefined,
-		// detailLines are already-formatted renderSubstepLines output
-		// They should NOT be re-wrapped as substeps (causes double-formatting)
-		substeps: [],
-	}));
+	const steps: Step[] = planState.steps.map(ps => {
+		let substeps: Substep[] = [];
+
+		if (ps.completed && ps.detailLines?.length) {
+			// Completed step: only show report findings
+			for (const line of ps.detailLines) {
+				const reportMatch = line.match(/^    ✓ Report: (.+)$/i);
+				if (reportMatch) {
+					substeps.push({ label: `Report: ${reportMatch[1].trim()}`, completed: true });
+				}
+			}
+		}
+
+		if (ps.active && ps.detailLines?.length) {
+			for (const line of ps.detailLines) {
+				// Report findings show as completed substeps
+				const reportMatch = line.match(/^    ✓ Report: (.+)$/i);
+				if (reportMatch) {
+					substeps.push({ label: `Report: ${reportMatch[1].trim()}`, completed: true });
+					continue;
+				}
+				// Other completed tool calls
+				const doneMatch = line.match(/^    ✓ (.+)$/);
+				if (doneMatch) {
+					substeps.push({ label: doneMatch[1].trim(), completed: true });
+					continue;
+				}
+				// Current active tool call (first spinner line)
+				const spinnerMatch = line.match(/^    [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (.+)$/);
+				if (spinnerMatch) {
+					if (!substeps.find(s => !s.completed)) {
+						substeps.push({ label: spinnerMatch[1].trim(), completed: false });
+					}
+				}
+			}
+		}
+
+		return {
+			label: truncateLabel(ps.label, 120),
+			completed: ps.completed,
+			startTime: ps.startTime,
+			endTime: ps.endTime,
+			substeps,
+		};
+	});
 	return {
 		goal: planState.goal,
 		steps,
@@ -410,7 +446,7 @@ export function pushPlanStep(label: string): void {
 
 	// Set startTime on the new step
 	const newStep = planState.steps[planState.steps.length - 1];
-	(newStep as any).startTime = Date.now();
+	newStep.startTime = Date.now();
 
 	resetSpinner();
 	_renderWidget();
@@ -437,8 +473,8 @@ export function startDelegationStep(label: string): void {
 		planState.steps[activeIdx].label = label;
 		planState.steps[activeIdx].active = true;
 		// Set startTime if not already set (e.g. relabel from pre-planned)
-		if (!(planState.steps[activeIdx] as any).startTime) {
-			(planState.steps[activeIdx] as any).startTime = Date.now();
+		if (!planState.steps[activeIdx].startTime) {
+			planState.steps[activeIdx].startTime = Date.now();
 		}
 		resetSpinner();
 		_renderWidget();
@@ -453,7 +489,7 @@ export function startDelegationStep(label: string): void {
 	if (pendingIdx >= 0) {
 		planState.steps[pendingIdx].label = label;
 		planState.steps[pendingIdx].active = true;
-		(planState.steps[pendingIdx] as any).startTime = Date.now();
+		planState.steps[pendingIdx].startTime = Date.now();
 		resetSpinner();
 		_renderWidget();
 		recordTimelineFrame("delegation_start");
@@ -508,8 +544,8 @@ export function setupPlanPanel(
 				completed: wasCompleted,
 				errored: false,
 				active: !wasCompleted && i === 0,
-				startTime: wasCompleted ? (old as any).startTime : (!wasCompleted && i === 0 ? Date.now() : undefined),
-				endTime: wasCompleted ? (old as any).endTime : undefined,
+				startTime: wasCompleted ? old.startTime : (!wasCompleted && i === 0 ? Date.now() : undefined),
+				endTime: wasCompleted ? old.endTime : undefined,
 			};
 		}),
 		startTime: sameGoal && previousStartTime ? previousStartTime : Date.now(),
@@ -537,7 +573,7 @@ export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: 
 		step.active = false;
 		step.detail = undefined;
 		step.detailLines = undefined;
-		(step as any).endTime = Date.now();
+		step.endTime = Date.now();
 	}
 	// Don't auto-activate next step — let startDelegationStep consume it
 	// when the next delegation actually begins. This avoids showing a
@@ -565,7 +601,7 @@ export function finalizePlanStep(ctx: { ui: { setWidget: (key: string, content: 
 		step.active = false;
 		step.detail = undefined;
 		step.detailLines = undefined;
-		(step as any).endTime = Date.now();
+		step.endTime = Date.now();
 	}
 	
 	_renderWidget();
@@ -590,7 +626,7 @@ export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: str
 		planState.steps[idx].errored = !aborted;  // don't mark errored if user aborted
 		planState.steps[idx].active = false;
 		planState.steps[idx].detail = undefined;
-		(planState.steps[idx] as any).endTime = Date.now();
+		planState.steps[idx].endTime = Date.now();
 	}
 	_renderWidget();
 	savePlanState();
@@ -610,8 +646,8 @@ export function retryPlanStep(): void {
 		planState.steps[idx].active = true;
 		planState.steps[idx].detail = undefined;
 		planState.steps[idx].detailLines = undefined;
-		(planState.steps[idx] as any).startTime = Date.now();
-		(planState.steps[idx] as any).endTime = undefined;
+		planState.steps[idx].startTime = Date.now();
+		planState.steps[idx].endTime = undefined;
 	}
 	_renderWidget();
 }

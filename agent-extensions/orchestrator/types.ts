@@ -81,6 +81,8 @@ export interface PlanStep {
 	errored?: boolean;
 	detail?: string;
 	detailLines?: string[];
+	startTime?: number;
+	endTime?: number;
 }
 
 export type ScopeGateMode = "strict" | "relaxed";
@@ -109,4 +111,33 @@ export interface DelegationMetrics {
 	bashCalls: number;
 	lsCalls: number;
 	scopeViolations: number;
+}
+
+export interface FusionConfig {
+	enabled?: boolean;
+	panel?: string[];
+	judge?: string;
+	maxPanelModels?: number;
+	temperature?: number;
+	maxTokensPerPanel?: number;
+	maxTokensForJudge?: number;
+}
+
+export interface FusionAnalysis {
+	consensus: string[];
+	contradictions: Array<{
+		topic: string;
+		stances: Array<{ model: string; stance: string }>;
+	}>;
+	unique_insights: Array<{ model: string; insight: string }>;
+	blind_spots: string[];
+	recommendations: string[];
+}
+
+export interface FusionResult {
+	status: "ok" | "error" | "single" | "disabled" | "no_judge";
+	analysis?: FusionAnalysis;
+	panelModels?: string[];
+	judgeModel?: string;
+	responses?: Array<{ model: string; content?: string; error?: string }>;
 }

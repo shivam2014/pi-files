@@ -135,7 +135,7 @@ This rendering shows:
 | Dot State   | Symbol | Condition                              |
 |-------------|--------|----------------------------------------|
 | Completed   | `●`    | Step is locked completed (checked)     |
-| Active      | `●`/`○`| Blinks between filled and unfilled at spinner rate (80ms) |
+| Active      | `●`/`○`| Blinks between filled and unfilled at 1s interval via `Math.floor(Date.now() / 1000) % 2` |
 | Errored    | `✗`    | Step encountered an error (substep shows error) |
 | Not reached | `○`    | Step has not started yet               |
 
@@ -147,7 +147,7 @@ This rendering shows:
 - Example: `●●● 3/3` means all steps completed
 - Example: `●✗○ 1/3` means 1 step completed, 1 step errored, 1 step pending
 
-**Blink rule:** The active step's dot alternates between `●` and `○` at 80ms, synchronized with the spinner animation. On even frames (frame 0, 2, 4, 6, 8) — `○`. On odd frames (1, 3, 5, 7, 9) — `●`.
+**Blink rule:** Active dot alternates `●`/`○` at **1s interval** via `Math.floor(Date.now() / 1000) % 2`. Even seconds → `○`. Odd seconds → `●`. This is independent from the spinner animation.
 
 ---
 
@@ -330,18 +330,17 @@ The active step's progress dot blinks to create visual distinction.
 
 **Mechanism:**
 - The dot alternates between `●` (filled) and `○` (unfilled)
-- Alternation rate matches the spinner: **80ms**
-- On **even frames** (0, 2, 4, 6, 8): active dot shows `○`
-- On **odd frames** (1, 3, 5, 7, 9): active dot shows `●`
-- This creates a pulsing/blinking effect for the in-progress step
+- Alternation rate is **1 second** via `Math.floor(Date.now() / 1000) % 2`
+- On **even seconds**: active dot shows `○`
+- On **odd seconds**: active dot shows `●`
+- This is independent from the spinner animation (which runs at 80ms)
+- 1s blink avoids visual noise — easy to see at a glance without being distracting
 
-**Example progression over 5 frames (160ms):**
+**Example progression over 3 seconds:**
 ```
-Frame 0:  ●○○ 1/3    (even frame — active dot is ○)
-Frame 1:  ●●○ 1/3    (odd frame — active dot is ●)
-Frame 2:  ●○○ 1/3    (even — ○)
-Frame 3:  ●●○ 1/3    (odd — ●)
-Frame 4:  ●○○ 1/3    (even — ○)
+t=0s:  ●○○ 1/3    (even second — active dot is ○)
+t=1s:  ●●○ 1/3    (odd second — active dot is ●)
+t=2s:  ●○○ 1/3    (even — ○)
 ```
 
 The first step is already completed (locked `●`), the second step is active (blinking), the third is pending (locked `○`).

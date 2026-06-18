@@ -537,7 +537,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 					lines.push(`    ${spinner} ${sub.label}`);
 					// Tool detail (ephemeral, only for active substep)
 					if (sub.toolDetail) {
-						lines.push(`        ${spinner} ${sub.toolDetail}`);
+						lines.push(`        ${spinner} Running: ${sub.toolDetail}`);
 					}
 				} else {
 					// Pending substep
