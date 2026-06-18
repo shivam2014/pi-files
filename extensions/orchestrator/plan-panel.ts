@@ -54,6 +54,7 @@ let planState: {
 	goal: string;
 	steps: PlanStep[];
 	startTime: number;
+	sessionId: string;
 } | null = null;
 
 function savePlanState(): void {
@@ -79,6 +80,7 @@ function loadPlanState(): typeof planState {
 			goal: saved.goal,
 			steps: saved.steps.map((s: any) => ({ ...s, active: false })),
 			startTime: saved.startTime || Date.now(),
+		sessionId: _sessionId ?? saved.sessionId ?? "unknown",
 		};
 	} catch { return null; }
 }
@@ -205,7 +207,7 @@ function trimToBudget(lines: string[], budget: number): string[] {
 		}
 	}
 
-	return result;
+	return result.slice(-budget);
 }
 
 /**
@@ -410,7 +412,7 @@ export function hasActivePlan(): boolean {
 }
 
 export function clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
-	if (_activeDelegations > 0) return;
+	if (_activeDelegations > 0 && planState?.sessionId === _sessionId) return;
 	dumpTimelineToDisk();
 	_sessionId = null;
 	stopPlanTimer();
@@ -428,7 +430,7 @@ export function clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: st
  * This allows the widget to show multi-step progress across sequential delegations.
  */
 export function pushPlanStep(label: string): void {
-	if (!planState) return;
+	if (!planState || planState.sessionId !== _sessionId) return;
 
 	// Mark current active step as completed if it exists and isn't already done
 	const activeIdx = planState.steps.findIndex((s) => s.active);
@@ -465,7 +467,7 @@ export function pushPlanStep(label: string): void {
  * and what's coming next (○).
  */
 export function startDelegationStep(label: string): void {
-	if (!planState) return;
+	if (!planState || planState.sessionId !== _sessionId) return;
 
 	// Case 1: Active step exists and isn't completed — relabel it
 	const activeIdx = planState.steps.findIndex((s) => s.active);
@@ -509,7 +511,7 @@ export function startDelegationStep(label: string): void {
  * Pass empty string to clear the detail.
  */
 export function updatePlanStepDetail(detail: string | string[]): void {
-	if (!planState) return;
+	if (!planState || planState.sessionId !== _sessionId) return;
 	const idx = planState.steps.findIndex((s) => s.active);
 	if (idx >= 0) {
 		if (Array.isArray(detail)) {
@@ -528,14 +530,18 @@ export function setupPlanPanel(
 	stepLabels: string[],
 	ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } },
 ): void {
-	_sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 	// Preserve completion state from existing in-memory plan — only if same goal
 	const sameGoal = planState?.goal === goal;
+	if (!sameGoal) {
+		_sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+		_activeDelegations = 0;
+	}
 	const oldSteps = sameGoal ? (planState?.steps || []) : [];
 	const previousStartTime = planState?.startTime;
 
 	planState = {
 		goal,
+		sessionId: _sessionId!,
 		steps: stepLabels.map((label, i) => {
 			const old = oldSteps.find(s => s.label === label);
 			const wasCompleted = old?.completed === true;
@@ -559,7 +565,7 @@ export function setupPlanPanel(
 }
 
 export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
-	if (!planState) return;
+	if (!planState || planState.sessionId !== _sessionId) return;
 	const idx = planState.steps.findIndex((s) => s.active);
 	if (idx >= 0) {
 		// Save substep history before clearing — show collapsed under completed step
@@ -588,7 +594,7 @@ export function completePlanStep(ctx: { ui: { setWidget: (key: string, content: 
  * Does NOT auto-clear — call clearPlanIfComplete separately after delegation count drops.
  */
 export function finalizePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
-	if (!planState) return;
+	if (!planState || planState.sessionId !== _sessionId) return;
 	
 	const idx = planState.steps.findIndex((s) => s.active);
 	if (idx >= 0) {
@@ -620,7 +626,7 @@ export function clearPlanIfComplete(ctx: { ui: { setWidget: (key: string, conten
 }
 
 export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, aborted?: boolean): void {
-	if (!planState) return;
+	if (!planState || planState.sessionId !== _sessionId) return;
 	const idx = planState.steps.findIndex((s) => s.active);
 	if ( idx >= 0) {
 		planState.steps[idx].errored = !aborted;  // don't mark errored if user aborted
@@ -638,7 +644,7 @@ export function errorPlanStep(ctx: { ui: { setWidget: (key: string, content: str
  * Clears errored flag and resets timestamps so the step can run again.
  */
 export function retryPlanStep(): void {
-	if (!planState) return;
+	if (!planState || planState.sessionId !== _sessionId) return;
 	const idx = planState.steps.findIndex((s) => s.errored);
 	if (idx >= 0) {
 		planState.steps[idx].errored = false;

@@ -401,9 +401,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("caveman", {
 		description: "Toggle token compression (lite/full/ultra/off)",
 		handler: async (args, ctx) => {
-			const level = args.trim().toLowerCase() as "lite" | "full" | "ultra" | "off";
+			const raw = args.trim().toLowerCase();
 
-			if (!level || !["lite", "full", "ultra", "off"].includes(level)) {
+			if (!raw || !["lite", "full", "ultra", "off"].includes(raw)) {
 				ctx.ui.notify(
 					`Token saver: ${enabled ? "ON" : "OFF"} (${currentTerseMode})\n` +
 					`Usage: /caveman [lite|full|ultra|off]\n\n` +
@@ -412,6 +412,8 @@ export default function (pi: ExtensionAPI) {
 				);
 				return;
 			}
+
+			const level = raw as "lite" | "full" | "ultra" | "off";
 
 			if (level === "off") {
 				enabled = false;
@@ -452,7 +454,7 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
 			if (!rtkAvailable) {
-				ctx.ui.notify("RTK binary not found. Install rtk: brew install rtk-ai/rtk/rtk", "warn");
+				ctx.ui.notify("RTK binary not found. Install rtk: brew install rtk-ai/rtk/rtk", "warning");
 				return;
 			}
 			if (arg === "on") {

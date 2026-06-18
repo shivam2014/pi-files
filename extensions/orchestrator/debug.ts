@@ -34,9 +34,20 @@ function cleanupOldLogs(): void {
 
 cleanupOldLogs();
 
-export function debugLog(msg: string, data?: any): void {
-	const line = data
-		? `[${new Date().toISOString()}] ${msg} ${JSON.stringify(data)}`
-		: `[${new Date().toISOString()}] ${msg}`;
+let debugEnabled = false;
+
+export function setDebugEnabled(enabled: boolean): void {
+	debugEnabled = enabled;
+}
+
+export function isDebugEnabled(): boolean {
+	return debugEnabled;
+}
+
+export function debugLog(...args: any[]): void {
+	if (!debugEnabled) return;
+	const line = `[${new Date().toISOString()}] ` + args.map((arg) =>
+		typeof arg === "string" ? arg : JSON.stringify(arg)
+	).join(" ");
 	try { appendFileSync(DEBUG_LOG, line + "\n"); } catch (e) { console.error("[debug] write failed:", e); }
 }

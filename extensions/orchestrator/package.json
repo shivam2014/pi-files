@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "test": "node node_modules/vitest/vitest.mjs run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "npx tsc --noEmit"
   }
 }

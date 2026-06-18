@@ -9,7 +9,7 @@
  * via pi.sendMessage() as visible tool calls so the original tool output stays intact.
  *
  * Project-agnostic: walks up directory tree to find config, falls back to standalone
- * checks for each language (tsc --strict, node --check, ruff, ruby -c, javac -Xlint).
+ * checks for each language.
  *
  * Languages: TS, JS, Python, Go, Rust, Java, Ruby
  * Tools: tsc, eslint, node, ruff, go vet, cargo, mvn, gradle, javac, rubocop, ruby
@@ -18,10 +18,10 @@
  *   ln -s "$(pwd)/lint-guard.ts" ~/.pi/agent/extensions/lint-guard.ts
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, isAbsolute, resolve, dirname, parse } from "node:path";
-import { homedir } from "node:os";
-import { spawn } from "node:child_process";
+import { homedir, platform } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -35,6 +35,47 @@ function expandTilde(p: string): string {
 function resolveFile(p: string): string {
 	return isAbsolute(expandTilde(p)) ? expandTilde(p) : p;
 }
+
+// ── Command availability ──────────────────────────────────────────────
+
+function commandExists(cmd: string): boolean {
+	const isWin = platform() === "win32";
+	const result = isWin
+		? spawnSync("where", [cmd], { stdio: "ignore" })
+		: spawnSync("sh", ["-c", `command -v ${cmd}`], { stdio: "ignore" });
+	return result.status === 0;
+}
+
+// ── Config roster ─────────────────────────────────────────────────────
+
+const CONFIG_ROSTER = [
+	"tsconfig.json",
+	"biome.json",
+	"biome.jsonc",
+	".eslintrc",
+	".eslintrc.js",
+	".eslintrc.cjs",
+	".eslintrc.yaml",
+	".eslintrc.json",
+	"eslint.config.js",
+	"eslint.config.mjs",
+	"eslint.config.cjs",
+	"eslint.config.ts",
+	"deno.json",
+	"deno.jsonc",
+	"pyproject.toml",
+	"ruff.toml",
+	"pyrightconfig.json",
+	"setup.cfg",
+	".flake8",
+	"go.mod",
+	"Cargo.toml",
+	"pom.xml",
+	"build.gradle",
+	"build.gradle.kts",
+	".rubocop.yml",
+	".rubocop.yaml",
+];
 
 // ── walkUpForConfig ───────────────────────────────────────────────────
 // Walk up directory tree from filePath looking for config files.
@@ -61,10 +102,10 @@ function walkUpForConfig(
 // ── LintTool / LintResult types ───────────────────────────────────────
 
 interface LintTool {
-	tool: string; // executable name (npx, ruff, go, cargo, etc.)
+	tool: string; // executable name
 	args: string[]; // arguments including file path if applicable
-	cwd?: string; // working directory (project root if config found)
-	name: string; // display name (tsc, ruff, go vet, etc.)
+	cwd?: string; // working directory
+	name: string; // display name
 }
 
 interface LintResult {
@@ -74,29 +115,30 @@ interface LintResult {
 	file: string;
 }
 
+// ── Gradle executable selection ───────────────────────────────────────
+
+function gradleTool(configDir: string): string {
+	const isWin = platform() === "win32";
+	const wrapperName = isWin ? "gradlew.bat" : "gradlew";
+	const wrapperExec = isWin ? "gradlew.bat" : "./gradlew";
+	if (existsSync(join(configDir, wrapperName))) return wrapperExec;
+	if (commandExists("gradle")) return "gradle";
+	return wrapperExec;
+}
+
 // ── detectTool ────────────────────────────────────────────────────────
-// Language-based tool selection. Walks up for project config first,
-// falls back to standalone checks for each language.
+// Language-based tool selection. Walks up from the resolved file to find
+// project config, falls back to standalone checks for each language.
 
 function detectTool(filePath: string, cwd: string): LintTool | null {
-	const ext = filePath.split(".").pop()?.toLowerCase();
+	const resolvedFile = resolve(cwd, filePath);
+	const standaloneCwd = dirname(resolvedFile);
+	const ext = resolvedFile.split(".").pop()?.toLowerCase();
 
-	// Walk up from the file's directory to find project config
-	const config = walkUpForConfig(filePath, [
-		"tsconfig.json",
-		"biome.json",
-		"biome.jsonc",
-		"eslint.config.js",
-		"eslint.config.mjs",
-		"pyproject.toml",
-		"ruff.toml",
-		"go.mod",
-		"Cargo.toml",
-		"pom.xml",
-		"build.gradle",
-		"build.gradle.kts",
-		".rubocop.yml",
-	]);
+	const config = walkUpForConfig(resolvedFile, CONFIG_ROSTER);
+	const isEslintConfig =
+		config &&
+		(config.name.startsWith("eslint") || config.name.startsWith(".eslintrc"));
 
 	switch (ext) {
 		// ── TypeScript ──
@@ -107,56 +149,74 @@ function detectTool(filePath: string, cwd: string): LintTool | null {
 				config?.name === "biome.json" ||
 				config?.name === "biome.jsonc"
 			) {
+				const useNpx = commandExists("npx");
 				return {
-					tool: "npx",
-					args: ["tsc", "--noEmit", "--incremental"],
+					tool: useNpx ? "npx" : "tsc",
+					args: useNpx ? ["tsc", "--noEmit", "--incremental"] : ["--noEmit", "--incremental"],
 					cwd: config.dir,
 					name: "tsc",
 				};
 			}
-			if (config?.name?.startsWith("eslint")) {
+			if (isEslintConfig) {
 				return {
 					tool: "npx",
-					args: ["eslint", filePath, "--no-error-on-unmatched-pattern"],
+					args: ["eslint", resolvedFile, "--no-error-on-unmatched-pattern"],
+					cwd: config.dir,
 					name: "eslint",
 				};
 			}
-			// Standalone: no config needed
-			return {
-				tool: "npx",
-				args: ["tsc", "--noEmit", "--strict", filePath],
-				name: "tsc",
-			};
+			// Standalone
+			{
+				const useNpx = commandExists("npx");
+				return {
+					tool: useNpx ? "npx" : "tsc",
+					args: useNpx
+						? ["tsc", "--noEmit", "--strict", resolvedFile]
+						: ["--noEmit", "--strict", resolvedFile],
+					cwd: standaloneCwd,
+					name: "tsc",
+				};
+			}
 
 		// ── JavaScript ──
 		case "js":
 		case "jsx":
 		case "mjs":
 			if (config?.name === "tsconfig.json") {
+				const useNpx = commandExists("npx");
 				return {
-					tool: "npx",
-					args: ["tsc", "--allowJs", "--checkJs", "--noEmit"],
+					tool: useNpx ? "npx" : "tsc",
+					args: useNpx
+						? ["tsc", "--allowJs", "--checkJs", "--noEmit"]
+						: ["--allowJs", "--checkJs", "--noEmit"],
 					cwd: config.dir,
 					name: "tsc",
 				};
 			}
-			if (config?.name?.startsWith("eslint")) {
+			if (isEslintConfig) {
 				return {
 					tool: "npx",
-					args: ["eslint", filePath, "--no-error-on-unmatched-pattern"],
+					args: ["eslint", resolvedFile, "--no-error-on-unmatched-pattern"],
+					cwd: config.dir,
 					name: "eslint",
 				};
 			}
 			// Standalone: node --check
-			return { tool: "node", args: ["--check", filePath], name: "node" };
+			return { tool: "node", args: ["--check", resolvedFile], cwd: standaloneCwd, name: "node" };
 
 		// ── Python ──
-		case "py":
-			if (config?.name === "ruff.toml" || config?.name === "pyproject.toml") {
-				return { tool: "ruff", args: ["check", filePath], name: "ruff" };
+		case "py": {
+			const useRuff = commandExists("ruff");
+			if (useRuff) {
+				return { tool: "ruff", args: ["check", resolvedFile], cwd: standaloneCwd, name: "ruff" };
 			}
-			// ruff works zero-config
-			return { tool: "ruff", args: ["check", filePath], name: "ruff" };
+			return {
+				tool: "python",
+				args: ["-m", "py_compile", resolvedFile],
+				cwd: standaloneCwd,
+				name: "py_compile",
+			};
+		}
 
 		// ── Go ──
 		case "go":
@@ -168,7 +228,12 @@ function detectTool(filePath: string, cwd: string): LintTool | null {
 					name: "go vet",
 				};
 			}
-			return null; // No standalone Go check
+			return {
+				tool: "gofmt",
+				args: ["-l", resolvedFile],
+				cwd: standaloneCwd,
+				name: "gofmt",
+			};
 
 		// ── Rust ──
 		case "rs":
@@ -180,7 +245,12 @@ function detectTool(filePath: string, cwd: string): LintTool | null {
 					name: "cargo",
 				};
 			}
-			return null;
+			return {
+				tool: "rustc",
+				args: ["--emit=metadata", resolvedFile],
+				cwd: standaloneCwd,
+				name: "rustc",
+			};
 
 		// ── Java ──
 		case "java":
@@ -197,22 +267,27 @@ function detectTool(filePath: string, cwd: string): LintTool | null {
 				config?.name === "build.gradle.kts"
 			) {
 				return {
-					tool: "./gradlew",
+					tool: gradleTool(config.dir),
 					args: ["compileJava", "--quiet"],
 					cwd: config.dir,
 					name: "gradle",
 				};
 			}
 			// Standalone: javac single file
-			return { tool: "javac", args: ["-Xlint:all", filePath], name: "javac" };
+			return {
+				tool: "javac",
+				args: ["-Xlint:all", resolvedFile],
+				cwd: standaloneCwd,
+				name: "javac",
+			};
 
 		// ── Ruby ──
 		case "rb":
-			if (config?.name === ".rubocop.yml") {
-				return { tool: "rubocop", args: [filePath], name: "rubocop" };
+			if (config?.name === ".rubocop.yml" || config?.name === ".rubocop.yaml") {
+				return { tool: "rubocop", args: [resolvedFile], cwd: standaloneCwd, name: "rubocop" };
 			}
 			// Standalone: ruby -c
-			return { tool: "ruby", args: ["-c", filePath], name: "ruby" };
+			return { tool: "ruby", args: ["-c", resolvedFile], cwd: standaloneCwd, name: "ruby" };
 
 		default:
 			return null;
@@ -228,7 +303,7 @@ function runTool(tool: LintTool, filePath: string): Promise<LintResult> {
 		const child = spawn(tool.tool, tool.args, {
 			cwd: tool.cwd || process.cwd(),
 			stdio: ["ignore", "pipe", "pipe"],
-			timeout: 10_000, // 10s timeout
+			timeout: 10_000,
 		});
 
 		let stdout = "";
@@ -242,12 +317,19 @@ function runTool(tool: LintTool, filePath: string): Promise<LintResult> {
 		});
 
 		child.on("close", (code) => {
-			const output = (stdout + stderr).trim();
-			const success = code === 0;
+			let output = (stdout + stderr).trim();
+			let success = code === 0;
+
+			if (tool.name === "gofmt") {
+				success = code === 0 && output.length === 0;
+				if (!success && output.length === 0) {
+					output = "gofmt would reformat this file";
+				}
+			}
 
 			resolve({
 				success,
-				errors: success ? "" : output.slice(0, 2000), // cap at 2k chars
+				errors: success ? "" : output.slice(0, 2000),
 				tool: tool.name,
 				file: filePath,
 			});
@@ -278,19 +360,18 @@ function emitLintResult(pi: ExtensionAPI, result: LintResult) {
 	const content = result.success
 		? `${icon} [${result.tool}] ${fileName}: OK`
 		: `${icon} [${result.tool}] ${fileName}:\n  ${result.errors}`;
+	const success = result.success;
+	const tool = result.tool;
 
 	pi.sendMessage({
-		role: "tool",
-		toolCallId: `lint-auto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-		toolName: "lint",
-		content,
-		details: {
-			tool: result.tool,
-			success: result.success,
-			filesChecked: [result.file],
-			autoLint: true,
-		},
-	});
+		customType: "lint",
+		content: [{
+			type: "text",
+			text: `🛠 Auto-lint (${tool}): ${success ? "✓ passed" : "✗ failed"}${!success ? "\n\nFix the reported issues before proceeding." : ""}\n\n${content}`,
+		}],
+		display: true,
+		details: { tool, success, filesChecked: [result.file], autoLint: true },
+	}, { triggerTurn: !success });
 }
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -309,19 +390,35 @@ export default function (pi: ExtensionAPI) {
 		if (!autoLint) return;
 		if (event.toolName !== "edit" && event.toolName !== "write") return;
 
-		const rawPath =
-			(event.input as Record<string, unknown>)?.path ||
-			(event.input as Record<string, unknown>)?.file_path;
-		if (!rawPath || typeof rawPath !== "string") return;
+		const input = event.input as Record<string, unknown>;
+		const rawPaths: string[] = [];
+		for (const key of ["path", "file_path", "paths", "files"]) {
+			const val = input[key];
+			if (typeof val === "string") {
+				rawPaths.push(val);
+			} else if (Array.isArray(val)) {
+				for (const v of val) {
+					if (typeof v === "string") rawPaths.push(v);
+				}
+			}
+		}
+		if (rawPaths.length === 0) return;
 
-		// Track for manual lint command
-		lastEditedFiles.push(rawPath);
+		for (const rawPath of rawPaths) {
+			const resolvedPath = resolve(ctx.cwd, rawPath);
 
-		const tool = detectTool(rawPath, ctx.cwd);
-		if (!tool) return;
+			// Track for manual lint command, capped at last 50
+			lastEditedFiles.push(resolvedPath);
+			if (lastEditedFiles.length > 50) {
+				lastEditedFiles = lastEditedFiles.slice(-50);
+			}
 
-		const result = await runTool(tool, rawPath);
-		emitLintResult(pi, result);
+			const tool = detectTool(resolvedPath, ctx.cwd);
+			if (!tool) continue;
+
+			const result = await runTool(tool, resolvedPath);
+			emitLintResult(pi, result);
+		}
 	});
 
 	// ── Block bash+sed/awk — enforce edit/write for file modifications ─
@@ -332,7 +429,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (
 			event.toolName === "bash" &&
-			event.input.command &&
+			typeof event.input.command === "string" &&
 			SED_PATTERN.test(event.input.command)
 		) {
 			return {
@@ -417,6 +514,17 @@ export default function (pi: ExtensionAPI) {
 			"Run tsc --noEmit. Use after code changes to verify types.",
 		parameters: Type.Object({}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const tsconfigPath = join(ctx.cwd, "tsconfig.json");
+			if (!existsSync(tsconfigPath)) {
+				return {
+					content: [{
+						type: "text",
+						text: "No tsconfig.json in workspace; skipping typecheck.",
+					}],
+					details: { success: true },
+				};
+			}
+
 			onUpdate?.({
 				content: [{ type: "text", text: "Running tsc --noEmit..." }],
 				details: { status: "running" },
@@ -459,7 +567,6 @@ export default function (pi: ExtensionAPI) {
 							},
 						],
 						details: { success, errors: capped },
-						isError: !success,
 					});
 				});
 
@@ -472,7 +579,6 @@ export default function (pi: ExtensionAPI) {
 							},
 						],
 						details: { success: false },
-						isError: true,
 					});
 				});
 

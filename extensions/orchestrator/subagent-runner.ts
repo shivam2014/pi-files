@@ -153,7 +153,7 @@ export async function runSubagent(
 		// Load extensions for subagent, flag context so orchestrator skips re-registration
 		_batchLoadSubagent++;
 		process.env[SUBAGENT_ENV_KEY] = "1";
-		let loader: DefaultResourceLoader;
+		let loader: DefaultResourceLoader | undefined;
 		try {
 			loader = new DefaultResourceLoader({
 				cwd,
@@ -161,9 +161,9 @@ export async function runSubagent(
 				systemPromptOverride: () => {
 				let prompt = specialist.systemPrompt;
 				if (scope) {
-					const modFiles = scope.filesToModify?.length > 0 ? scope.filesToModify.map(f => `  - ${f}`).join('\n') : '  - (none)';
-					const createFiles = scope.filesToCreate?.length > 0 ? scope.filesToCreate.map(f => `  - ${f}`).join('\n') : '  - (none)';
-					const dirs = scope.directories?.length > 0 ? scope.directories.join(', ') : '(none)';
+					const modFiles = scope.filesToModify.length > 0 ? scope.filesToModify.map(f => `  - ${f}`).join('\n') : '  - (none)';
+					const createFiles = scope.filesToCreate.length > 0 ? scope.filesToCreate.map(f => `  - ${f}`).join('\n') : '  - (none)';
+					const dirs = scope.directories.length > 0 ? scope.directories.join(', ') : '(none)';
 					prompt += `\n\n## Scope Restrictions\nYou may ONLY modify/create files within this scope:\n- Files to modify:\n${modFiles}\n- Files to create:\n${createFiles}\n- Allowed directories: ${dirs}\n- Max files: ${scope.maxFiles ?? 10}\n- Changes beyond scope require approval: ${scope.requiresApprovalBeyondScope ?? true}\n`;
 					if (scope.changeType) {
 						prompt += `- Change type: ${scope.changeType} (${scope.changeType === 'single-file' ? 'edit one file' : 'may edit multiple files'})\n`;
@@ -292,7 +292,7 @@ export async function runSubagent(
 				...(specialist.name === "scout" ? [gitReadTool, ghTool] : []),
 			],
 			excludeTools,
-			resourceLoader: loader,
+			resourceLoader: loader!,
 			sessionManager: SessionManager.inMemory(cwd),
 			authStorage,
 			modelRegistry,
@@ -336,10 +336,11 @@ export async function runSubagent(
 				}
 
 				// Capture lint-guard tool messages: integrate into feed + forward to onUpdate
-				if ((event as any).message?.role === "tool" && (event as any).message?.toolName === "lint") {
-					const lintContent = typeof event.message.content === "string"
-						? event.message.content
-						: JSON.stringify(event.message.content ?? "");
+				const lintMsg = (event as any).message;
+				if (lintMsg?.role === "tool" && lintMsg?.toolName === "lint") {
+					const lintContent = typeof lintMsg.content === "string"
+						? lintMsg.content
+						: JSON.stringify(lintMsg.content ?? "");
 
 					// Add lint result as a substep in the feed (visible in delegation step/substep view)
 					feed = addSubstep(feed, lintContent.slice(0, 80));
@@ -349,10 +350,10 @@ export async function runSubagent(
 					// Forward lint content to the delegation output blob
 					output += "\n" + lintContent + "\n";
 					onUpdate?.({
-						content: typeof event.message.content === "string"
-							? [{ type: "text", text: event.message.content }]
-							: (event.message.content ?? []),
-						details: { specialist: specialist.name, status: "lint", ...(event.message.details ?? {}) },
+						content: typeof lintMsg.content === "string"
+							? [{ type: "text", text: lintMsg.content }]
+							: (lintMsg.content ?? []),
+						details: { specialist: specialist.name, status: "lint", ...(lintMsg.details ?? {}) },
 					});
 				}
 			}
@@ -398,7 +399,9 @@ export async function runSubagent(
 
 								// Update plan panel from new feed state
 								const newActiveStep = feed.steps[feed.currentStep];
-								updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps));
+								if (newActiveStep) {
+									updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps));
+								}
 
 								// Emit onUpdate so UI stays responsive during tool execution
 								const text = renderActivityFeed(specialist.name, feed);
@@ -442,7 +445,7 @@ export async function runSubagent(
 				feed = completeLastSubstep(feed, outputPreview, isError);
 				// After edit/write tool completion, add lint indicator substep
 				if (!isError && (event.toolName === "edit" || event.toolName === "write")) {
-					feed = addSubstep(feed, `lint: checking ${event.arguments?.filePath ?? event.arguments?.path ?? "files"}...`);
+					feed = addSubstep(feed, `lint: checking ${(event as any).arguments?.filePath ?? (event as any).arguments?.path ?? "files"}...`);
 				}
 				recordTimelineFrame("tool_end", inspectFeedState(feed), snapshotFeedRender(feed));
 				_lastFeedSnapshot = null;

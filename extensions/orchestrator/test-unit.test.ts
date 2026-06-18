@@ -2,7 +2,7 @@
  * Unit tests for orchestrator critical fixes.
  * Run: npx vitest run test-unit.test.ts
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { createActivityFeed, addStep, addSubstep, completeCurrentStep, completeLastSubstep, renderActivityFeed, renderProgress } from "./activity-feed";
 import { formatDuration } from "./ui-utils";
 
@@ -116,6 +116,14 @@ describe("completeLastSubstep — immutability", () => {
 // ============================================================================
 
 describe("renderActivityFeed — snapshots", () => {
+	beforeAll(() => {
+		vi.spyOn(Date, "now").mockReturnValue(1_000_000_000);
+	});
+
+	afterAll(() => {
+		vi.restoreAllMocks();
+	});
+
 	it("empty state", () => {
 		const state = createActivityFeed();
 		const output = renderActivityFeed("scout", state);

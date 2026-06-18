@@ -8,6 +8,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { setDebugEnabled, isDebugEnabled } from "./debug.ts";
+import { getRegisteredFeed } from "./peek-overlay.ts";
 import { SPECIALISTS, listSpecialists } from "./specialists.ts";
 
 /**
@@ -95,7 +97,72 @@ export function registerCommands(pi: ExtensionAPI): void {
 				const { writeFileSync } = await import("node:fs");
 				writeFileSync("/tmp/orchestrator-timeline-diff.json", json, "utf-8");
 			} catch (e) { console.error("[commands] write failed:", e); }
-			ctx.ui.notify(`Timeline diff: ${diff.length} transitions → /tmp/orchestrator-timeline-diff.json`, "info");
+			ctx.ui.notify(`Timeline diff: ${diff.count} transitions → /tmp/orchestrator-timeline-diff.json`, "info");
 		},
 	});
+
+	pi.registerCommand("debug-orchestrator", {
+		description: "Show orchestrator debug snapshot and toggle debug logging (/debug-orchestrator [on|off|status])",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim().toLowerCase();
+			if (trimmed === "on") {
+				setDebugEnabled(true);
+				ctx.ui.notify("Orchestrator debug logging enabled → /tmp/orchestrator-debug/", "info");
+				return;
+			}
+			if (trimmed === "off") {
+				setDebugEnabled(false);
+				ctx.ui.notify("Orchestrator debug logging disabled", "info");
+				return;
+			}
+
+			const snapshot = await snapshotOrchestratorState();
+			const json = JSON.stringify(snapshot, null, 2);
+			try {
+				const { writeFileSync } = await import("node:fs");
+				writeFileSync("/tmp/orchestrator-snapshot.json", json, "utf-8");
+			} catch (e) {
+				console.error("[commands] snapshot write failed:", e);
+			}
+			ctx.ui.notify(`Orchestrator snapshot → /tmp/orchestrator-snapshot.json\n${json.slice(0, 200)}...`, "info");
+		},
+	});
+}
+
+/**
+ * Build a snapshot of orchestrator runtime state for /debug-orchestrator status.
+ */
+export async function snapshotOrchestratorState(): Promise<object> {
+	const { inspectPlanState } = await import("./plan-panel.ts");
+	const { loadFusionConfig } = await import("./fusion-tool.ts");
+	const { existsSync } = await import("node:fs");
+	const { join } = await import("node:path");
+	const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+
+	const cwd = process.cwd();
+	const plan = inspectPlanState();
+	const feed = getRegisteredFeed();
+	const fusionConfig = loadFusionConfig(cwd);
+
+	return {
+		debugEnabled: isDebugEnabled(),
+		plan,
+		feed: feed
+			? {
+					goal: feed.goal,
+					stepCount: feed.steps.length,
+					currentStep: feed.currentStep,
+					planParsed: feed.planParsed,
+				}
+			: null,
+		activeDelegations: plan?.activeDelegations ?? 0,
+		fusion: {
+			enabled: fusionConfig.enabled,
+			panelModelCount: fusionConfig.panel.length,
+			hasJudge: !!fusionConfig.judge,
+			projectConfigExists: existsSync(join(cwd, ".pi", "fusion.json")),
+			globalConfigExists: existsSync(join(getAgentDir(), "fusion.json")),
+		},
+		timestamp: Date.now(),
+	};
 }

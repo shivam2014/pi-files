@@ -8,18 +8,44 @@ import { join, dirname } from "node:path";
 import type { FusionConfig, FusionAnalysis } from "./types.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
+import { debugLog } from "./debug.ts";
 
 // ─── Report-Finding Tool (for panel models) ─────────────
 
 const reportFindingTool = {
 	name: "reportFinding",
-	description: "Report an important finding, key insight, or recommendation during your analysis. Call this for each noteworthy point you discover.",
+	description: "Report each distinct finding, key insight, or recommendation during your analysis. You MUST call this tool once for every separate point you identify; do not group multiple findings into a single call.",
 	parameters: Type.Object({
 		finding: Type.String({ description: "The key finding, insight, or recommendation" }),
 	}),
 };
 
 // ─── Config ────────────────────────────────────────────────
+
+export function getDefaultReasoningEffort(model: any): string {
+	const map = model?.thinkingLevelMap;
+	if (map && typeof map === "object") {
+		if (map["medium"] != null) return "medium";
+		for (const key of Object.keys(map)) {
+			if (map[key] != null) return key;
+		}
+	}
+	return "medium";
+}
+
+export function extractText(response: AssistantMessage): string {
+	const textBlocks = response.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map((c) => c.text);
+	const text = textBlocks.join("\n");
+	if (text) {
+		return text;
+	}
+	return response.content
+		.filter((c): c is { type: "thinking"; thinking: string } => c.type === "thinking")
+		.map((c) => c.thinking)
+		.join("\n");
+}
 
 export function loadFusionConfig(cwd: string): Required<FusionConfig> {
 	const projectPath = join(cwd, ".pi", "fusion.json");
@@ -30,13 +56,17 @@ export function loadFusionConfig(cwd: string): Required<FusionConfig> {
 	if (existsSync(globalPath)) {
 		try {
 			config = JSON.parse(readFileSync(globalPath, "utf-8"));
-		} catch { /* ignore */ }
+		} catch (err: any) {
+			debugLog("fusion-tool: failed to load global fusion config", { globalPath, error: err.message ?? String(err) });
+		}
 	}
 	if (existsSync(projectPath)) {
 		try {
 			const projectConfig = JSON.parse(readFileSync(projectPath, "utf-8"));
 			config = { ...config, ...projectConfig };
-		} catch { /* ignore */ }
+		} catch (err: any) {
+			debugLog("fusion-tool: failed to load project fusion config", { projectPath, error: err.message ?? String(err) });
+		}
 	}
 
 	return {
@@ -47,6 +77,153 @@ export function loadFusionConfig(cwd: string): Required<FusionConfig> {
 		temperature: config.temperature ?? 0.3,
 		maxTokensPerPanel: config.maxTokensPerPanel ?? 2048,
 		maxTokensForJudge: config.maxTokensForJudge ?? 4096,
+	};
+}
+
+function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+	return new Promise((resolve, reject) => {
+		const results: R[] = new Array(items.length);
+		let index = 0;
+		let running = 0;
+		let rejected = false;
+
+		function next() {
+			if (rejected) return;
+			if (index >= items.length) {
+				if (running === 0) resolve(results);
+				return;
+			}
+			const current = index++;
+			running++;
+			fn(items[current])
+				.then((result) => {
+					results[current] = result;
+					running--;
+					next();
+				})
+				.catch((err) => {
+					rejected = true;
+					reject(err);
+				});
+		}
+
+		for (let i = 0; i < Math.min(limit, items.length); i++) {
+			next();
+		}
+	});
+}
+
+export function extractJsonObject(text: string): string | null {
+	if (!text) return null;
+
+	// Strip markdown fences
+	const withoutFences = text
+		.replace(/```(?:json)?\s*([\s\S]*?)```/g, (_, inner: string) => inner)
+		.trim();
+
+	const objects: string[] = [];
+	let inString = false;
+	let escape = false;
+	let depth = 0;
+	let start = -1;
+
+	for (let i = 0; i < withoutFences.length; i++) {
+		const char = withoutFences[i];
+
+		if (escape) {
+			escape = false;
+			continue;
+		}
+		if (char === "\\") {
+			escape = true;
+			continue;
+		}
+		if (char === '"') {
+			inString = !inString;
+			continue;
+		}
+		if (inString) continue;
+
+		if (char === "{") {
+			if (depth === 0) start = i;
+			depth++;
+		} else if (char === "}") {
+			if (depth > 0) {
+				depth--;
+				if (depth === 0 && start !== -1) {
+					objects.push(withoutFences.slice(start, i + 1));
+					start = -1;
+				}
+			}
+		}
+	}
+
+	return objects.length > 0 ? objects[objects.length - 1] : null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+function isContradictions(value: unknown): value is FusionAnalysis["contradictions"] {
+	if (!Array.isArray(value)) return false;
+	return value.every(
+		(c) =>
+			typeof c === "object" &&
+			c !== null &&
+			typeof (c as any).topic === "string" &&
+			Array.isArray((c as any).stances) &&
+			(c as any).stances.every(
+				(s: unknown) =>
+					typeof s === "object" &&
+					s !== null &&
+					typeof (s as any).model === "string" &&
+					typeof (s as any).stance === "string",
+			),
+	);
+}
+
+function isUniqueInsights(value: unknown): value is FusionAnalysis["unique_insights"] {
+	if (!Array.isArray(value)) return false;
+	return value.every(
+		(i) =>
+			typeof i === "object" &&
+			i !== null &&
+			typeof (i as any).model === "string" &&
+			typeof (i as any).insight === "string",
+	);
+}
+
+export function parseJudgeAnalysis(text: string): FusionAnalysis | null {
+	const jsonText = extractJsonObject(text);
+	if (!jsonText) return null;
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(jsonText);
+	} catch {
+		return null;
+	}
+
+	if (typeof parsed !== "object" || parsed === null) return null;
+	const a = parsed as Record<string, unknown>;
+
+	if (
+		!isStringArray(a.consensus) ||
+		!isContradictions(a.contradictions) ||
+		!isUniqueInsights(a.unique_insights) ||
+		!isStringArray(a.blind_spots) ||
+		!isStringArray(a.recommendations)
+	) {
+		return null;
+	}
+
+	return {
+		consensus: a.consensus,
+		contradictions: a.contradictions,
+		unique_insights: a.unique_insights,
+		blind_spots: a.blind_spots,
+		recommendations: a.recommendations,
 	};
 }
 
@@ -74,9 +251,23 @@ async function runPanelModel(
 		{ role: "user", content: [{ type: "text", text: userPrompt }], timestamp: Date.now() },
 	];
 	const reports: string[] = [];
+	const assistantTextParts: string[] = [];
 	const modelId = model.id;
+	debugLog("fusion-tool: panel model start", { model: modelId });
+	const maxLoops = 10;
+	let loopCount = 0;
 
 	while (true) {
+		loopCount++;
+		if (loopCount > maxLoops) {
+			const currentText = assistantTextParts.join("\n");
+			debugLog("fusion-tool: panel model exceeded max loops", { model: modelId, loops: loopCount, textLength: currentText.length });
+			if (currentText) {
+				return { model: modelId, content: currentText, reports, error: "Max iterations exceeded" };
+			}
+			return { model: modelId, error: "Max iterations exceeded" };
+		}
+
 		try {
 			const response = await complete(model, {
 				systemPrompt,
@@ -89,26 +280,34 @@ async function runPanelModel(
 				maxTokens: config.maxTokens,
 				temperature: config.temperature,
 				sessionId,
+				reasoningEffort: model.reasoning ? getDefaultReasoningEffort(model) : undefined,
+				timeoutMs: 30_000,
 			});
 
 			// Handle error/aborted responses
 			if (response.stopReason === "error" || response.stopReason === "aborted") {
 				const errMsg = (response as any).errorMessage || `Model stopped: ${response.stopReason}`;
+				debugLog("fusion-tool: panel model stopped", { model: modelId, stopReason: response.stopReason, error: errMsg });
 				return { model: modelId, error: errMsg };
+			}
+
+			// Preserve any assistant text present in this response
+			const responseText = extractText(response);
+			if (responseText) {
+				assistantTextParts.push(responseText);
 			}
 
 			const toolCalls = response.content?.filter((c: any) => c.type === "toolCall") || [];
 
 			if (toolCalls.length > 0) {
+				// Push assistant response with tool_calls first (required by OpenAI/DeepSeek format)
+				messages.push(response);
+
 				for (const tc of toolCalls) {
 					const toolCall = tc as any;
 					if (toolCall.name === "reportFinding") {
 						const finding = toolCall.arguments?.finding || "";
 						reports.push(finding);
-						onUpdate?.({
-							content: [{ type: "text", text: `  ── Panel: ${modelId} ──\n  ✓ Report: ${finding}` }],
-							details: { phase: "panel_report", model: modelId, finding },
-						});
 					}
 					messages.push({
 						role: "toolResult" as const,
@@ -123,11 +322,30 @@ async function runPanelModel(
 				continue;
 			}
 
-			// No tool calls — extract text content
-			const text = extractText(response);
+			// No tool calls — use all collected assistant text
+			const text = assistantTextParts.join("\n");
+			if (!text) {
+				debugLog("fusion-tool: panel model returned empty response", { model: modelId, contentTypes: response.content?.map((c: any) => c.type) });
+				return { model: modelId, error: "Empty response from model" };
+			}
+
+			// Deterministic fallback: ensure every panelist contributes at least one finding
+			if (reports.length === 0) {
+				reports.push(text);
+			}
+
+			if (reports.length > 0) {
+				const reportLines = reports.map(r => `  ✓ ${r}`).join("\n");
+				onUpdate?.({
+					content: [{ type: "text", text: `  ── Panel: ${modelId} ──\n${reportLines}` }],
+					details: { phase: "panel_reports", model: modelId, count: reports.length },
+				});
+			}
+			debugLog("fusion-tool: panel model complete", { model: modelId, textLength: text.length, reports: reports.length });
 			return { model: modelId, content: text, reports };
 
 		} catch (err: any) {
+			debugLog("fusion-tool: panel model error", { model: modelId, error: err.message ?? String(err) });
 			return { model: modelId, error: err.message ?? String(err) };
 		}
 	}
@@ -202,7 +420,9 @@ export function registerFusionTool(pi: ExtensionAPI, cwd: string): void {
 			}
 
 			// Build prompt
-			const systemPrompt = "You are a planning advisor. Analyze the context below and provide your best plan or critique. Be specific, practical, and consider edge cases. Focus on correctness, tradeoffs, and potential blind spots.";
+			const systemPrompt = `You are a planning advisor. Analyze the context below and provide your best plan or critique. Be specific, practical, and consider edge cases. Focus on correctness, tradeoffs, and potential blind spots.
+
+IMPORTANT: For each distinct finding, insight, or recommendation you identify, you MUST call the reportFinding tool. Do not group multiple findings into one tool call. If you have no tool calls, your full analysis will be used as a single finding.`;
 			let userPrompt = params.context;
 			if (params.draft_plan) {
 				userPrompt += `\n\n## Draft Plan for Critique\n${params.draft_plan}`;
@@ -210,32 +430,29 @@ export function registerFusionTool(pi: ExtensionAPI, cwd: string): void {
 			userPrompt += `\n\n## Task\n${params.task}\n\nProvide your analysis:`;
 
 			onUpdate?.({
-				content: [{ type: "text", text: `⚡ Fusion: panel (${panelModels.map((m: any) => m.id).join(", ")})...` }],
+				content: [{ type: "text", text: `⚡ Fusion: panel (${panelModels.map((m: any) => m.id).join(", ")})` }],
 				details: { phase: "panel" },
 			});
 
-			// Run panel in parallel
-			const panelResults = await Promise.all(panelModels.map((model: any) =>
+			// Run panel with concurrency limit of 2
+			const panelResults = await mapWithConcurrencyLimit(panelModels, 2, (model: any) =>
 				runPanelModel(model, systemPrompt, userPrompt, {
 					maxTokens: config.maxTokensPerPanel,
 					temperature: config.temperature,
 				}, registry, signal, onUpdate,
 					ctx.sessionManager.getSessionId(),
 				)
-			));
+			);
 
-			const succeeded = panelResults.filter((r: any) => r.content);
-			const failed = panelResults.filter((r: any) => r.error);
+			const succeeded = panelResults.filter((r: any) => r.content && !r.error);
+			const failed = panelResults.filter((r: any) => r.error || !r.content);
 
 			if (succeeded.length === 0) {
-				throw new Error(`Fusion failed: all ${panelResults.length} panel models returned errors.\n${failed.map((r: any) => `- ${r.model}: ${r.error}`).join("\n")}`);
-			}
-
-			if (succeeded.length === 1) {
-				return {
-					content: [{ type: "text" as const, text: succeeded[0].content }],
-					details: { status: "single", model: succeeded[0].model },
-				} as any;
+				const errorDetail = failed.map((r: any) =>
+					`- ${r.model}: ${r.error || "Unknown error (empty response)"}`
+				).join("\n");
+				debugLog("fusion-tool: all panel models failed", { count: panelResults.length, errors: failed.map((r: any) => ({ model: r.model, error: r.error })) });
+				throw new Error(`Fusion failed: all ${panelResults.length} panel models returned errors.\n${errorDetail}`);
 			}
 
 			onUpdate?.({
@@ -257,31 +474,76 @@ Return valid JSON ONLY with these fields:
 				succeeded.map((r: any) => `### ${r.model}\n${r.content}`).join("\n\n") +
 				"\n\nReturn JSON analysis:";
 
-			try {
-				const auth = await registry.getApiKeyAndHeaders(judgeModel);
-				if (!auth.ok || !auth.apiKey) {
-					return formatPanelResults(succeeded) as any;
-				}
-				const judgeResponse = await complete(judgeModel, {
-					systemPrompt: judgeSystemPrompt,
-					messages: [{ role: "user", content: [{ type: "text", text: judgePrompt }], timestamp: Date.now() }],
-				}, {
-					apiKey: auth.apiKey,
-					headers: auth.headers,
-					signal: signal ?? undefined,
-					maxTokens: config.maxTokensForJudge,
-					temperature: 0.2,
-				});
+			const auth = await registry.getApiKeyAndHeaders(judgeModel);
+			if (!auth.ok || !auth.apiKey) {
+				debugLog("fusion-tool: judge model not authenticated", { model: judgeModel.id });
+				return formatPanelResults(succeeded) as any;
+			}
 
-				const judgeText = extractText(judgeResponse);
-				let analysis: any = null;
+			const judgeMessages: any[] = [
+				{ role: "user", content: [{ type: "text", text: judgePrompt }], timestamp: Date.now() },
+			];
+
+			let analysis: FusionAnalysis | null = null;
+			let lastJudgeText = "";
+			const maxAttempts = 3;
+
+			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				debugLog("fusion-tool: judge attempt", { model: judgeModel.id, attempt, maxAttempts });
+				let judgeResponse;
 				try {
-					const jsonMatch = judgeText.match(/\{[\s\S]*\}/);
-					if (jsonMatch) {
-						analysis = JSON.parse(jsonMatch[0]);
-					}
-				} catch { /* not valid JSON — use raw text */ }
+					judgeResponse = await complete(judgeModel, {
+						systemPrompt: judgeSystemPrompt,
+						messages: judgeMessages,
+					}, {
+						apiKey: auth.apiKey,
+						headers: auth.headers,
+						signal: signal ?? undefined,
+						maxTokens: config.maxTokensForJudge,
+						temperature: 0.2,
+						reasoningEffort: judgeModel.reasoning ? getDefaultReasoningEffort(judgeModel) : undefined,
+						timeoutMs: 60_000,
+					});
+				} catch (err: any) {
+					debugLog("fusion-tool: judge attempt failed", { model: judgeModel.id, attempt, error: err.message ?? String(err) });
+					break;
+				}
 
+				lastJudgeText = extractText(judgeResponse);
+				analysis = parseJudgeAnalysis(lastJudgeText);
+
+				if (analysis) {
+					debugLog("fusion-tool: judge analysis parsed", { model: judgeModel.id, attempt });
+					break;
+				}
+
+				const parseError = extractJsonObject(lastJudgeText)
+					? "JSON was found but did not match the required schema"
+					: "No valid JSON object found";
+				debugLog("fusion-tool: judge parse failure", { model: judgeModel.id, attempt, error: parseError });
+
+				if (attempt < maxAttempts) {
+					judgeMessages.push({
+						role: "assistant",
+						content: [{ type: "text", text: lastJudgeText }],
+						timestamp: Date.now(),
+					});
+					judgeMessages.push({
+						role: "user",
+						content: [{ type: "text", text: `That response was invalid: ${parseError}. Return a single valid JSON object matching the required schema exactly.` }],
+						timestamp: Date.now(),
+					});
+				}
+			}
+
+			if (analysis) {
+				debugLog("fusion-tool: final analysis shape", {
+					consensusCount: analysis.consensus.length,
+					contradictionsCount: analysis.contradictions.length,
+					uniqueInsightsCount: analysis.unique_insights.length,
+					blindSpotsCount: analysis.blind_spots.length,
+					recommendationsCount: analysis.recommendations.length,
+				});
 				const formatted = formatFusionResult(analysis, succeeded, failed, panelModels, judgeModel);
 				return {
 					content: [{ type: "text" as const, text: formatted }],
@@ -292,21 +554,16 @@ Return valid JSON ONLY with these fields:
 						judgeModel: `${judgeModel.provider}/${judgeModel.id}`,
 					},
 				} as any;
-			} catch {
-				return formatPanelResults(succeeded) as any;
 			}
+
+			debugLog("fusion-tool: judge failed after all attempts", { model: judgeModel.id, attempts: maxAttempts, lastTextLength: lastJudgeText.length });
+			return formatPanelResults(succeeded) as any;
 		},
 	});
 }
 
 // ─── Helpers ────────────────────────────────────────────────
 
-function extractText(response: AssistantMessage): string {
-	return response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
-		.join("\n");
-}
 
 function resolveModels(registry: any, models: string[]): any[] {
 	return models
@@ -392,20 +649,49 @@ function formatFusionResult(analysis: any, succeeded: any[], failed: any[], pane
 		text += "### Recommendations\n" + analysis.recommendations.map((r: string) => `- ${r}`).join("\n") + "\n\n";
 	}
 
-	text += "### Panel Reports\n\n";
+	text += "### Panel\n\n";
 	for (const r of succeeded) {
 		text += `**${r.model}**:\n`;
-		if (r.reports && r.reports.length > 0) {
+		if (r.reports?.length) {
 			for (const report of r.reports) {
 				text += `  ✓ ${report}\n`;
 			}
+		} else {
+			// Fallback: show first line of content if no reports
+			const firstLine = r.content?.split("\n")[0] || "(no analysis)";
+			text += `  ${firstLine}\n`;
 		}
 		text += "\n";
 	}
 	if (failed.length > 0) {
 		text += "\n### Failed\n" + failed.map((r: any) => `- **${r.model}**: ${r.error}`).join("\n") + "\n";
 	}
-	text += `\n### Judge\n- **${judgeModel.provider}/${judgeModel.id}**\n`;
+	if (analysis) {
+		text += "### Judge\n\n";
+		text += `**${judgeModel.id}**:\n`;
+		if (analysis.consensus?.length) {
+			for (const item of analysis.consensus) {
+				text += `  ✓ ${item}\n`;
+			}
+		}
+		if (analysis.contradictions?.length) {
+			for (const item of analysis.contradictions) {
+				const topic = typeof item === "string" ? item : item.topic || "";
+				text += `  ⚡ Contradiction: ${topic}\n`;
+			}
+		}
+		if (analysis.blind_spots?.length) {
+			for (const item of analysis.blind_spots) {
+				text += `  ⚠ Blind spot: ${item}\n`;
+			}
+		}
+		if (analysis.recommendations?.length) {
+			for (const item of analysis.recommendations) {
+				text += `  → ${item}\n`;
+			}
+		}
+		text += "\n";
+	}
 
 	return text;
 }

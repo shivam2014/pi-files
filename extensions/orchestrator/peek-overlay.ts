@@ -336,3 +336,10 @@ export function hidePeek(): void {
 export function isPeekOpen(): boolean {
     return _peekHandle !== null && !_peekHandle.isHidden();
 }
+
+/**
+ * Return the feed currently registered for peek access, if any.
+ */
+export function getRegisteredFeed(): ActivityFeedState | null {
+    return _registeredFeed;
+}
