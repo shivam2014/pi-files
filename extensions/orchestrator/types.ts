@@ -87,24 +87,7 @@ export interface PlanStep {
 	endTime?: number;
 }
 
-export type ScopeGateMode = "strict" | "relaxed";
-// strict = multi-file change, full planning required
-// relaxed = single-file change, lightweight scope
-
-/** Scope enforcement manifest — limits which files the coder can modify */
-export interface Scope {
-	filesToModify: string[];
-	filesToCreate: string[];
-	directories: string[];
-	maxFiles: number;
-	requiresApprovalBeyondScope: boolean;
-	changeType: "single-file" | "multi-file";
-	maxLinesPerFile: number;
-	gateMode?: ScopeGateMode;
-	/** Free-text scope boundaries the specialist must respect. */
-	boundaries?: string;
-}
-
+export { Scope, ScopeGateMode } from './scope-manager';
 /** Per-delegation tool usage metrics */
 export interface DelegationMetrics {
 	readCalls: number;
