@@ -1,0 +1,11 @@
+{
+  "goal": "fix",
+  "steps": [
+    {
+      "label": "Coder: fix",
+      "completed": true,
+      "errored": false
+    }
+  ],
+  "startTime": 1781888179958
+}

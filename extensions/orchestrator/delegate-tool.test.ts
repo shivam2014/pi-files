@@ -125,6 +125,23 @@ describe("delegate tool rendering", () => {
 		);
 		expect(comp.text).toBe("");
 	});
+
+	it("renderResult prepends the delegate header from stored args", () => {
+		const theme = {
+			fg: (_name: string, text: string) => text,
+			bold: (text: string) => text,
+			dim: (text: string) => text,
+		};
+		const context = { state: { delegateArgs: { specialist: "coder", task: "fix auth" } } };
+		const comp = delegateTool.renderResult(
+			{ content: [{ type: "text", text: "" }], details: { specialist: "Coder", task: "fix auth" } },
+			{ isPartial: false, expanded: false },
+			theme,
+			context,
+		);
+		expect(comp.text).toContain("delegate Coder: fix auth");
+		expect(comp.text).toContain("✓ done");
+	});
 });
 
 describe("delegate scope caching", () => {

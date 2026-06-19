@@ -454,8 +454,11 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 
 		// ── Render: what shows when tool is invoked ──
 		renderCall(args: any, theme: any, context: any) {
-			// Suppress call-time output. renderResult handles the visible header,
-			// so rendering here would duplicate the delegate header in chat.
+			// Store args so renderResult can show the delegate header exactly once.
+			// Rendering the header here would duplicate it with the result feed.
+			const state = context.state || (context.state = {});
+			state.delegateArgs = { specialist: args.specialist, task: args.task };
+
 			const comp = context.lastComponent ?? new Text("", 0, 0);
 			comp.setText("");
 			return comp;
@@ -481,14 +484,25 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 
 			const comp = context.lastComponent ?? new Text("", 0, 0);
 
+			const delegateArgs = state.delegateArgs || {};
+			const rawName = delegateArgs.specialist || details?.specialist || "";
+			const rawTask = delegateArgs.task || details?.task || "";
+			const name = rawName ? rawName.charAt(0).toUpperCase() + rawName.slice(1) : "";
+			const task = rawTask ? rawTask.slice(0, 60) : "";
+			const prefix = name
+				? theme.fg("toolTitle", theme.bold(`delegate ${name}`)) +
+				  (task ? theme.fg("dim", `: ${task}`) : "")
+				: "";
+
 			if (isPartial) {
 				if (text) state.lastFeedText = text;
-				comp.setText(text
+				const feedText = text
 					? theme.fg("warning", text)
-					: theme.fg("warning", `${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} working...`));
+					: theme.fg("warning", `${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} working...`);
+				comp.setText(prefix ? `${prefix}\n${feedText}` : feedText);
 			} else {
 				const feedText = state.lastFeedText || text || "✓ done";
-				comp.setText(theme.fg("success", feedText));
+				comp.setText(prefix ? `${prefix}\n${theme.fg("success", feedText)}` : theme.fg("success", feedText));
 			}
 
 			return comp;

@@ -1,7 +1,0 @@
-node_modules/
-.vite/
-.vite-temp/
-*.tmp
-*.bak
-.DS_Store
-tsconfig.tsbuildinfo
