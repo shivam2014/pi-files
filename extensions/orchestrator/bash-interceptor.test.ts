@@ -1,137 +1,223 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import defaultOrchestrator, { getBashToolReplacement } from "./index.ts";
-import { SUBAGENT_ENV_KEY } from "./subagent-runner.ts";
+/**
+ * Tests for BashInterceptor — pure bash command interception functions.
+ */
+import { describe, it, expect } from "vitest";
+import {
+	firstCommandName,
+	hasFileWriteIndicator,
+	isMutatingEditor,
+	getBashToolReplacement,
+} from "./bash-interceptor";
 
-describe("getBashToolReplacement", () => {
-	it("maps cat to read", () => {
-		expect(getBashToolReplacement("cat src/index.ts")).toBe("read");
+// ── firstCommandName ──
+
+describe("firstCommandName", () => {
+	it("returns null for empty string", () => {
+		expect(firstCommandName("")).toBeNull();
 	});
 
-	it("maps grep to grep", () => {
-		expect(getBashToolReplacement("grep -n foo src/**/*.ts")).toBe("grep");
+	it("returns null for whitespace-only", () => {
+		expect(firstCommandName("   ")).toBeNull();
 	});
 
-	it("maps rg to grep", () => {
-		expect(getBashToolReplacement("rg foo src/")).toBe("grep");
+	it("extracts simple command", () => {
+		expect(firstCommandName("ls -la")).toEqual({ name: "ls", rest: "-la" });
 	});
 
-	it("maps find to find", () => {
-		expect(getBashToolReplacement("find . -name '*.ts'")).toBe("find");
+	it("strips path prefix", () => {
+		expect(firstCommandName("/usr/bin/cat foo.txt")).toEqual({
+			name: "cat",
+			rest: "foo.txt",
+		});
 	});
 
-	it("maps ls to ls", () => {
-		expect(getBashToolReplacement("ls -la src/")).toBe("ls");
+	it("lowercases name", () => {
+		expect(firstCommandName("Grep -r foo")).toEqual({ name: "grep", rest: "-r foo" });
 	});
 
-	it("maps sed -i to edit", () => {
-		expect(getBashToolReplacement("sed -i 's/old/new/g' file.txt")).toBe("edit");
+	it("skips env variable assignments", () => {
+		expect(firstCommandName("FOO=bar ls -la")).toEqual({ name: "ls", rest: "-la" });
 	});
 
-	it("maps awk redirection to edit", () => {
-		expect(getBashToolReplacement("awk '{print $1}' file.txt > out.txt")).toBe("edit");
+	it("skips export prefix with inline assignment", () => {
+		expect(firstCommandName("export FOO=bar cat")).toEqual({
+			name: "cat",
+			rest: "",
+		});
 	});
 
-	it("maps perl -i to edit", () => {
-		expect(getBashToolReplacement("perl -i -pe 's/old/new/' file.txt")).toBe("edit");
+	it("returns null when export+assignment consumes all tokens in first segment", () => {
+		expect(firstCommandName("export FOO=bar && cat file")).toBeNull();
 	});
 
-	it("maps python open-write to edit", () => {
-		expect(getBashToolReplacement("python -c \"open('f','w').write('x')\"")).toBe("edit");
+	it("handles pipe separator", () => {
+		expect(firstCommandName("cat file | grep foo")).toEqual({
+			name: "cat",
+			rest: "file",
+		});
 	});
 
-	it("maps node -e fs.writeFile to edit", () => {
-		expect(getBashToolReplacement("node -e \"require('fs').writeFileSync('f','x')\"")).toBe("edit");
+	it("handles && separator", () => {
+		expect(firstCommandName("mkdir -p dir && touch file")).toEqual({
+			name: "mkdir",
+			rest: "-p dir",
+		});
 	});
 
-	it("maps mkdir to write", () => {
-		expect(getBashToolReplacement("mkdir -p src/new")).toBe("write");
+	it("handles ; separator", () => {
+		expect(firstCommandName("echo hello; ls -la")).toEqual({
+			name: "echo",
+			rest: "hello",
+		});
 	});
 
-	it("maps touch to write", () => {
-		expect(getBashToolReplacement("touch src/new.ts")).toBe("write");
-	});
-
-	it("allows cat with override", () => {
-		expect(getBashToolReplacement("cat src/index.ts", true)).toBeNull();
-	});
-
-	it("does not block npm test", () => {
-		expect(getBashToolReplacement("npm test")).toBeNull();
-	});
-
-	it("does not block gh", () => {
-		expect(getBashToolReplacement("gh pr create --title 'x'")).toBeNull();
-	});
-
-	it("does not block node script.js", () => {
-		expect(getBashToolReplacement("node script.js")).toBeNull();
-	});
-
-	it("does not block cd ... && make", () => {
-		expect(getBashToolReplacement("cd src && make")).toBeNull();
-	});
-
-	it("does not block python read/print", () => {
-		expect(getBashToolReplacement("python -c \"print(1)\"")).toBeNull();
-	});
-
-	it("does not block sed that only prints", () => {
-		expect(getBashToolReplacement("sed 's/old/new/' file.txt")).toBeNull();
-	});
-
-	it("handles leading env assignments", () => {
-		expect(getBashToolReplacement("FOO=bar cat file.txt")).toBe("read");
+	it("returns null for env-only commands", () => {
+		expect(firstCommandName("FOO=bar")).toBeNull();
+		expect(firstCommandName("export FOO=bar")).toBeNull();
 	});
 });
 
-describe("subagent tool_call handler", () => {
-	let handler: ((event: any) => any) | undefined;
-	const pi = {
-		on: vi.fn((event: string, fn: any) => {
-			if (event === "tool_call") handler = fn;
-		}),
-		registerTool: vi.fn(),
-		registerCommand: vi.fn(),
-		registerShortcut: vi.fn(),
-		setActiveTools: vi.fn(),
-		getAllTools: vi.fn(() => []),
-	};
+// ── hasFileWriteIndicator ──
 
-	beforeEach(() => {
-		process.env[SUBAGENT_ENV_KEY] = "1";
-		defaultOrchestrator(pi as any);
-		delete process.env[SUBAGENT_ENV_KEY];
+describe("hasFileWriteIndicator", () => {
+	it("detects >> redirect", () => {
+		expect(hasFileWriteIndicator("echo hello >> file.txt")).toBe(true);
 	});
 
-	afterEach(() => {
-		vi.clearAllMocks();
-		handler = undefined;
+	it("detects > redirect", () => {
+		expect(hasFileWriteIndicator("echo hello > file.txt")).toBe(true);
 	});
 
-	it("registers a tool_call handler in subagent context", () => {
-		expect(handler).toBeDefined();
+	it("detects open with 'w'", () => {
+		expect(hasFileWriteIndicator("open('file.txt', 'w')")).toBe(true);
 	});
 
-	it("blocks bash cat with read suggestion", () => {
-		const res = handler?.({ toolName: "bash", input: { command: "cat file.ts" } });
-		expect(res).toEqual({ block: true, reason: expect.stringContaining("Use read instead of bash") });
+	it("detects open with 'a'", () => {
+		expect(hasFileWriteIndicator("open('file.txt', 'a')")).toBe(true);
 	});
 
-	it("blocks bash grep with grep suggestion", () => {
-		const res = handler?.({ toolName: "bash", input: { command: "grep foo src/" } });
-		expect(res?.block).toBe(true);
-		expect(res?.reason).toContain("grep");
+	it("detects open with 'x'", () => {
+		expect(hasFileWriteIndicator("open('file.txt', 'x')")).toBe(true);
 	});
 
-	it("allows legitimate npm test", () => {
-		expect(handler?.({ toolName: "bash", input: { command: "npm test" } })).toBeUndefined();
+	it("detects fs.writeFile", () => {
+		expect(hasFileWriteIndicator("fs.writeFile(path, data)")).toBe(true);
 	});
 
-	it("respects override:true", () => {
-		expect(handler?.({ toolName: "bash", input: { command: "cat file.ts", override: true } })).toBeUndefined();
+	it("detects fs.writeFileSync", () => {
+		expect(hasFileWriteIndicator("fs.writeFileSync(path, data)")).toBe(true);
 	});
 
-	it("allows non-bash subagent tools", () => {
-		expect(handler?.({ toolName: "read", input: { path: "file.ts" } })).toBeUndefined();
+	it("detects fs.appendFile", () => {
+		expect(hasFileWriteIndicator("fs.appendFile(path, data)")).toBe(true);
+	});
+
+	it("detects writeFile standalone", () => {
+		expect(hasFileWriteIndicator("writeFile(path, data)")).toBe(true);
+	});
+
+	it("detects appendFileSync standalone", () => {
+		expect(hasFileWriteIndicator("appendFileSync(path, data)")).toBe(true);
+	});
+
+	it("returns false for read-only commands", () => {
+		expect(hasFileWriteIndicator("cat file.txt")).toBe(false);
+	});
+
+	it("returns false for empty string", () => {
+		expect(hasFileWriteIndicator("")).toBe(false);
+	});
+});
+
+// ── isMutatingEditor ──
+
+describe("isMutatingEditor", () => {
+	it("returns true for sed -i", () => {
+		expect(isMutatingEditor("sed", "sed -i 's/foo/bar/' file.txt")).toBe(true);
+	});
+
+	it("returns true for perl -i", () => {
+		expect(isMutatingEditor("perl", "perl -i -pe 's/foo/bar/' file.txt")).toBe(true);
+	});
+
+	it("returns false for sed without -i", () => {
+		expect(isMutatingEditor("sed", "sed 's/foo/bar/' file.txt")).toBe(false);
+	});
+
+	it("returns false for perl without -i", () => {
+		expect(isMutatingEditor("perl", "perl -pe 's/foo/bar/' file.txt")).toBe(false);
+	});
+
+	it("delegates to hasFileWriteIndicator for non-editor commands", () => {
+		expect(isMutatingEditor("awk", "awk '{print $1}' file.txt")).toBe(false);
+		expect(isMutatingEditor("python", "open('f.txt', 'w')")).toBe(true);
+	});
+});
+
+// ── getBashToolReplacement ──
+
+describe("getBashToolReplacement", () => {
+	it("returns null when override is true", () => {
+		expect(getBashToolReplacement("cat file", true)).toBeNull();
+	});
+
+	it("returns null when command is undefined", () => {
+		expect(getBashToolReplacement(undefined)).toBeNull();
+	});
+
+	it("redirects cat to read", () => {
+		expect(getBashToolReplacement("cat file.txt")).toBe("read");
+	});
+
+	it("redirects grep to grep", () => {
+		expect(getBashToolReplacement("grep -r foo .")).toBe("grep");
+	});
+
+	it("redirects rg to grep", () => {
+		expect(getBashToolReplacement("rg -r foo .")).toBe("grep");
+	});
+
+	it("redirects find to find", () => {
+		expect(getBashToolReplacement("find . -name '*.ts'")).toBe("find");
+	});
+
+	it("redirects ls to ls", () => {
+		expect(getBashToolReplacement("ls -la")).toBe("ls");
+	});
+
+	it("redirects mkdir to write", () => {
+		expect(getBashToolReplacement("mkdir -p dir")).toBe("write");
+	});
+
+	it("redirects touch to write", () => {
+		expect(getBashToolReplacement("touch file.txt")).toBe("write");
+	});
+
+	it("redirects sed -i to edit", () => {
+		expect(getBashToolReplacement("sed -i 's/foo/bar/' file")).toBe("edit");
+	});
+
+	it("allows sed without -i", () => {
+		expect(getBashToolReplacement("sed 's/foo/bar/' file")).toBeNull();
+	});
+
+	it("redirects python with write indicator to edit", () => {
+		expect(getBashToolReplacement("python -c \"open('f.txt','w')\"")).toBe("edit");
+	});
+
+	it("allows python without write indicator", () => {
+		expect(getBashToolReplacement("python script.py")).toBeNull();
+	});
+
+	it("allows node without write indicator", () => {
+		expect(getBashToolReplacement("node script.js")).toBeNull();
+	});
+
+	it("redirects node with write indicator to edit", () => {
+		expect(getBashToolReplacement("node -e \"fs.writeFile('x',data)\"")).toBe("edit");
+	});
+
+	it("returns null for unknown commands", () => {
+		expect(getBashToolReplacement("docker build .")).toBeNull();
 	});
 });

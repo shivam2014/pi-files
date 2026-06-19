@@ -14,7 +14,6 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed } from "./subagent-runner.ts";
 import { clearPlanPanel } from "./plan-panel.ts";
@@ -27,110 +26,9 @@ import { debugLog } from "./debug.ts";
 import { SPECIALISTS, listSpecialists } from "./specialists.ts";
 import { registerFusionTool, loadFusionConfig } from "./fusion-tool.ts";
 import { ScopeManager } from "./scope-manager.ts";
-import { ScopeGuard } from "./scope-guard.ts";
-import { resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
 
-function firstCommandName(command: string): { name: string; rest: string } | null {
-	const segment = command.split(/[&|;]+/)[0]?.trim() ?? "";
-	if (!segment) return null;
-	const tokens = segment.split(/\s+/);
-	let i = 0;
-	while (i < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]) || tokens[i] === "export")) i++;
-	const raw = tokens[i];
-	if (!raw) return null;
-	const name = raw.replace(/.*\//, "").toLowerCase();
-	return { name, rest: tokens.slice(i + 1).join(" ") };
-}
-
-function hasFileWriteIndicator(text: string): boolean {
-	return /\s>>?\s/.test(text) ||
-		/\bopen\s*\([^)]*['"](w|a|x)['"]/i.test(text) ||
-		/fs\.(writeFile|writeFileSync|appendFile|appendFileSync)\s*\(/i.test(text) ||
-		/\b(writeFile|appendFile)(Sync)?\s*\(/i.test(text);
-}
-
-function isMutatingEditor(name: string, text: string): boolean {
-	if ((name === "sed" || name === "perl") && /(^|\s)-i/.test(text)) return true;
-	return hasFileWriteIndicator(text);
-}
-
-export function getBashToolReplacement(command: string | undefined, override?: boolean): string | null {
-	if (override || !command) return null;
-	const cmd = firstCommandName(command);
-	if (!cmd) return null;
-	const { name, rest } = cmd;
-	const text = `${name} ${rest}`;
-	switch (name) {
-		case "cat": return "read";
-		case "grep":
-		case "rg": return "grep";
-		case "find": return "find";
-		case "ls": return "ls";
-		case "sed":
-		case "awk":
-		case "perl":
-			return isMutatingEditor(name, text) ? "edit" : null;
-		case "mkdir":
-		case "touch": return "write";
-		case "python":
-		case "python3":
-		case "node":
-			return hasFileWriteIndicator(text) ? "edit" : null;
-		default: return null;
-	}
-}
-
-function handleSubagentToolCall(event: any) {
-	if (_batchLoadSubagent > 0 && !isPlanParsed()) {
-		if (event.toolName !== "planSteps") {
-			return { block: true, reason: `Call planSteps({ goal, steps }) first before using ${event.toolName}.` };
-		}
-	}
-	if (_batchLoadSubagent > 0) {
-		const cwd = process.cwd();
-		const guard = new ScopeGuard(cwd);
-		if (guard.isScopeValid()) {
-			// Extract file paths from tool call arguments
-			const input = event.input || {};
-			const filePaths: string[] = [];
-
-			// For file-modifying tools: read, edit, write
-			if (input.filePath) filePaths.push(input.filePath);
-			if (input.path) filePaths.push(input.path);
-			if (input.file) filePaths.push(input.file);
-
-			// For bash: try to extract file paths from command
-			if (event.toolName === 'bash' && input.command) {
-				// Simple extraction: look for common file path patterns
-				const pathMatches = input.command.match(/(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g);
-				if (pathMatches) filePaths.push(...pathMatches);
-			}
-
-			for (const rawPath of filePaths) {
-				const absolutePath = resolve(cwd, rawPath);
-				const pathAllowed = guard.isPathAllowed(absolutePath, 'write');
-				if (!pathAllowed.allowed) {
-					return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope` };
-				}
-				let fileContent = '';
-				try { fileContent = readFileSync(absolutePath, 'utf-8'); } catch {}
-				const sizeCheck = guard.checkFileSize(absolutePath, fileContent);
-				if (!sizeCheck.allowed) {
-					return { block: true, reason: sizeCheck.reason || `File too large: ${rawPath}` };
-				}
-			}
-		}
-		return; // Don't block other subagent tools
-	}
-	if (event.toolName !== "bash") return;
-	const command = isToolCallEventType("bash", event) ? event.input.command : event.input?.command;
-	const override = event.input?.override === true;
-	const replacement = getBashToolReplacement(command, override);
-	if (replacement) {
-		return { block: true, reason: `Use ${replacement} instead of bash (${command?.trim().split(/\s+/)[0]}). Set override:true to force bash.` };
-	}
-}
+export { getBashToolReplacement } from "./bash-interceptor.ts";
 
 export default function (pi: ExtensionAPI) {
 	// ── Guard: Skip full orchestrator registration when loading for a subagent session ──
