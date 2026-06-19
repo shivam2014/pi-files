@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { registerDelegateTool, extractScopeFromOutput } from "./delegate-tool";
 import { runSubagent } from "./subagent-runner";
 import type { Scope } from "./types";
@@ -144,7 +147,7 @@ describe("delegate tool rendering", () => {
 	});
 });
 
-describe("delegate scope caching", () => {
+describe("delegate scope resolution", () => {
 	let pi: MockPi;
 	let delegateTool: any;
 
@@ -157,12 +160,17 @@ describe("delegate scope caching", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.mocked(runSubagent).mockResolvedValue({ output: "", turns: 0 });
-		pi.trigger("before_agent_start");
 	});
 
-	async function execute(params: any, ctx: any = { cwd: "/test" }) {
+	let testDir: string;
+
+	beforeEach(() => {
+		testDir = mkdtempSync(join(tmpdir(), "delegate-test-"));
+	});
+
+	async function execute(params: any, ctx: any = { cwd: testDir }) {
 		const fullCtx = {
-			cwd: ctx.cwd ?? "/test",
+			cwd: ctx.cwd ?? testDir,
 			ui: {
 				setWidget: vi.fn(),
 				setWorkingMessage: vi.fn(),
@@ -180,59 +188,44 @@ describe("delegate scope caching", () => {
 		return last?.[6] as Scope | null | undefined;
 	}
 
-	it("coder without scope and no cache is rejected", async () => {
+	it("coder without scope is rejected", async () => {
 		const result = await execute({ specialist: "coder", task: "fix auth" });
 		expect(result.content[0].text).toContain("Scope required for coder");
 		expect(runSubagent).not.toHaveBeenCalled();
 	});
 
-	it("coder falls back to cached scope from scout output", async () => {
-		vi.mocked(runSubagent)
-			.mockResolvedValueOnce({
-				output: `## Scope\n- filesToModify: ["src/auth.ts"]\n- filesToCreate: []\n- changeType: single-file\n- maxLinesPerFile: 200\n`,
-				turns: 1,
-			})
-			.mockResolvedValueOnce({ output: "done", turns: 1 });
+	it("coder with explicit scope works", async () => {
+		vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
 
-		await execute({ specialist: "scout", task: "investigate" });
-		await execute({ specialist: "coder", task: "fix auth" });
+		await execute({
+			specialist: "coder",
+			task: "fix auth",
+			scope: {
+				filesToModify: ["src/auth.ts"],
+				filesToCreate: [],
+				changeType: "single-file",
+				maxLinesPerFile: 200,
+			},
+		});
 
-		expect(lastScopePassed()).toEqual({
+		expect(lastScopePassed()).toMatchObject({
 			filesToModify: ["src/auth.ts"],
 			filesToCreate: [],
-			directories: [],
-			maxFiles: 10,
-			requiresApprovalBeyondScope: true,
 			changeType: "single-file",
 			maxLinesPerFile: 200,
-			gateMode: "relaxed",
 		});
 	});
 
-	it("writer falls back to cached scope", async () => {
-		vi.mocked(runSubagent)
-			.mockResolvedValueOnce({
-				output: `## Scope\n- filesToModify: ["README.md"]\n- filesToCreate: []\n`,
-				turns: 1,
-			})
-			.mockResolvedValueOnce({ output: "done", turns: 1 });
-
-		await execute({ specialist: "researcher", task: "check docs" });
-		await execute({ specialist: "writer", task: "update docs" });
-
-		expect(lastScopePassed()?.filesToModify).toEqual(["README.md"]);
-	});
-
-	it("writer uses doc-friendly defaults when no cache or explicit scope exists", async () => {
+	it("writer uses doc-friendly defaults without explicit scope", async () => {
 		vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
 
-		await execute({ specialist: "writer", task: "write readme" }, { cwd: "/project" });
+		await execute({ specialist: "writer", task: "write readme" });
 
 		const scope = lastScopePassed();
 		expect(scope).toMatchObject({
 			filesToModify: [],
 			filesToCreate: [],
-			directories: ["/project"],
+			directories: [testDir],
 			maxFiles: 20,
 			requiresApprovalBeyondScope: true,
 			changeType: "multi-file",
@@ -244,15 +237,9 @@ describe("delegate scope caching", () => {
 		expect(scope?.boundaries).toContain("README");
 	});
 
-	it("explicit orchestrator scope wins over cached scope", async () => {
-		vi.mocked(runSubagent)
-			.mockResolvedValueOnce({
-				output: `## Scope\n- filesToModify: ["src/old.ts"]\n- filesToCreate: []\n`,
-				turns: 1,
-			})
-			.mockResolvedValueOnce({ output: "done", turns: 1 });
+	it("explicit orchestrator scope is used by coder", async () => {
+		vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
 
-		await execute({ specialist: "scout", task: "investigate" });
 		await execute({
 			specialist: "coder",
 			task: "fix auth",
@@ -265,54 +252,18 @@ describe("delegate scope caching", () => {
 		expect(lastScopePassed()?.filesToModify).toEqual(["src/new.ts"]);
 	});
 
-	it("explicit scope updates the cache", async () => {
-		vi.mocked(runSubagent).mockResolvedValue({ output: "done", turns: 1 });
-
-		await execute({
-			specialist: "coder",
-			task: "fix auth",
-			scope: {
-				filesToModify: ["src/explicit.ts"],
-				filesToCreate: [],
-			},
-		});
-
-		// Run another coder call without scope to prove cache was updated
-		await execute({ specialist: "coder", task: "continue" });
-		expect(lastScopePassed()?.filesToModify).toEqual(["src/explicit.ts"]);
-	});
-
-	it("before_agent_start clears the cached scope", async () => {
+	it("scout/researcher does not cache scope for coder", async () => {
 		vi.mocked(runSubagent)
 			.mockResolvedValueOnce({
-				output: `## Scope\n- filesToModify: ["src/auth.ts"]\n- filesToCreate: []\n`,
+				output: `## Scope\n- filesToModify: ["src/auth.ts"]\n- filesToCreate: []\n- changeType: single-file\n- maxLinesPerFile: 200\n`,
 				turns: 1,
 			})
 			.mockResolvedValueOnce({ output: "done", turns: 1 });
 
+		// Scout produces scope, but coder should NOT pick it up (no cache)
 		await execute({ specialist: "scout", task: "investigate" });
-		pi.trigger("before_agent_start");
-
 		const result = await execute({ specialist: "coder", task: "fix auth" });
+
 		expect(result.content[0].text).toContain("Scope required for coder");
-	});
-
-	it("malformed scout scope block does not overwrite existing cache", async () => {
-		vi.mocked(runSubagent)
-			.mockResolvedValueOnce({
-				output: `## Scope\n- filesToModify: ["src/good.ts"]\n- filesToCreate: []\n`,
-				turns: 1,
-			})
-			.mockResolvedValueOnce({
-				output: `## Scope\nthis is malformed\n`,
-				turns: 1,
-			})
-			.mockResolvedValueOnce({ output: "done", turns: 1 });
-
-		await execute({ specialist: "scout", task: "first" });
-		await execute({ specialist: "researcher", task: "second" });
-		await execute({ specialist: "coder", task: "fix" });
-
-		expect(lastScopePassed()?.filesToModify).toEqual(["src/good.ts"]);
 	});
 });

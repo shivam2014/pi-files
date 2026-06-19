@@ -19,6 +19,7 @@ import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
 import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete } from "./plan-panel.ts";
 import type { Scope } from "./types.ts";
 import { debugLog } from "./debug.ts";
+import { ScopeManager } from "./scope-manager.ts";
 import { hidePeek, unregisterPeekFeed } from "./peek-overlay.ts";
 import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
 import { Text } from "@earendil-works/pi-tui";
@@ -34,9 +35,6 @@ const PRESENT_PARTICIPLE: Record<string, string> = {
 	researcher: 'Researching',
 	writer: 'Writing',
 };
-
-// Scope caching: after a scout/researcher outputs scope info, store it for the next coder call
-let _cachedScope: Scope | null = null;
 
 const CODE_EXTENSIONS = new Set([
 	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
@@ -412,10 +410,7 @@ function extractAuditFromOutput(output: string): { problems: string[]; resolutio
  * Register the delegate tool on the pi extension API.
  */
 export function registerDelegateTool(pi: ExtensionAPI): void {
-	// Clear scope cache on session reset so new conversations start fresh
-	pi.on("before_agent_start", () => {
-		_cachedScope = null;
-	});
+	// Scope is now managed by ScopeManager on per-delegation basis — no module-level cache
 
 	pi.registerTool({
 		name: "delegate",
@@ -519,7 +514,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				return { content: [{ type: "text" as const, text: `Unknown specialist: "${params.specialist}". Available: ${available}` }], details: {} } as any;
 			}
 
-			// Normalize explicit orchestrator scope; it always wins and updates the cache
+			// Normalize explicit orchestrator scope (no cache)
 			let explicitScope: Scope | null = null;
 			if (params.scope) {
 				explicitScope = {
@@ -532,22 +527,21 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 					changeType: params.scope.changeType ?? "multi-file",
 					maxLinesPerFile: params.scope.maxLinesPerFile ?? 400,
 					gateMode: params.scope.gateMode,
-				boundaries: params.scope.boundaries,
+					boundaries: params.scope.boundaries,
 				};
-				_cachedScope = explicitScope;
 			}
 
-			// Determine scope for this delegation (coder requires scope, writer has doc-friendly defaults)
+			// Determine scope for this delegation (coder requires explicit scope, writer has doc-friendly defaults)
 			let scopeToUse: Scope | null = null;
 			if (params.specialist === "coder") {
-				scopeToUse = explicitScope ?? _cachedScope;
+				scopeToUse = explicitScope;
 				if (!scopeToUse) {
 					return {
 						content: [{
 							type: "text" as const,
 							text: `⛔ **Scope required for coder.**
 
-You must pass a \`scope\` parameter when calling coder, or first delegate to scout/researcher so its \`## Scope\` output can be cached.
+You must pass a \`scope\` parameter when calling coder.
 
 \`\`\`
 delegate("coder", "fix the auth middleware", {
@@ -566,9 +560,14 @@ The scope tells the coder exactly which files it's allowed to touch.`
 					} as any;
 				}
 			} else if (params.specialist === "writer") {
-				scopeToUse = explicitScope ?? _cachedScope ?? getDefaultWriterScope(ctx.cwd);
+				scopeToUse = explicitScope ?? getDefaultWriterScope(ctx.cwd);
 			} else {
 				scopeToUse = explicitScope ?? null;
+			}
+
+			// Write scope for scope-guard enforcement before delegation
+			if (scopeToUse) {
+				new ScopeManager(ctx.cwd).writeScope(scopeToUse);
 			}
 
 			// Set up plan panel — consume or append a step for each delegation
@@ -589,8 +588,6 @@ The scope tells the coder exactly which files it's allowed to touch.`
 				content: [{ type: "text", text: `${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} ${specialist.name}...` }],
 				details: { status: "running", specialist: specialist.name },
 			});
-
-			// scopeToUse resolved above (explicit > cached > writer defaults)
 
 			// Dynamic status: delegating
 			const orchestratorUi: OrchestratorUi | undefined = ctx?.ui ? ctx.ui : undefined;
@@ -676,11 +673,11 @@ The scope tells the coder exactly which files it's allowed to touch.`
 						debugLog("delegate-tool: subagent completed", { specialist: params.specialist, outputLength: result.output.length });
 					}
 
-					// Cache scope from scout/researcher output for the next coder/writer
+					// Parse scope from scout/researcher output (no caching — coder must receive explicit scope)
 					if (params.specialist === "scout" || params.specialist === "researcher") {
 						const extractedScope = extractScopeFromOutput(result.output);
 						if (extractedScope) {
-							_cachedScope = extractedScope;
+							debugLog("delegate-tool: scout/researcher produced scope", { specialist: params.specialist, scope: extractedScope });
 						}
 					}
 
@@ -772,6 +769,8 @@ ${trail}
 				clearPlanIfComplete(ctx);  // Clear widget if all steps done (count is now 0)
 				hidePeek();
 				unregisterPeekFeed();
+				// Clear scope after delegation completes
+				new ScopeManager(ctx.cwd).clearScope();
 				// Dynamic status: clear on completion (even if extraction/parsing throws)
 				try {
 					if (orchestratorUi) {

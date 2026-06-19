@@ -18,10 +18,10 @@ import {
 	defineTool,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { mkdirSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
-import { join } from "node:path";
+
 import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Scope, Substep } from "./types.ts";
+import { ScopeManager } from "./scope-manager.ts";
 import {
 	addSubstep,
 	createActivityFeed,
@@ -208,34 +208,17 @@ export function installSubagentEnv(env: NodeJS.ProcessEnv): void {
 /**
  * Write scope file for scope-guard.ts enforcement.
  * Only written if scope is provided.
- * Derives gateMode from changeType if not explicitly set.
  */
 function writeScopeFile(cwd: string, scope?: Scope | null): void {
 	if (!scope) return;
-	const dir = join(cwd, ".pi");
-	try { mkdirSync(dir, { recursive: true }); } catch {}
-
-	// Derive gateMode from changeType if not set
-	// Set defaults for hybrid scope fields
-	const scopeWithGate = {
-		...scope,
-		directories: scope.directories ?? [],
-		maxFiles: scope.maxFiles ?? 10,
-		requiresApprovalBeyondScope: scope.requiresApprovalBeyondScope ?? true,
-		gateMode: scope.gateMode ?? (scope.changeType === "single-file" ? "relaxed" : "strict"),
-	};
-
-	writeFileSync(join(dir, "scope.json"), JSON.stringify(scopeWithGate, null, 2));
+	new ScopeManager(cwd).writeScope(scope as any);
 }
 
 /**
  * Clear scope file after subagent completes.
  */
 function clearScopeFile(cwd: string): void {
-	try {
-		const path = join(cwd, ".pi", "scope.json");
-		if (existsSync(path)) unlinkSync(path);
-	} catch {}
+	new ScopeManager(cwd).clearScope();
 }
 
 /**
