@@ -20,6 +20,7 @@ import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, e
 import type { Scope } from "./types.ts";
 import { debugLog } from "./debug.ts";
 import { ScopeManager } from "./scope-manager.ts";
+import { extractFindingsFromOutput, extractAuditFromOutput } from "./delegate-output-formatter.ts";
 import { hidePeek, unregisterPeekFeed } from "./peek-overlay.ts";
 import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
 import { Text } from "@earendil-works/pi-tui";
@@ -363,48 +364,6 @@ function getDefaultWriterScope(cwd: string): Scope {
     };
 }
 
-function extractFindingsFromOutput(output: string): { summary: string; key_files: string[]; issues: string[]; recommendation: string } | null {
-    const findingsMatch = output.match(/##\s+Findings\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
-    if (!findingsMatch) return null;
-    const block = findingsMatch[1];
-    const extract = (key: string): string => {
-        const m = block.match(new RegExp(`-?\\s*${key}:\\s*(.+)`, 'i'));
-        return m ? m[1].trim() : '';
-    };
-    const extractList = (key: string): string[] => {
-        const m = block.match(new RegExp(`-?\\s*${key}:\\s*\\[?(.+?)\\]?\\s*$`, 'im'));
-        if (!m) return [];
-        return m[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
-    };
-    return {
-        summary: extract('summary') || '',
-        key_files: extractList('key_files'),
-        issues: extractList('issues'),
-        recommendation: extract('recommendation') || '',
-    };
-}
-
-function extractAuditFromOutput(output: string): { problems: string[]; resolution: string[]; scope_stayed: boolean; scope_notes: string } | null {
-    const auditMatch = output.match(/##\s+Audit\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
-    if (!auditMatch) return null;
-    const block = auditMatch[1];
-    const extractList = (key: string): string[] => {
-        const m = block.match(new RegExp(`-?\\s*${key}:\\s*\\[?(.+?)\\]?\\s*$`, 'im'));
-        if (!m) return [];
-        return m[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
-    };
-    const extract = (key: string): string => {
-        const m = block.match(new RegExp(`-?\\s*${key}:\\s*(.+)`, 'i'));
-        return m ? m[1].trim() : '';
-    };
-    const scopeStayed = extract('scope_stayed').toLowerCase();
-    return {
-        problems: extractList('problems'),
-        resolution: extractList('resolution'),
-        scope_stayed: scopeStayed === 'yes' || scopeStayed === 'true',
-        scope_notes: extract('scope_notes') || '',
-    };
-}
 
 /**
  * Register the delegate tool on the pi extension API.
