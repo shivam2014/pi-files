@@ -1,23 +1,7 @@
-import { existsSync, readFileSync } from 'fs';
-import { join, relative, isAbsolute, resolve, sep } from 'path';
+import { join, relative, isAbsolute, resolve } from 'path';
+import { ScopeManager, type ResolvedScope, type ScopeFileContract } from './scope-manager.ts';
 
-export interface ResolvedScope {
-  filesToModify: string[];
-  filesToCreate: string[];
-  directories: string[];
-  maxFiles: number;
-  requiresApprovalBeyondScope: boolean;
-  changeType: 'single-file' | 'multi-file';
-  maxLinesPerFile: number;
-  gateMode: 'strict' | 'relaxed';
-  boundaries?: string;
-}
-
-export interface ScopeFileContract {
-  version: number;
-  schema: string;
-  scope: ResolvedScope;
-}
+export type { ResolvedScope, ScopeFileContract };
 
 export interface ScopeExpansionRequest {
   path: string;
@@ -43,31 +27,14 @@ function normalizePath(filePath: string, cwd: string): string | null {
 export class ScopeGuard {
   constructor(private cwd: string) {}
 
-  private scopePath(): string {
-    return join(this.cwd, '.pi', 'scope.json');
-  }
-
-  private readScopeFile(): { version: number; schema: string; scope: any } | null {
-    try {
-      const path = this.scopePath();
-      if (!existsSync(path)) return null;
-      const raw = JSON.parse(readFileSync(path, 'utf-8'));
-      if (!raw.version || !raw.schema || !raw.scope) return null;
-      return raw;
-    } catch {
-      return null;
-    }
-  }
-
   isScopeValid(): boolean {
-    return this.readScopeFile() !== null;
+    return new ScopeManager(this.cwd).readScope() !== null;
   }
 
   isPathAllowed(filePath: string, operation: 'write' | 'edit' | 'read'): { allowed: boolean; reason?: string } {
-    const data = this.readScopeFile();
-    if (!data) return { allowed: false, reason: 'No scope file' };
+    const scope = new ScopeManager(this.cwd).readScope();
+    if (!scope) return { allowed: false, reason: 'No scope file' };
 
-    const { scope } = data;
     const normalized = normalizePath(filePath, this.cwd);
     if (!normalized) {
       return { allowed: false, reason: `Path escapes working directory: ${filePath}` };
@@ -92,22 +59,20 @@ export class ScopeGuard {
     return { allowed: false, reason: `File not in approved scope: ${filePath}` };
   }
 
-  checkFileSize(filePath: string, content: string): boolean {
-    const data = this.readScopeFile();
-    if (!data) return true; // no scope = no limit
-    const { scope } = data;
-    if (scope.gateMode === 'relaxed') return true;
+  checkFileSize(filePath: string, content: string): { allowed: boolean; reason?: string } {
+    const scope = new ScopeManager(this.cwd).readScope();
+    if (!scope) return { allowed: false, reason: 'No scope file found' };
+    if (scope.gateMode === 'relaxed') return { allowed: true };
     const maxLines = scope.maxLinesPerFile;
-    if (maxLines <= 0) return true;
+    if (maxLines <= 0) return { allowed: true };
     const lines = content.split('\n').length;
-    return lines <= maxLines;
+    return { allowed: lines <= maxLines };
   }
 
   requestExpansion(filePath: string): ScopeExpansionRequest | null {
-    const data = this.readScopeFile();
-    if (!data) return null;
+    const scope = new ScopeManager(this.cwd).readScope();
+    if (!scope) return null;
 
-    const { scope } = data;
     const normalized = normalizePath(filePath, this.cwd);
     if (!normalized) return null;
 
@@ -136,9 +101,5 @@ export class ScopeGuard {
         filesToModify: [normalized],
       },
     };
-  }
-
-  resetSession(): void {
-    // noop for now
   }
 }

@@ -148,7 +148,7 @@ describe('ScopeGuard', () => {
         })
       );
       const content = Array.from({ length: 15 }, (_, i) => `line ${i + 1}`).join('\n');
-      expect(guard.checkFileSize('test.ts', content)).toBe(false);
+      expect(guard.checkFileSize('test.ts', content).allowed).toBe(false);
     });
 
     it('allows content exceeding maxLinesPerFile when gateMode is relaxed', () => {
@@ -171,7 +171,7 @@ describe('ScopeGuard', () => {
         })
       );
       const content = Array.from({ length: 15 }, (_, i) => `line ${i + 1}`).join('\n');
-      expect(guard.checkFileSize('test.ts', content)).toBe(true);
+      expect(guard.checkFileSize('test.ts', content).allowed).toBe(true);
     });
   });
 

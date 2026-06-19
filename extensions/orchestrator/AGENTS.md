@@ -1,5 +1,12 @@
 # Orchestrator Extension — Scope Enforcement & Adaptive Gating
 
+## Project Layout
+
+- **Canonical working copy**: `~/.pi/agent/extensions/orchestrator` — this is where the orchestrator lives and runs. Edits should be made here.
+- **Git repo (backup/sync)**: `~/pi-files` → `github.com/shivam2014/pi-files.git` — the canonical copy is NOT a git repo. Sync to ~/pi-files for version control.
+- **Sync flow**: Make changes in `~/.pi/agent/extensions/orchestrator`, then copy to `~/pi-files/extensions/orchestrator` for committing and pushing.
+- **GitHub Issues**: Filed on the `shivam2014/pi-files` repo (not the orchestrator directory directly).
+
 ## Design Philosophy
 
 Coder requires a `scope` argument. Tool-level gate, not prompt-level. Scope can derive from scout output OR be declared directly by the orchestrator. Prompts degrade.
@@ -24,7 +31,7 @@ Test snapshots, not exit codes. Verify actual TUI output, not pass/fail.
 - Scope lifecycle: extract → cache → write file → enforce via tool_call interceptor
 - Adaptive gating: block coder without prior scout scope
 - Timer self-check pattern for hot reload safety
-- Clean separation: `scope-guard.ts` has zero coupling to orchestrator module
+- Clean separation: `scope-guard.ts` is a separate enforcement layer that reads scope via ScopeManager (single data source)
 
 ---
 

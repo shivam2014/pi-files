@@ -21,7 +21,6 @@ import { Type } from "typebox";
 
 import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Scope, Substep } from "./types.ts";
-import { ScopeManager } from "./scope-manager.ts";
 import {
 	addSubstep,
 	createActivityFeed,
@@ -206,22 +205,6 @@ export function installSubagentEnv(env: NodeJS.ProcessEnv): void {
 }
 
 /**
- * Write scope file for scope-guard.ts enforcement.
- * Only written if scope is provided.
- */
-function writeScopeFile(cwd: string, scope?: Scope | null): void {
-	if (!scope) return;
-	new ScopeManager(cwd).writeScope(scope as any);
-}
-
-/**
- * Clear scope file after subagent completes.
- */
-function clearScopeFile(cwd: string): void {
-	new ScopeManager(cwd).clearScope();
-}
-
-/**
  * Run a specialist subagent with isolated session.
  *
  * @param specialist - The specialist definition (tools, system prompt)
@@ -242,9 +225,6 @@ export async function runSubagent(
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
 ): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
-	// Write scope file for scope-guard.ts enforcement
-	writeScopeFile(cwd, scope);
-
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();
 
@@ -716,6 +696,5 @@ export async function runSubagent(
 		// Always restore the original parent environment, even if the subagent
 		// failed before the session started.
 		installSubagentEnv(envSnapshot);
-		clearScopeFile(cwd);
 	}
 }

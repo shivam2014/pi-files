@@ -673,13 +673,6 @@ The scope tells the coder exactly which files it's allowed to touch.`
 						debugLog("delegate-tool: subagent completed", { specialist: params.specialist, outputLength: result.output.length });
 					}
 
-					// Parse scope from scout/researcher output (no caching — coder must receive explicit scope)
-					if (params.specialist === "scout" || params.specialist === "researcher") {
-						const extractedScope = extractScopeFromOutput(result.output);
-						if (extractedScope) {
-							debugLog("delegate-tool: scout/researcher produced scope", { specialist: params.specialist, scope: extractedScope });
-						}
-					}
 
 					const findings = extractFindingsFromOutput(result.output);
 					if (findings && findings.summary) {

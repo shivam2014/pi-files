@@ -26,6 +26,10 @@ import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
 import { SPECIALISTS, listSpecialists } from "./specialists.ts";
 import { registerFusionTool, loadFusionConfig } from "./fusion-tool.ts";
+import { ScopeManager } from "./scope-manager.ts";
+import { ScopeGuard } from "./scope-guard.ts";
+import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 
 function firstCommandName(command: string): { name: string; rest: string } | null {
 	const segment = command.split(/[&|;]+/)[0]?.trim() ?? "";
@@ -83,7 +87,42 @@ function handleSubagentToolCall(event: any) {
 			return { block: true, reason: `Call planSteps({ goal, steps }) first before using ${event.toolName}.` };
 		}
 	}
-	if (_batchLoadSubagent > 0) return;
+	if (_batchLoadSubagent > 0) {
+		const cwd = process.cwd();
+		const guard = new ScopeGuard(cwd);
+		if (guard.isScopeValid()) {
+			// Extract file paths from tool call arguments
+			const input = event.input || {};
+			const filePaths: string[] = [];
+
+			// For file-modifying tools: read, edit, write
+			if (input.filePath) filePaths.push(input.filePath);
+			if (input.path) filePaths.push(input.path);
+			if (input.file) filePaths.push(input.file);
+
+			// For bash: try to extract file paths from command
+			if (event.toolName === 'bash' && input.command) {
+				// Simple extraction: look for common file path patterns
+				const pathMatches = input.command.match(/(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g);
+				if (pathMatches) filePaths.push(...pathMatches);
+			}
+
+			for (const rawPath of filePaths) {
+				const absolutePath = resolve(cwd, rawPath);
+				const pathAllowed = guard.isPathAllowed(absolutePath, 'write');
+				if (!pathAllowed.allowed) {
+					return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope` };
+				}
+				let fileContent = '';
+				try { fileContent = readFileSync(absolutePath, 'utf-8'); } catch {}
+				const sizeCheck = guard.checkFileSize(absolutePath, fileContent);
+				if (!sizeCheck.allowed) {
+					return { block: true, reason: sizeCheck.reason || `File too large: ${rawPath}` };
+				}
+			}
+		}
+		return; // Don't block other subagent tools
+	}
 	if (event.toolName !== "bash") return;
 	const command = isToolCallEventType("bash", event) ? event.input.command : event.input?.command;
 	const override = event.input?.override === true;
@@ -106,6 +145,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
+		new ScopeManager(process.cwd()).clearScope();
 		clearPlanPanel(ctx);
 		const fusionConfig = loadFusionConfig(ctx.cwd);
 		const activeTools = ["plan", "delegate"];
