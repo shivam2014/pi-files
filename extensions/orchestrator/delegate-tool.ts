@@ -10,69 +10,10 @@
 
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Scope } from "./types.ts";
 export { createAskOrchestratorResolver } from "./ask-resolver.ts";
 import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { executeDelegate } from "./delegate-controller.ts";
-
-
-
-
-
-
-/**
- * Parse a `## Scope` block from scout/researcher subagent output into the
- * canonical `Scope` type. Returns `null` if the block is missing or malformed.
- */
-export function extractScopeFromOutput(output: string): Scope | null {
-    const scopeMatch = output.match(/##\s+Scope\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
-    if (!scopeMatch) return null;
-    const block = scopeMatch[1];
-
-    const entries: Record<string, unknown> = {};
-    const lineRe = /^\s*[-*]\s*(\w+)\s*:\s*(.*)$/gm;
-    let m: RegExpExecArray | null;
-    while ((m = lineRe.exec(block)) !== null) {
-        const key = m[1];
-        const raw = m[2].trim();
-        if (raw.startsWith('[') && raw.endsWith(']')) {
-            const inner = raw.slice(1, -1).trim();
-            entries[key] = inner ? inner.split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean) : [];
-        } else if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-            entries[key] = raw.slice(1, -1);
-        } else if (/^\d+$/.test(raw)) {
-            entries[key] = parseInt(raw, 10);
-        } else if (raw.toLowerCase() === 'true' || raw.toLowerCase() === 'yes') {
-            entries[key] = true;
-        } else if (raw.toLowerCase() === 'false' || raw.toLowerCase() === 'no') {
-            entries[key] = false;
-        } else {
-            entries[key] = raw;
-        }
-    }
-
-    const scopeKeys = ['filesToModify', 'filesToCreate', 'directories', 'changeType', 'maxLinesPerFile', 'maxFiles', 'requiresApprovalBeyondScope', 'gateMode'];
-    if (!scopeKeys.some(k => k in entries)) return null;
-
-    const changeType = entries.changeType === 'single-file' ? 'single-file' : 'multi-file';
-    const scope: Scope = {
-        filesToModify: Array.isArray(entries.filesToModify) ? entries.filesToModify as string[] : [],
-        filesToCreate: Array.isArray(entries.filesToCreate) ? entries.filesToCreate as string[] : [],
-        directories: Array.isArray(entries.directories) ? entries.directories as string[] : [],
-        maxFiles: typeof entries.maxFiles === 'number' ? entries.maxFiles : 10,
-        requiresApprovalBeyondScope: typeof entries.requiresApprovalBeyondScope === 'boolean' ? entries.requiresApprovalBeyondScope : true,
-        changeType,
-        maxLinesPerFile: typeof entries.maxLinesPerFile === 'number' ? entries.maxLinesPerFile : 400,
-        gateMode: entries.gateMode === 'relaxed' || entries.gateMode === 'strict'
-            ? entries.gateMode
-            : (changeType === 'single-file' ? 'relaxed' : 'strict'),
-    };
-    return scope;
-}
-
-
-
 
 /**
  * Register the delegate tool on the pi extension API.

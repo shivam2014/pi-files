@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { registerDelegateTool, extractScopeFromOutput } from "./delegate-tool";
+import { registerDelegateTool } from "./delegate-tool";
 import { runSubagent } from "./subagent-runner";
 import type { Scope } from "./types";
 
@@ -32,83 +32,6 @@ function createMockPi() {
 
 type MockPi = ReturnType<typeof createMockPi>;
 
-describe("extractScopeFromOutput", () => {
-	it("parses a well-formed ## Scope block", () => {
-		const output = `
-## Scope
-- filesToModify: ["src/auth.ts", "src/login.ts"]
-- filesToCreate: ["src/new.ts"]
-- directories: ["src/"]
-- changeType: "multi-file"
-- maxLinesPerFile: 400
-- maxFiles: 5
-- requiresApprovalBeyondScope: false
-- gateMode: strict
-`;
-		const scope = extractScopeFromOutput(output);
-		expect(scope).toEqual({
-			filesToModify: ["src/auth.ts", "src/login.ts"],
-			filesToCreate: ["src/new.ts"],
-			directories: ["src/"],
-			changeType: "multi-file",
-			maxLinesPerFile: 400,
-			maxFiles: 5,
-			requiresApprovalBeyondScope: false,
-			gateMode: "strict",
-		} satisfies Scope);
-	});
-
-	it("applies sensible defaults for minimal blocks", () => {
-		const output = `
-## Scope
-- filesToModify: ["src/a.ts"]
-- filesToCreate: []
-`;
-		const scope = extractScopeFromOutput(output);
-		expect(scope).toMatchObject({
-			filesToModify: ["src/a.ts"],
-			filesToCreate: [],
-			directories: [],
-			maxFiles: 10,
-			requiresApprovalBeyondScope: true,
-			changeType: "multi-file",
-			maxLinesPerFile: 400,
-			gateMode: "strict",
-		});
-	});
-
-	it("returns null when no ## Scope block is present", () => {
-		expect(extractScopeFromOutput("## Findings\n- summary: nothing")).toBeNull();
-	});
-
-	it("returns null for malformed blocks with no scope keys", () => {
-		expect(extractScopeFromOutput("## Scope\nSome random text\n")).toBeNull();
-	});
-
-	it("stops at the next ## heading", () => {
-		const output = `
-## Scope
-- filesToModify: ["a.ts"]
-- filesToCreate: []
-## Recommendation
-- do it
-`;
-		const scope = extractScopeFromOutput(output);
-		expect(scope?.filesToModify).toEqual(["a.ts"]);
-		expect(scope?.filesToCreate).toEqual([]);
-	});
-
-	it("infers relaxed gateMode for single-file changes", () => {
-		const output = `
-## Scope
-- filesToModify: ["a.ts"]
-- changeType: "single-file"
-`;
-		const scope = extractScopeFromOutput(output);
-		expect(scope?.gateMode).toBe("relaxed");
-		expect(scope?.changeType).toBe("single-file");
-	});
-});
 
 describe("delegate tool rendering", () => {
 	let pi: MockPi;

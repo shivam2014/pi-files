@@ -270,14 +270,7 @@ export class PlanPanel {
 	}
 
 	finalizePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
-		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
-		const idx = this.planState.steps.findIndex((s) => s.active);
-		if (idx >= 0) {
-			const step = this.planState.steps[idx];
-			if (step.detailLines?.length) (step as any).substepLines = step.detailLines.slice(-3);
-			step.completed = true; step.errored = false; step.active = false; step.detail = undefined; step.detailLines = undefined; step.endTime = Date.now();
-		}
-		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame("step_complete");
+		return this.completePlanStep(ctx);
 	}
 
 	clearPlanIfComplete(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
