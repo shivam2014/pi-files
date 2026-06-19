@@ -1004,3 +1004,63 @@ If all N/M retries fail, the step returns to error state (✗ with error message
 The retry indicator takes priority over all other rendering — when retry is active, the entire feed renders as the single retry line. This ensures the user sees the retry status immediately.
 
 Implementation: In `renderActivityFeed`, the `state.errored` block checks for `retryCount` first and returns early with the retry indicator line.
+
+---
+
+## 18. Fusion Widget
+
+When the orchestrator calls the `fusion` tool, a transient inline widget appears in the chat history (Layer 2). It streams live panelist findings and judge synthesis, then clears once the fusion tool completes and returns its final result.
+
+### Placement
+
+The widget renders inline as a tool result blob while the fusion call is active — similar to how subagent activity appears in Layer 2. It is not shown in the Layer 1 plan panel.
+
+### Header
+
+```
+⚡ Fusion: panel (model-1, model-2, ...) → judge (judge-model)
+```
+
+### Per-model sections
+
+Each panel model gets its own section. Findings stream live as `✓ Report:` entries.
+
+```
+── Panel: <model-id> ──
+✓ Report: <finding text>
+✓ Report: <finding text>
+✓ done
+```
+
+Status indicators:
+
+| State     | Indicator    | Meaning                            |
+|-----------|--------------|------------------------------------|
+| Thinking  | `⠋ thinking` | Model is actively reasoning        |
+| Done      | `✓ done`     | Model completed successfully       |
+| Error     | `⚠ error`    | Model encountered an error         |
+| Skipped   | `⏸ skipped`  | Model was skipped or unavailable   |
+
+If a panelist emits no reports, its section shows `(no findings)` before the final status.
+
+### Judge section
+
+Once panel responses are collected, the judge streams its structured synthesis.
+
+```
+── Judge: <model-id> ──
+✓ Consensus: ...
+⚡ Contradiction: ...
+✓ Unique insight: ...
+⚠ Blind spot: ...
+→ Recommendation: ...
+
+## Synthesis
+<executive summary>
+```
+
+### Behavior rules
+
+- Reports append as they arrive; the widget does not wait for all panelists to finish.
+- If a panelist emits no reports, its section shows `(no findings)`.
+- The widget is cleared when the fusion tool completes and returns its final structured result.

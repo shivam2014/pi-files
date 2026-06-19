@@ -151,9 +151,9 @@ All model calls use the existing `complete()` function from `@earendil-works/pi-
 
 **Panel invocation:**
 - `complete()` with the panel model's ID
-- **No tools** — panel models are single-turn text generators
+- **Tools enabled** — each panel model receives `tools: [reportFinding]` and streams findings as it thinks
 - System prompt: `"You are a planning advisor. Review the context and draft plan, then provide constructive criticism. Identify blind spots, suggest alternatives, and flag risks."`
-- No conversation history — each panel call is stateless
+- No conversation history — each panel call is stateless, but a single panel turn may involve multiple `reportFinding` calls followed by a final analysis
 - Parallelized via `mapWithConcurrencyLimit()` with a concurrency limit of 2. Limiting concurrent requests protects rate-limited models from throttling and token-per-minute penalties while still overlapping network latency.
 
 **Judge invocation:**
@@ -199,6 +199,22 @@ This means the orchestrator can call Fusion, get back a structured analysis, and
 - **Judge fails**: Return the raw panel responses with a note that synthesis failed. The orchestrator still gets the individual perspectives.
 - **Timeouts**: Each panel call has a 30-second timeout; the judge has 60 seconds.
 
+### Model Resolution and Stale Models
+
+Configured panel and judge models are resolved against the runtime model registry at call time. `ctx.modelRegistry.find()` maps each configured ID to a usable model object.
+
+**Resolution rules:**
+
+- Panel and judge model IDs are resolved independently.
+- If a configured model fails to resolve (unknown ID, missing API key, provider unavailable), the tool logs a debug message and backfills the slot from available diverse models or falls back to `ctx.model`.
+- The goal is to keep at least two distinct panelists running; the panel must never silently collapse to a single model because one configured ID is stale.
+- If no configured panel model resolves and the backfill pool is also empty, the tool skips Fusion for that call and returns a diagnostic error.
+
+**Stale model IDs in the TUI:**
+
+- The `/fusion` TUI filters its picker list to only models returned by `ctx.modelRegistry.getAvailable()`.
+- If a saved config contains a model ID that is no longer available, the TUI shows a warning (e.g., `"glm-5.1-legacy is no longer available; select a replacement"`) and does not persist the stale ID on save unless the user explicitly re-selects it.
+
 ### Panel Reporting Mechanism
 
 Panel models now have access to the `reportFinding` tool during their analysis, identical to the mechanism used by subagent specialists.
@@ -214,13 +230,13 @@ Panel models now have access to the `reportFinding` tool during their analysis, 
 - Model decides what's report-worthy (not code parsing/truncation)
 - Reports appear in the activity feed as `✓ Report:` — same deterministic mechanism as subagents
 - No 300-char truncation of raw responses
-- Users see concise key findings from each panelist in real-time
+- Reports stream as the model thinks, not as a final dump; the UI/appends each one under the emitting model's section in real time
 
 **Fallback for non-reporting panelists:** If a panel model completes without calling `reportFinding`, its full response text is captured as a single finding. This ensures no panel contribution is lost when a model ignores the tool or produces only prose.
 
 **Implementation:**
 - `fusion-tool.ts` wraps each panel `complete()` call in a multi-turn loop
-- Reports are **batched per model** — emitted as a single `onUpdate` after model completes, not streamed individually
+- Reports are **streamed live** — each `reportFinding` call is forwarded to `onUpdate` as soon as it is emitted, and the UI/appends it under the emitting model's section in real time
 - Fixed tool call message pairing bug: assistant response with `tool_calls` pushed before toolResult messages
 - `stopReason` checked for `"error"`/`"aborted"` to prevent silent failures
 - Empty-content guard: skips reports with empty `content` field
@@ -285,7 +301,7 @@ The TUI writes changes to `~/.pi/fusion.json` on save, so config persists across
 
 ### Auto-disable on config errors
 
-If the fusion config is invalid (e.g., panel models resolve to nothing, judge model not found), the tool gracefully degrades:
+If the fusion config cannot be repaired by model resolution/backfill (e.g., no panel models resolve and no fallback is available, judge model not found), the tool gracefully degrades:
 - Logs a warning
 - Skips fusion registration
 - Continues with normal orchestrator workflow
@@ -498,10 +514,11 @@ typebox                          → Type.Object, Type.String, Type.Optional
 - **Judge runs after all panel responses collected**: The judge receives the concatenated panel outputs and original context
 - **Panel models use `reportFinding` tool**: Each panel `complete()` call is wrapped in a multi-turn loop. Panel models receive `tools: [reportFinding]` and deterministically call it for key insights. Reports appear in the activity feed as `✓ Report:` entries. Loop continues while `stopReason === "toolUse"`, then final analysis text is extracted.
 - **Error handling**: If 1+ panelists succeed, the judge still runs to produce a structured `FusionResult`. If all panelists fail, return a descriptive error. If judge extraction fails after retries, return raw panel responses.
-- **Structured output from judge**: The judge must produce JSON with four top-level keys:
+- **Structured output from judge**: The judge must produce JSON with four top-level keys and one optional executive-summary field:
 
 ```typescript
 interface FusionResult {
+  synthesis?: string;                      // Concise executive summary of the whole analysis
   consensus: string[];                     // Points all panelists agreed on
   contradictions: Array<{                  // Conflicting opinions
     topic: string;                         // What the contradiction is about
@@ -541,9 +558,11 @@ Compare all responses carefully and identify:
 2. CONTRADICTIONS — where do advisors disagree, and what is each stance?
 3. BLIND SPOTS — what important issues did ALL advisors miss?
 4. UNIQUE INSIGHTS — what valuable points did individual advisors make?
+5. SYNTHESIS — optional concise executive summary of the whole analysis
 
 Output your analysis as a JSON object with the following structure:
 {
+  "synthesis": "Concise executive summary (optional)",
   "consensus": ["point 1", "point 2", ...],
   "contradictions": [
     { "topic": "topic description", "stances": [{ "model": "model-id", "position": "stance" }] },
@@ -632,7 +651,7 @@ The fusion implementation follows pi SDK patterns precisely:
 **Cache optimization (per pi-cache-optimizer rules):**
 - `sessionId` passed to each `complete()` call for provider-side KV cache affinity
 - Static system prompts — stable prefix for prompt caching
-- Reports **batched per model** — single `onUpdate` after model completes reduces update overhead (no per-report streaming)
+- Reports **streamed per finding** — each `reportFinding` call produces an immediate `onUpdate`, keeping the activity feed responsive while the panel is still running
 - `reportFindingTool` definition hoisted to module-level constant — identical across turns
 
 **Debug command:** See [section 7.7](#77-debuggability) for how `/debug-orchestrator status` surfaces Fusion panel/judge interactions.
@@ -641,27 +660,42 @@ The fusion implementation follows pi SDK patterns precisely:
 
 ### 7.6 Display Format
 
-Fusion output uses a structured display format for clarity in the activity feed:
+Fusion output uses a structured display format for clarity in the activity feed.
+
+**Live widget header:**
+- On start the header shows the full pipeline:
+  ```
+  ⚡ Fusion: panel (deepseek-v4-flash-2, glm-5.2-2, kimi-k2.7-2) → judge (kimi-k2.7-2)
+  ```
+
+**Per-model status indicators:**
+- `⠋ thinking` — model is generating or calling `reportFinding`
+- `✓ done` — model completed successfully
+- `⚠ error` — model failed or timed out
+- `⏸ skipped` — model was skipped (e.g., resolved to nothing and no backfill available)
 
 **Panel phase display:**
-- On start: `⚡ Fusion: panel (kimi-k2.6-2, deepseek-v4-flash-2)` — no trailing `...`
-- Each panel model runs, reports are collected internally
+- Each panel model gets its own section under the header
+- As a model thinks it emits `✓ Report:` entries, which are appended under that model's section in real time
+- Panel output uses only the `✓ Report:` prefix; consensus/conflict/unique-insight/blind-spot labels are reserved for the judge
 
-**Per-model reports (batched):**
-- After each model completes, a single block is emitted:
+**Per-model reports (streamed):**
+- Each `reportFinding` call is emitted as it happens:
   ```
   ── Panel: kimi-k2.6-2 ──
-    ✓ report1
-    ✓ report2
+    ✓ Report: key finding 1
+    ✓ Report: key finding 2
   ```
-- Reports are **not streamed individually** — they are batched per model and emitted in one `onUpdate`
+- Reports are streamed individually so the user sees the panel thinking in parallel
 
 **Judge analysis display:**
 - Judge output is formatted as structured report entries:
   - `✓ Consensus: ...` — points all panelists agreed on
   - `⚡ Contradiction: ...` — conflicting opinions between panelists
+  - `✓ Unique insight: ...` — valuable point from an individual panelist
   - `⚠ Blind spot: ...` — issues all panelists missed
   - `→ Recommendation: ...` — actionable recommendations
+- The judge may also emit a `synthesis?: string` field; when present it is shown as a short executive summary at the top of the judge section
 - Each entry type uses a distinct prefix icon for visual scanning
 
 ---
@@ -698,6 +732,7 @@ Content moved to [section 7.2](#72-pi-fusion-extension-patterns-used).
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-06-19 | Live reporting model — panel findings stream via `reportFinding` as the model thinks; UI/appends each report under the emitting model's section in real time; panel labels standardized to `✓ Report:`; judge labels expanded to include `✓ Unique insight:` and optional `synthesis` executive summary; documented live widget header and per-model status indicators; added model resolution/backfill rules and stale-model TUI warnings | — |
 | 2026-06-19 | Robust judge JSON extraction (strip fences, brace-aware detection, schema validation, retry loop up to 3 with error feedback); panel concurrency capped at 2 via `mapWithConcurrencyLimit`; panel fallback captures full text when `reportFinding` is not used; judge runs even with a single successful panelist; `/debug-orchestrator status` exposes Fusion interactions | — |
 | 2026-06-18 | Display fixes — Removed trailing `...` from panel onUpdate, batched reports per model (no per-report streaming), formatted judge analysis as report entries (✓/⚡/⚠/→) | — |
 | 2026-06-18 | SDK compliance fixes + cache optimization — `stopReason` check (error/aborted) added to runPanelModel loop; `timestamp` field added to ToolResultMessage for type compliance; `sessionId` passed to `complete()` options for KV cache affinity; SDK audit: all patterns verified against pi official types | — |
