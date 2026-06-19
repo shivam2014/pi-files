@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed } from "./subagent-runner.ts";
 import { clearPlanPanel } from "./plan-panel.ts";
@@ -24,30 +25,96 @@ import { registerFusionCommands } from "./fusion-commands.ts";
 import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
 import { SPECIALISTS, listSpecialists } from "./specialists.ts";
-import { registerFusionTool } from "./fusion-tool.ts";
+import { registerFusionTool, loadFusionConfig } from "./fusion-tool.ts";
+
+function firstCommandName(command: string): { name: string; rest: string } | null {
+	const segment = command.split(/[&|;]+/)[0]?.trim() ?? "";
+	if (!segment) return null;
+	const tokens = segment.split(/\s+/);
+	let i = 0;
+	while (i < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]) || tokens[i] === "export")) i++;
+	const raw = tokens[i];
+	if (!raw) return null;
+	const name = raw.replace(/.*\//, "").toLowerCase();
+	return { name, rest: tokens.slice(i + 1).join(" ") };
+}
+
+function hasFileWriteIndicator(text: string): boolean {
+	return /\s>>?\s/.test(text) ||
+		/\bopen\s*\([^)]*['"](w|a|x)['"]/i.test(text) ||
+		/fs\.(writeFile|writeFileSync|appendFile|appendFileSync)\s*\(/i.test(text) ||
+		/\b(writeFile|appendFile)(Sync)?\s*\(/i.test(text);
+}
+
+function isMutatingEditor(name: string, text: string): boolean {
+	if ((name === "sed" || name === "perl") && /(^|\s)-i/.test(text)) return true;
+	return hasFileWriteIndicator(text);
+}
+
+export function getBashToolReplacement(command: string | undefined, override?: boolean): string | null {
+	if (override || !command) return null;
+	const cmd = firstCommandName(command);
+	if (!cmd) return null;
+	const { name, rest } = cmd;
+	const text = `${name} ${rest}`;
+	switch (name) {
+		case "cat": return "read";
+		case "grep":
+		case "rg": return "grep";
+		case "find": return "find";
+		case "ls": return "ls";
+		case "sed":
+		case "awk":
+		case "perl":
+			return isMutatingEditor(name, text) ? "edit" : null;
+		case "mkdir":
+		case "touch": return "write";
+		case "python":
+		case "python3":
+		case "node":
+			return hasFileWriteIndicator(text) ? "edit" : null;
+		default: return null;
+	}
+}
+
+function handleSubagentToolCall(event: any) {
+	if (_batchLoadSubagent > 0 && !isPlanParsed()) {
+		if (event.toolName !== "planSteps") {
+			return { block: true, reason: `Call planSteps({ goal, steps }) first before using ${event.toolName}.` };
+		}
+	}
+	if (_batchLoadSubagent > 0) return;
+	if (event.toolName !== "bash") return;
+	const command = isToolCallEventType("bash", event) ? event.input.command : event.input?.command;
+	const override = event.input?.override === true;
+	const replacement = getBashToolReplacement(command, override);
+	if (replacement) {
+		return { block: true, reason: `Use ${replacement} instead of bash (${command?.trim().split(/\s+/)[0]}). Set override:true to force bash.` };
+	}
+}
 
 export default function (pi: ExtensionAPI) {
-	// ── Guard: Skip registration when loading for a subagent session ──
+	// ── Guard: Skip full orchestrator registration when loading for a subagent session ──
 	if (_batchLoadSubagent > 0 || isSubagentContext()) {
 		debugLog("SKIPPING orchestrator registration (subagent context)", {
 			batchLoad: _batchLoadSubagent,
 			envGuard: process.env[SUBAGENT_ENV_KEY],
 		});
+		pi.on("tool_call", handleSubagentToolCall);
 		return;
 	}
 
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
 		clearPlanPanel(ctx);
+		const fusionConfig = loadFusionConfig(ctx.cwd);
 		const activeTools = ["plan", "delegate"];
 		// Register fusion tool if config enables it
 		registerFusionTool(pi, ctx.cwd);
-		if (pi.getAllTools().some((t: any) => t.name === "fusion")) {
+		if (fusionConfig.enabled && pi.getAllTools().some((t: any) => t.name === "fusion")) {
 			activeTools.push("fusion");
 		}
 		pi.setActiveTools(activeTools);
-
-		const cleanedPrompt = event.systemPrompt;
 
 		// Wait for orchestrator to declare plan via the plan() tool
 
@@ -63,6 +130,10 @@ export default function (pi: ExtensionAPI) {
 		const parentSkills = event.systemPromptOptions?.skills;
 		const skillsSection = parentSkills && parentSkills.length > 0
 			? `\n\nAvailable skills (pass relevant ones in task descriptions):\n${parentSkills.map(s => `  - **${s.name}**: ${s.description}`).join("\n")}`
+			: "";
+
+		const fusionSection = fusionConfig.enabled
+			? `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error (destructive operations, broad file changes)\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n`
 			: "";
 
 		const delegationInstructions = `
@@ -90,31 +161,26 @@ ${skillsSection}
 
 3. THIRD: Synthesize results.
 
-### Fusion Tool
-After scout/researcher return findings, call:
-fusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })
-for multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.
-
-When to use fusion:
-- After gathering research findings, before writing the final plan
-- When the plan has high cost of error (destructive operations, broad file changes)
-- When you need multiple perspectives on architectural decisions
-
-When to skip fusion:
-- Simple, tactical tasks with clear solutions
-- After delegation results that are straightforward
-
 NOTE: delegate() auto-creates a plan if plan() was not called first. Call plan() first for multi-step work.
 
-### Scope requirement:
-When calling delegate(coder, ...), you MUST include a \`scope\` parameter with the files the coder is allowed to modify/create. Get this from scout's \`## Scope\` output, or declare it yourself based on your analysis.
+${fusionSection}### Scope requirement:
+When calling delegate(coder|writer|reviewer|researcher|scout, ...), you MUST include a \`scope\` parameter with the files the specialist is allowed to modify/create and any boundaries.
+
+- Get scope from scout's or researcher's \`## Scope\` output when available.
+- Prefer reusing cached scope across delegations for the same task instead of re-deriving it.
+- For writers, default to doc-friendly scope: only the docs mentioned, minimal edits, preserve structure.
 
 Example:
 \`\`\`
 delegate("coder", "fix the token expiry", {
     scope: {
         filesToModify: ["src/auth.ts"],
-        filesToCreate: []
+        filesToCreate: [],
+        allowedDirectories: ["src"],
+        maxFiles: 15,
+        maxLinesPerFile: 400,
+        changeType: "single-file",
+        requiresApproval: false
     }
 })
 \`\`\`
@@ -156,6 +222,12 @@ Use this to decide:
 
 No automatic retries. Each retry uses modified task based on what failed.
 
+# Auto-lint Feedback
+
+When you see a message with customType 'lint', treat it as blocking feedback.
+If the lint failed, stop and fix the reported issues before calling any further tools.
+Do not proceed with edits or delegation until lint passes.
+
 # Audit Review
 
 After each delegation returns, check for [Audit: ...] prefix:
@@ -191,6 +263,9 @@ If task ambiguous before starting:
 			}
 		}
 		if (_batchLoadSubagent > 0) return; // Don't block other subagent tools
+		if (event.toolName === "fusion" && !pi.getAllTools().some((t: any) => t.name === "fusion")) {
+			return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
+		}
 		if (event.toolName !== "delegate" && event.toolName !== "plan" && event.toolName !== "fusion") {
 			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
 		}

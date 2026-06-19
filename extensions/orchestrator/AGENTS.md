@@ -105,3 +105,17 @@ This orchestrator extension in pi is developed and used in parallel. Every sessi
 
 **Why.** Traditional testing catches known cases. Real usage catches edge cases
 **Fix loop.** Bug found → report in session feedback → fix in next session → verify. No bug hit twice.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues via the `gh` CLI; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context repo: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.

@@ -28,6 +28,7 @@ import {
 	setToolDetail,
 	clearToolDetail,
 	completeLastSubstep,
+	completeActiveSubstepWithLabel,
 	completeCurrentStep,
 	markFeedError,
 	renderActivityFeed,
@@ -59,8 +60,149 @@ export function isPlanParsed(): boolean { return _planParsed; }
 
 const OUTPUT_CAP = 30_000;
 
+/**
+ * Extract the last occurrence of a markdown section starting with `heading`.
+ * Section runs until the next `## ` heading or end of output.
+ */
+function extractLastSection(output: string, heading: string): string | null {
+	const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const regex = new RegExp(`(?:^|\\n)${escaped}(?:\\r?\\n|$)`, "g");
+	let match: RegExpExecArray | null;
+	let lastIdx = -1;
+	while ((match = regex.exec(output)) !== null) {
+		lastIdx = match.index;
+	}
+	if (lastIdx === -1) return null;
+
+	const afterHeading = output.indexOf("\n", lastIdx + heading.length);
+	let end = output.length;
+	if (afterHeading !== -1) {
+		const nextHeading = output.indexOf("\n## ", afterHeading + 1);
+		if (nextHeading !== -1) end = nextHeading;
+	}
+	return output.slice(lastIdx, end).trimEnd();
+}
+
+/**
+ * Structured output truncation that preserves trailing `## Findings` and
+ * `## Audit` sections and appends a clear marker.
+ */
+export function truncateSubagentOutput(output: string, cap = OUTPUT_CAP): string {
+	if (output.length <= cap) return output;
+
+	const markerText = `[output truncated at ${cap} chars; tail preserved]`;
+	const tailParts: string[] = [];
+	for (const heading of ["## Findings", "## Audit"]) {
+		const section = extractLastSection(output, heading);
+		if (section) tailParts.push(section);
+	}
+	const tail = tailParts.join("\n\n");
+	const tailBlock = tail ? "\n\n" + tail : "";
+	const suffixLength = 2 + markerText.length + tailBlock.length; // "\n\n" before marker
+	const headBudget = cap - suffixLength;
+	if (headBudget <= 0) {
+		// Tail alone exceeds cap — fall back to plain head truncation.
+		return output.slice(0, cap - markerText.length) + markerText;
+	}
+
+	const head = output.slice(0, headBudget);
+	const lastNewline = head.lastIndexOf("\n");
+	const cleanHead = lastNewline > 0 ? head.slice(0, lastNewline) : head;
+	return cleanHead + "\n\n" + markerText + tailBlock;
+}
+
 export function isSubagentContext(): boolean {
 	return process.env[SUBAGENT_ENV_KEY] === "1";
+}
+
+export interface AskOrchestratorFeedApi {
+	get(): import("./types.ts").ActivityFeedState;
+	set(feed: import("./types.ts").ActivityFeedState): void;
+}
+
+/**
+ * Create the ask_orchestrator tool that only subagents see.
+ * Pauses the subagent session until the orchestrator resolver returns an answer.
+ */
+export function createAskOrchestratorTool(
+	resolve: ((question: string, context?: string) => Promise<string>) | undefined,
+	onUpdate: ((update: any) => void) | undefined,
+	specialistName: string,
+	feedApi: AskOrchestratorFeedApi,
+) {
+	return defineTool({
+		name: "ask_orchestrator",
+		label: "Ask Orchestrator",
+		description: "Pause the subagent and ask the orchestrator a clarification question. The orchestrator answers from context, the codebase, or the user.",
+		parameters: Type.Object({
+			question: Type.String({ description: "The clarification question for the orchestrator" }),
+			context: Type.Optional(Type.String({ description: "Optional extra context to help answer the question" })),
+		}),
+		async execute(_toolCallId: string, params: { question: string; context?: string }) {
+			if (!resolve) {
+				return {
+					content: [{ type: "text" as const, text: "[error] ask_orchestrator is not wired to an orchestrator resolver." }],
+					details: {},
+				};
+			}
+
+			const label = toolCallToSubstep("ask_orchestrator", params);
+			let feed = feedApi.get();
+			feed = updateActiveSubstepOutput(feed, "Waiting for orchestrator...");
+			feedApi.set(feed);
+			onUpdate?.({
+				content: [{ type: "text", text: renderActivityFeed(specialistName, feed) }],
+				details: { status: "clarifying", label },
+			});
+
+			const answer = await resolve(params.question, params.context);
+			const answerPreview = answer.slice(0, 80);
+
+			feed = feedApi.get();
+			feed = completeActiveSubstepWithLabel(feed, `Clarified: ${answerPreview}`, answerPreview, false, true);
+			feedApi.set(feed);
+			const text = renderActivityFeed(specialistName, feed);
+			onUpdate?.({
+				content: [{ type: "text", text }],
+				details: { status: "clarified", answer },
+			});
+
+			return {
+				content: [{ type: "text" as const, text: answer }],
+				details: {},
+			};
+		},
+	});
+}
+
+/**
+ * Capture a shallow copy of the current process environment.
+ */
+export function snapshotSubagentEnv(): NodeJS.ProcessEnv {
+	return { ...process.env };
+}
+
+/**
+ * Return a cleaned env that strips orchestrator-specific vars and any
+ * internal PI_* tokens so they do not leak into subagent child processes.
+ */
+export function cleanSubagentEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const cleaned: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(env)) {
+		if (key === SUBAGENT_ENV_KEY || key.startsWith("PI_")) continue;
+		cleaned[key] = value;
+	}
+	return cleaned;
+}
+
+/**
+ * Replace the active process.env with the provided snapshot.
+ */
+export function installSubagentEnv(env: NodeJS.ProcessEnv): void {
+	for (const key of Object.keys(process.env)) {
+		delete process.env[key];
+	}
+	Object.assign(process.env, env);
 }
 
 /**
@@ -121,6 +263,7 @@ export async function runSubagent(
 	writeScopeFile(cwd, scope);
 
 	const startTime = Date.now();
+	let envSnapshot = snapshotSubagentEnv();
 
 	try {
 		const authStorage = AuthStorage.create();
@@ -150,6 +293,13 @@ export async function runSubagent(
 			return { output: "[error] No model available for subagent. Check API key configuration.", turns: 0 };
 		}
 
+		// Snapshot, clean, and install isolated env for the subagent session.
+		// The SUBAGENT_ENV_KEY is only set during extension loading so the
+		// orchestrator extension can detect the subagent context; it is removed
+		// before the session runs so child bash processes see a cleaned env.
+		envSnapshot = snapshotSubagentEnv();
+		installSubagentEnv(cleanSubagentEnv(envSnapshot));
+
 		// Load extensions for subagent, flag context so orchestrator skips re-registration
 		_batchLoadSubagent++;
 		process.env[SUBAGENT_ENV_KEY] = "1";
@@ -171,7 +321,11 @@ export async function runSubagent(
 					if (scope.maxLinesPerFile) {
 						prompt += `- Max lines per file: ${scope.maxLinesPerFile}\n`;
 					}
+					if (scope.boundaries) {
+						prompt += `- Boundaries: ${scope.boundaries}\n`;
+					}
 				}
+				prompt += `\n\n### Clarification\nIf you need input from the orchestrator to continue, call ask_orchestrator({ question: "...", context: "..." }). The orchestrator will answer from context, the codebase, or ask the user.\n`;
 				return prompt;
 			},
 				noContextFiles: true, // Don't load parent's AGENTS.md/context into subagent
@@ -180,9 +334,7 @@ export async function runSubagent(
 		} finally {
 			_batchLoadSubagent--;
 			_planParsed = false;  // Reset for next subagent session
-			if (_batchLoadSubagent <= 0) {
-				delete process.env[SUBAGENT_ENV_KEY];
-			}
+			delete process.env[SUBAGENT_ENV_KEY];
 		}
 
 		const excludeTools = (specialist.name === "writer" || specialist.name === "researcher")
@@ -192,6 +344,7 @@ export async function runSubagent(
 		let output = "";
 		let turns = 0;
 		let feed = createActivityFeed();
+		const feedApi: AskOrchestratorFeedApi = { get: () => feed, set: (f) => { feed = f; } };
 		let _lastFeedSnapshot: string | null = null;
 		const goal = shortenLabel(task);
 		feed.goal = goal;
@@ -278,8 +431,15 @@ export async function runSubagent(
 			},
 		});
 
-		// Merge tools with planSteps, advanceStep, and reportFinding
-		const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding"];
+		// Merge tools with planSteps, advanceStep, reportFinding, and ask_orchestrator
+		const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding", "ask_orchestrator"];
+
+		const askOrchestratorTool = createAskOrchestratorTool(
+			parentCtx?.onAskOrchestrator,
+			onUpdate,
+			specialist.name,
+			feedApi,
+		);
 
 		const { session } = await createAgentSession({
 			cwd,
@@ -289,6 +449,7 @@ export async function runSubagent(
 				planStepsTool,
 				advanceStepTool,
 				reportFindingTool,
+				askOrchestratorTool,
 				...(specialist.name === "scout" ? [gitReadTool, ghTool] : []),
 			],
 			excludeTools,
@@ -521,9 +682,6 @@ export async function runSubagent(
 				? `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`
 				: `[error] ${errorMsg}`;
 		} finally {
-			if (_batchLoadSubagent <= 0) {
-				delete process.env[SUBAGENT_ENV_KEY];
-			}
 			unsubscribe();
 			if (renderTimer) {
 				clearInterval(renderTimer);
@@ -534,11 +692,14 @@ export async function runSubagent(
 			session.dispose();
 		}
 
-		// Finalize feed state — complete any remaining steps
-		if (feed.steps.length > 0 && feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
-			feed = completeCurrentStep(feed);
+		// Finalize feed state — complete any remaining steps on success only.
+		// Errored/aborted sessions preserve markFeedError() state and must not
+		// be overwritten as completed.
+		if (finalStatus !== "error" && finalStatus !== "aborted") {
+			while (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
+				feed = completeCurrentStep(feed);
+			}
 		}
-		feed.currentStep = feed.steps.length;
 
 		// Emit final render so TUI shows clean final state
 		const finalText = renderActivityFeed(specialist.name, feed);
@@ -546,10 +707,7 @@ export async function runSubagent(
 		recordTimelineFrame("step_finalized", inspectFeedState(feed), snapshotFeedRender(feed));
 
 		// Compress + cap output before returning to parent
-		let finalOutput = compressOutput(output || "(no output)");
-		if (finalOutput.length > OUTPUT_CAP) {
-			finalOutput = finalOutput.slice(0, OUTPUT_CAP) + "\n\n[output truncated]";
-		}
+		const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);
 
 		// Build tool call trail from feed state
 		const toolCallTrail: { tool: string; outputPreview?: string; completed: boolean }[] = [];
@@ -572,6 +730,9 @@ export async function runSubagent(
 			turns: 0,
 		};
 	} finally {
+		// Always restore the original parent environment, even if the subagent
+		// failed before the session started.
+		installSubagentEnv(envSnapshot);
 		clearScopeFile(cwd);
 	}
 }

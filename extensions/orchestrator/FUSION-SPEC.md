@@ -167,6 +167,17 @@ All model calls use the existing `complete()` function from `@earendil-works/pi-
   - Output a structured JSON analysis
 - Judge receives: original context + draft plan + all panel responses concatenated
 
+### Adaptive Temperature Fallback
+
+Not all panel/judge models accept a `temperature` parameter. Fusion sends the configured temperature by default, then falls back automatically if a model rejects it.
+
+- **Default behavior** — Panel and judge `complete()` calls include the configured temperature. The panel uses `config.temperature`; the judge uses `0.2`.
+- **Retry on temperature rejection** — If a model rejects the request with an error message mentioning `"temperature"`, Fusion immediately retries the same request with `temperature` omitted.
+- **Per-model session cache** — A `temperaturePreferenceCache` records, per model ID, whether the model accepted (`true`) or rejected (`false`) temperature for the current process/session. On later calls, models with a cached `false` preference skip temperature automatically without attempting it first.
+- **Output visibility** — Retries and any remaining temperature errors are logged via `debugLog` and surfaced in the tool output. Panel temperature failures appear in the `Failed` section; judge temperature failures are reported as a judge error, with raw panel responses still preserved.
+
+This prevents one temperature-incompatible model from aborting the entire Fusion deliberation.
+
 ### Judge JSON Extraction and Validation
 
 The judge returns free-form text, so the Fusion tool extracts and validates the embedded JSON before returning it to the orchestrator.

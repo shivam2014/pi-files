@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { SelectList, type SelectItem, matchesKey, Key } from "@earendil-works/pi-tui";
-import { loadFusionConfig, saveFusionConfig } from "./fusion-tool.ts";
+import { loadFusionConfig, saveFusionConfig, sanitizeFusionConfig } from "./fusion-tool.ts";
 
 interface FusionUIState {
 	enabled: boolean;
@@ -27,8 +27,13 @@ export async function showFusionTUI(ctx: ExtensionCommandContext): Promise<void>
 		return;
 	}
 
-	const config = loadFusionConfig(ctx.cwd);
+	const rawConfig = loadFusionConfig(ctx.cwd);
 	const models = ctx.modelRegistry.getAvailable();
+	const availableIds = models.map((m: any) => `${m.provider}/${m.id}`);
+	const { config, removed } = sanitizeFusionConfig(rawConfig, availableIds);
+	if (removed.length > 0) {
+		saveFusionConfig(ctx.cwd, config);
+	}
 
 	const result = await ctx.ui.custom<FusionUIState | null>(
 		(_tui, theme, _kb, done) => {
@@ -38,6 +43,8 @@ export async function showFusionTUI(ctx: ExtensionCommandContext): Promise<void>
 				judge: config.judge ?? "",
 				temperature: config.temperature ?? 0.3,
 			};
+
+			const removedIds = removed;
 
 			let currentSection: Section = "enabled";
 			let panelSubView = false;
@@ -103,6 +110,10 @@ export async function showFusionTUI(ctx: ExtensionCommandContext): Promise<void>
 						}
 					} else {
 						// ── Main settings view ──
+						if (removedIds.length > 0) {
+							lines.push(theme.fg("error", ` ⚠ Removed stale: ${removedIds.map((v) => v.split("/")[1]).join(", ")}`));
+						}
+
 						const rows: { key: Section; label: string }[] = [
 							{ key: "enabled", label: "Enabled" },
 							{ key: "panel", label: `Panel [${state.panel.length} model${state.panel.length !== 1 ? "s" : ""}]` },

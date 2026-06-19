@@ -24,6 +24,13 @@ const MAX_FEED_SUBSTEPS = 8;
 // Max recursive re-renders when state changes mid-render
 const MAX_RENDER_RETRIES = 3;
 
+function renderReportSubstepLine(label: string): string {
+	if (label.startsWith("Clarified:")) {
+		return `    ✓ ${label}`;
+	}
+	return `    ✓ Report: ${label}`;
+}
+
 // ============================================================================
 // Activity Feed State — Layer 2 (subagent tool blocks)
 // ============================================================================
@@ -122,6 +129,33 @@ export function completeLastSubstep(state: ActivityFeedState, outputPreview?: st
 	const newSubsteps = step.substeps.map((sub, i) => {
 		if (i !== activeIdx) return sub;
 		return { ...sub, completed: true, errored: isError === true, endTime: now, ...(outputPreview ? { outputPreview } : {}) };
+	});
+	const newSteps = state.steps.map((s, i) => i === state.currentStep ? { ...s, substeps: newSubsteps } : s);
+	const wasErrored = state.errored;
+	return { ...state, steps: newSteps, ...(wasErrored ? { errored: false, errorMessage: undefined } : {}) };
+}
+
+/**
+ * Complete the active substep and rename its label (e.g. pending "Clarify: ..." -> completed "Clarified: ...").
+ */
+export function completeActiveSubstepWithLabel(state: ActivityFeedState, label: string, outputPreview?: string, isError?: boolean, isReport?: boolean): ActivityFeedState {
+	if (state.currentStep < 0 || state.currentStep >= state.steps.length) return state;
+	const step = state.steps[state.currentStep];
+	if (step.substeps.length === 0) return state;
+
+	let activeIdx = -1;
+	for (let i = 0; i < step.substeps.length; i++) {
+		if (!step.substeps[i].completed) {
+			activeIdx = i;
+			break;
+		}
+	}
+	if (activeIdx < 0) return state;
+
+	const now = Date.now();
+	const newSubsteps = step.substeps.map((sub, i) => {
+		if (i !== activeIdx) return sub;
+		return { ...sub, label, completed: true, errored: isError === true, endTime: now, ...(outputPreview ? { outputPreview } : {}), ...(isReport ? { isReport: true } : {}) };
 	});
 	const newSteps = state.steps.map((s, i) => i === state.currentStep ? { ...s, substeps: newSubsteps } : s);
 	const wasErrored = state.errored;
@@ -321,6 +355,10 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 			return `Writing ${normalizePath(input?.path)} (${(typeof content === "string" ? content.length : 0)} chars)`;
 		case "ls":
 			return `Listing ${normalizePath(input?.path)}`;
+		case "ask_orchestrator": {
+			const q = (input?.question || "").trim();
+			return `Clarify: ${q ? q.slice(0, 80) + (q.length > 80 ? "..." : "") : "question"}`;
+		}
 		case "lint":
 			return `Linting ${normalizePath(input?.path || "files")}`;
 		case "typecheck":
@@ -351,7 +389,7 @@ export function renderSubstepLines(substeps: Substep[], maxLines: number = 3): s
 	for (const sub of visible) {
 		if (sub.completed) {
 			if (sub.isReport) {
-				lines.push(`    ✓ Report: ${sub.label}`);
+				lines.push(renderReportSubstepLine(sub.label));
 			} else {
 				const label = sub.label.startsWith("Reading ") ? "Read " + sub.label.slice(8) : sub.label;
 				lines.push(`    ✓ ${label}`);
@@ -421,7 +459,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 					// Show Report: substeps under completed steps (Collapse Not Erase)
 					for (const sub of step.substeps) {
 						if (sub.isReport) {
-							errorLines.push(`    ✓ Report: ${sub.label}`);
+							errorLines.push(renderReportSubstepLine(sub.label));
 						}
 					}
 				} else if (isErrored) {
@@ -438,7 +476,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 									errorLines.push(`      ${sub.outputPreview}`);
 								}
 							} else if (sub.isReport) {
-								errorLines.push(`    ✓ Report: ${sub.label}`);
+								errorLines.push(renderReportSubstepLine(sub.label));
 							} else {
 								errorLines.push(`    ✓ ${sub.label}`);
 							}
@@ -511,7 +549,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 			// Show Report: substeps under completed steps (Collapse Not Erase)
 			for (const sub of step.substeps) {
 				if (sub.isReport) {
-					lines.push(`    ✓ Report: ${sub.label}`);
+					lines.push(renderReportSubstepLine(sub.label));
 				}
 			}
 		} else if (isCurrent) {
@@ -527,7 +565,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 							lines.push(`      ${sub.outputPreview}`);
 						}
 					} else if (sub.isReport) {
-						lines.push(`    ✓ Report: ${sub.label}`);
+						lines.push(renderReportSubstepLine(sub.label));
 					} else {
 						lines.push(`    ✓ ${sub.label}`);
 					}

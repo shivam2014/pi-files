@@ -1,7 +1,14 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { setupPlanPanel } from "./plan-panel.ts";
+import { setupPlanPanel, summarizeGoal } from "./plan-panel.ts";
+
+function deriveGoal(goal: string | undefined, steps: string[] | undefined): string {
+    if (goal?.trim()) return goal.trim();
+    const stepsText = steps?.filter(Boolean).join(" ").trim();
+    if (stepsText) return summarizeGoal(stepsText);
+    return "Untitled plan";
+}
 
 export function registerPlanTool(pi: ExtensionAPI) {
     pi.registerTool({
@@ -17,18 +24,19 @@ export function registerPlanTool(pi: ExtensionAPI) {
             }),
         }),
         async execute(toolCallId, params, signal, onUpdate, ctx) {
+            const effectiveGoal = deriveGoal(params.goal, params.steps);
             if (!params.steps || params.steps.length === 0) {
-                setupPlanPanel(params.goal || "Plan", ["Planning..."], ctx);
-                return { content: [{ type: "text", text: "Plan set (no steps provided)" }], details: {} };
+                setupPlanPanel(effectiveGoal, ["Planning..."], ctx);
+                return { content: [{ type: "text", text: `Plan set (no steps provided): ${effectiveGoal}` }], details: {} };
             }
-            setupPlanPanel(params.goal, params.steps, ctx);
+            setupPlanPanel(effectiveGoal, params.steps, ctx);
             return {
-                content: [{ type: "text", text: `Plan set: ${params.goal} (${params.steps.length} steps)` }],
-                details: { goal: params.goal, steps: params.steps },
+                content: [{ type: "text", text: `Plan set: ${effectiveGoal} (${params.steps.length} steps)` }],
+                details: { goal: effectiveGoal, steps: params.steps },
             };
         },
         renderCall(args, theme, context) {
-            return new Text(`⠋ Plan: ${args.goal} (${args.steps.length} steps)`, 0, 0);
+            return new Text(`⠋ Plan: ${deriveGoal(args.goal, args.steps)} (${args.steps.length} steps)`, 0, 0);
         },
         renderResult(result, options, theme, context) {
             const first = result.content?.[0];

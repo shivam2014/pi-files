@@ -10,6 +10,46 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
 import { debugLog } from "./debug.ts";
 
+// ─── Per-model temperature preference cache ────────────────
+// true  = model accepted the requested temperature
+// false = model rejected temperature; omit it on subsequent calls
+const temperaturePreferenceCache = new Map<string, boolean>();
+
+export function _resetTemperatureCacheForTests(): void {
+	temperaturePreferenceCache.clear();
+}
+
+export async function tryCompleteWithTemperatureFallback(
+	model: any,
+	payload: any,
+	options: any,
+): Promise<AssistantMessage> {
+	const modelId = model?.id ?? String(model);
+	const cachedPreference = temperaturePreferenceCache.get(modelId);
+	const requestedTemperature = options?.temperature;
+
+	if (cachedPreference === false) {
+		return complete(model, payload, { ...options, temperature: undefined });
+	}
+
+	try {
+		const result = await complete(model, payload, options);
+		temperaturePreferenceCache.set(modelId, true);
+		return result;
+	} catch (err: any) {
+		const msg = err?.message ?? String(err);
+		if (requestedTemperature != null && msg.toLowerCase().includes("temperature")) {
+			debugLog("fusion-tool: retrying without temperature", { model: modelId, error: msg });
+			temperaturePreferenceCache.set(modelId, false);
+			return complete(model, payload, { ...options, temperature: undefined });
+		}
+		throw err;
+	}
+}
+
+// ─── Fusion registration state, keyed by cwd ─────────────
+const _fusionRegistrations = new Map<string, { registered: boolean; config: Required<FusionConfig> }>();
+
 // ─── Report-Finding Tool (for panel models) ─────────────
 
 const reportFindingTool = {
@@ -47,7 +87,38 @@ export function extractText(response: AssistantMessage): string {
 		.join("\n");
 }
 
-export function loadFusionConfig(cwd: string): Required<FusionConfig> {
+export function sanitizeFusionConfig(
+	config: FusionConfig,
+	availableModelIds: string[],
+): { config: Required<FusionConfig>; removed: string[] } {
+	const removed: string[] = [];
+
+	const panel = (config.panel ?? []).filter((id) => {
+		if (availableModelIds.includes(id)) return true;
+		removed.push(id);
+		return false;
+	});
+
+	let judge = config.judge ?? "";
+	if (judge && !availableModelIds.includes(judge)) {
+		removed.push(judge);
+		judge = "";
+	}
+
+	const cleaned: Required<FusionConfig> = {
+		enabled: config.enabled ?? true,
+		panel,
+		judge,
+		maxPanelModels: config.maxPanelModels ?? 3,
+		temperature: config.temperature ?? 0.3,
+		maxTokensPerPanel: config.maxTokensPerPanel ?? 2048,
+		maxTokensForJudge: config.maxTokensForJudge ?? 4096,
+	};
+
+	return { config: cleaned, removed };
+}
+
+export function loadFusionConfig(cwd: string, availableModelIds?: string[]): Required<FusionConfig> {
 	const projectPath = join(cwd, ".pi", "fusion.json");
 	const globalPath = join(getAgentDir(), "fusion.json");
 
@@ -69,7 +140,7 @@ export function loadFusionConfig(cwd: string): Required<FusionConfig> {
 		}
 	}
 
-	return {
+	const defaulted: Required<FusionConfig> = {
 		enabled: config.enabled ?? true,
 		panel: config.panel ?? [],
 		judge: config.judge ?? "",
@@ -78,6 +149,17 @@ export function loadFusionConfig(cwd: string): Required<FusionConfig> {
 		maxTokensPerPanel: config.maxTokensPerPanel ?? 2048,
 		maxTokensForJudge: config.maxTokensForJudge ?? 4096,
 	};
+
+	if (availableModelIds && availableModelIds.length > 0) {
+		const { config: cleaned, removed } = sanitizeFusionConfig(defaulted, availableModelIds);
+		if (removed.length > 0) {
+			debugLog("fusion-tool: removed stale fusion models", { removed });
+			saveFusionConfig(cwd, cleaned);
+		}
+		return cleaned;
+	}
+
+	return defaulted;
 }
 
 function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -269,7 +351,7 @@ async function runPanelModel(
 		}
 
 		try {
-			const response = await complete(model, {
+			const response = await tryCompleteWithTemperatureFallback(model, {
 				systemPrompt,
 				messages,
 				tools: [reportFindingTool],
@@ -355,7 +437,29 @@ async function runPanelModel(
 
 export function registerFusionTool(pi: ExtensionAPI, cwd: string): void {
 	const config = loadFusionConfig(cwd);
-	if (!config.enabled) return;
+	const existing = _fusionRegistrations.get(cwd);
+
+	if (config.enabled) {
+		// Idempotent: skip if already registered for this cwd.
+		if (existing?.registered) return;
+
+		// Also guard against an orphaned tool left in the registry.
+		if (pi.getAllTools().some((t: any) => t.name === "fusion")) {
+			_fusionRegistrations.set(cwd, { registered: true, config });
+			return;
+		}
+	} else {
+		// Disabled: unregister any existing fusion tool for this cwd.
+		if (pi.getAllTools().some((t: any) => t.name === "fusion") && typeof (pi as any).unregisterTool === "function") {
+			try {
+				(pi as any).unregisterTool("fusion");
+			} catch (err: any) {
+				debugLog("fusion-tool: unregister failed", { error: err.message ?? String(err) });
+			}
+		}
+		_fusionRegistrations.set(cwd, { registered: false, config });
+		return;
+	}
 
 	const parameters = Type.Object({
 		context: Type.String({
@@ -448,11 +552,8 @@ IMPORTANT: For each distinct finding, insight, or recommendation you identify, y
 			const failed = panelResults.filter((r: any) => r.error || !r.content);
 
 			if (succeeded.length === 0) {
-				const errorDetail = failed.map((r: any) =>
-					`- ${r.model}: ${r.error || "Unknown error (empty response)"}`
-				).join("\n");
 				debugLog("fusion-tool: all panel models failed", { count: panelResults.length, errors: failed.map((r: any) => ({ model: r.model, error: r.error })) });
-				throw new Error(`Fusion failed: all ${panelResults.length} panel models returned errors.\n${errorDetail}`);
+				return formatPanelResults([], failed) as any;
 			}
 
 			onUpdate?.({
@@ -476,8 +577,9 @@ Return valid JSON ONLY with these fields:
 
 			const auth = await registry.getApiKeyAndHeaders(judgeModel);
 			if (!auth.ok || !auth.apiKey) {
-				debugLog("fusion-tool: judge model not authenticated", { model: judgeModel.id });
-				return formatPanelResults(succeeded) as any;
+				const judgeError = "No API key configured";
+				debugLog("fusion-tool: judge model not authenticated", { model: judgeModel.id, error: judgeError });
+				return formatPanelResults(succeeded, failed, judgeModel, judgeError) as any;
 			}
 
 			const judgeMessages: any[] = [
@@ -488,11 +590,13 @@ Return valid JSON ONLY with these fields:
 			let lastJudgeText = "";
 			const maxAttempts = 3;
 
+			let judgeError: string | undefined;
+			let lastParseError = "";
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 				debugLog("fusion-tool: judge attempt", { model: judgeModel.id, attempt, maxAttempts });
 				let judgeResponse;
 				try {
-					judgeResponse = await complete(judgeModel, {
+					judgeResponse = await tryCompleteWithTemperatureFallback(judgeModel, {
 						systemPrompt: judgeSystemPrompt,
 						messages: judgeMessages,
 					}, {
@@ -505,7 +609,8 @@ Return valid JSON ONLY with these fields:
 						timeoutMs: 60_000,
 					});
 				} catch (err: any) {
-					debugLog("fusion-tool: judge attempt failed", { model: judgeModel.id, attempt, error: err.message ?? String(err) });
+					judgeError = err.message ?? String(err);
+					debugLog("fusion-tool: judge attempt failed", { model: judgeModel.id, attempt, error: judgeError });
 					break;
 				}
 
@@ -520,6 +625,7 @@ Return valid JSON ONLY with these fields:
 				const parseError = extractJsonObject(lastJudgeText)
 					? "JSON was found but did not match the required schema"
 					: "No valid JSON object found";
+				lastParseError = parseError;
 				debugLog("fusion-tool: judge parse failure", { model: judgeModel.id, attempt, error: parseError });
 
 				if (attempt < maxAttempts) {
@@ -556,10 +662,13 @@ Return valid JSON ONLY with these fields:
 				} as any;
 			}
 
-			debugLog("fusion-tool: judge failed after all attempts", { model: judgeModel.id, attempts: maxAttempts, lastTextLength: lastJudgeText.length });
-			return formatPanelResults(succeeded) as any;
+			judgeError = judgeError || `Judge failed to produce valid analysis after ${maxAttempts} attempts: ${lastParseError}`;
+			debugLog("fusion-tool: judge failed after all attempts", { model: judgeModel.id, attempts: maxAttempts, error: judgeError, lastTextLength: lastJudgeText.length });
+			return formatPanelResults(succeeded, failed, judgeModel, judgeError) as any;
 		},
 	});
+
+	_fusionRegistrations.set(cwd, { registered: true, config });
 }
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -696,14 +805,37 @@ function formatFusionResult(analysis: any, succeeded: any[], failed: any[], pane
 	return text;
 }
 
-function formatPanelResults(succeeded: any[]): { content: Array<{ type: "text"; text: string }>; details: { status: string; responses: any[] } } {
-	const text = "## Panel Responses\n\n" +
-		succeeded.map((r: any) => `### ${r.model}\n${r.content}`).join("\n\n") +
-		"\n\n*(No judge available — judge model not configured or call failed)*";
+function formatPanelResults(
+	succeeded: any[],
+	failed: any[] = [],
+	judgeModel?: any,
+	judgeError?: string,
+): { content: Array<{ type: "text"; text: string }>; details: { status: string; responses: any[]; errors: any[]; judgeError?: string } } {
+	let text = "## Panel Responses\n\n";
+	if (succeeded.length > 0) {
+		text += succeeded.map((r: any) => `### ${r.model}\n${r.content}`).join("\n\n");
+	} else {
+		text += "*(No panel model succeeded)*";
+	}
+
+	const displayErrors = failed.slice();
+	if (judgeModel && judgeError) {
+		displayErrors.push({ model: judgeModel.id, error: judgeError });
+	}
+
+	if (displayErrors.length > 0) {
+		text += "\n\n### Failed\n" + displayErrors.map((r: any) => `- **${r.model}**: ${r.error || "Unknown error (empty response)"}`).join("\n");
+	}
+
+	if (judgeModel && judgeError) {
+		text += `\n\n*(No judge available — ${judgeModel.id} failed: ${judgeError})*`;
+	} else if (!judgeModel) {
+		text += "\n\n*(No judge available — judge model not configured or call failed)*";
+	}
 
 	return {
 		content: [{ type: "text" as const, text }],
-		details: { status: "no_judge", responses: succeeded },
+		details: { status: "no_judge", responses: succeeded, errors: displayErrors, judgeError },
 	};
 }
 

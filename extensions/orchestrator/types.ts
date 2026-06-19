@@ -71,6 +71,8 @@ export interface Specialist {
 export interface SubagentContext {
 	modelRegistry?: any;
 	model?: any;
+	/** Resolver for ask_orchestrator clarifications. Pauses the subagent until resolved. */
+	onAskOrchestrator?: (question: string, context?: string) => Promise<string>;
 }
 
 /** A step in the plan panel header */
@@ -99,6 +101,8 @@ export interface Scope {
 	changeType: "single-file" | "multi-file";
 	maxLinesPerFile: number;
 	gateMode?: ScopeGateMode;
+	/** Free-text scope boundaries the specialist must respect. */
+	boundaries?: string;
 }
 
 /** Per-delegation tool usage metrics */

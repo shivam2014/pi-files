@@ -10,8 +10,10 @@
 
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Specialist, DelegationMetrics } from "./types.ts";
+import type { Specialist, DelegationMetrics, SubagentContext } from "./types.ts";
 import { SPECIALISTS } from "./specialists.ts";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { join, resolve, isAbsolute, basename, extname } from "node:path";
 import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
 
 import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete } from "./plan-panel.ts";
@@ -35,6 +37,333 @@ const PRESENT_PARTICIPLE: Record<string, string> = {
 
 // Scope caching: after a scout/researcher outputs scope info, store it for the next coder call
 let _cachedScope: Scope | null = null;
+
+const CODE_EXTENSIONS = new Set([
+	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+	".py", ".rb", ".go", ".rs", ".java", ".kt",
+	".swift", ".cpp", ".cc", ".c", ".h", ".hpp",
+	".md", ".txt", ".json", ".yaml", ".yml", ".toml",
+]);
+
+const MAX_READ_CHARS = 8_000;
+const MAX_ANSWER_CHARS = 10_000;
+
+/**
+ * Normalize a path-like token and, if it points to an existing file under cwd,
+ * return the absolute path. Returns undefined for non-existent or directory paths
+ * unless the caller asked for a directory listing.
+ */
+function resolveExistingPath(token: string, cwd: string): string | undefined {
+	if (!token || token.length > 500) return undefined;
+	// Strip surrounding quotes/backticks/parens
+	let p = token.replace(/^["'`(]+|["'`)]+$/g, "").trim();
+	if (!p) return undefined;
+
+	// Ignore obvious non-paths
+	if (/^(https?|file):\/\//i.test(p)) return undefined;
+	if (p.startsWith("-") || p.startsWith("`")) return undefined;
+
+	let absolute = isAbsolute(p) ? p : resolve(cwd, p);
+	if (!existsSync(absolute)) {
+		// Try basename-only tokens with common source extensions
+		if (!p.includes("/") && !p.includes("\\")) {
+			for (const ext of CODE_EXTENSIONS) {
+				const candidate = resolve(cwd, p + ext);
+				if (existsSync(candidate)) {
+					absolute = candidate;
+					break;
+				}
+			}
+		}
+	}
+	if (!existsSync(absolute)) return undefined;
+
+	try {
+		const stat = statSync(absolute);
+		if (!stat.isFile()) return undefined;
+	} catch {
+		return undefined;
+	}
+	return absolute;
+}
+
+/**
+ * Extract candidate file paths from a block of text. Returns absolute paths
+ * of files that actually exist under cwd.
+ */
+function extractReferencedPaths(text: string, cwd: string): string[] {
+	const seen = new Set<string>();
+	const results: string[] = [];
+
+	// Split on whitespace and common delimiters used around paths
+	const tokens = text.split(/[\s,;:"'()<>{}\[\]?!]+/);
+
+	// First pass: tokens that contain a slash or backslash
+	for (const token of tokens) {
+		if (!token || (!token.includes("/") && !token.includes("\\"))) continue;
+		const absolute = resolveExistingPath(token, cwd);
+		if (absolute && !seen.has(absolute)) {
+			seen.add(absolute);
+			results.push(absolute);
+		}
+	}
+
+	// Second pass: tokens ending with known code extensions (for basename refs)
+	for (const token of tokens) {
+		if (!token || token.includes("/") || token.includes("\\")) continue;
+		const ext = extname(token).toLowerCase();
+		if (!CODE_EXTENSIONS.has(ext)) continue;
+		const absolute = resolveExistingPath(token, cwd);
+		if (absolute && !seen.has(absolute)) {
+			seen.add(absolute);
+			results.push(absolute);
+		}
+	}
+
+	return results.slice(0, 5);
+}
+
+function readFilePreview(path: string): string {
+	try {
+		const content = readFileSync(path, "utf-8");
+		if (content.length <= MAX_READ_CHARS) return content;
+		return content.slice(0, MAX_READ_CHARS) + "\n[file truncated]";
+	} catch (err) {
+		return `[could not read ${path}: ${err instanceof Error ? err.message : String(err)}]`;
+	}
+}
+
+/**
+ * Try to answer the question from a project's docs/ directory.
+ * Matches question keywords against doc filenames.
+ */
+function tryAnswerFromDocs(question: string, cwd: string): string | undefined {
+	const docsDir = join(cwd, "docs");
+	if (!existsSync(docsDir)) return undefined;
+
+	const q = question.toLowerCase();
+	let files: string[] = [];
+	try {
+		files = readdirSync(docsDir, { recursive: true, encoding: "utf-8" }) as string[];
+	} catch {
+		return undefined;
+	}
+
+	// Collect all file paths under docs/
+	const docPaths: string[] = [];
+	for (const entry of files) {
+		const relative = Array.isArray(entry) ? entry[0] : entry;
+		const full = join(docsDir, relative);
+		try {
+			if (statSync(full).isFile()) docPaths.push(full);
+		} catch {}
+	}
+
+	for (const fullPath of docPaths) {
+		const name = basename(fullPath).toLowerCase();
+		const stem = basename(fullPath, extname(fullPath)).toLowerCase();
+		// Simple keyword match: stem or filename words appear in question
+		const words = stem.split(/[-_\s.]+/).filter((w) => w.length > 2);
+		const matches = words.some((w) => q.includes(w)) || q.includes(stem);
+		if (matches) {
+			const content = readFilePreview(fullPath);
+			return `From docs/${basename(fullPath)}:\n${content}`;
+		}
+	}
+	return undefined;
+}
+
+const CONTEXT_STOP_WORDS = new Set([
+	"what", "which", "where", "when", "who", "how", "does", "is", "are", "was", "were",
+	"the", "this", "that", "these", "those", "from", "with", "for", "and", "you", "your",
+	"can", "should", "would", "could", "will", "shall", "may", "might", "must",
+]);
+
+function messageContentToString(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content.map((part) => {
+			if (typeof part === "string") return part;
+			if (part && typeof part === "object") {
+				if ((part as any).type === "text") return (part as any).text ?? "";
+				if ((part as any).type === "image") return "[image]";
+			}
+			return "";
+		}).join("");
+	}
+	return "";
+}
+
+/**
+ * Summarize recent orchestrator conversation turns into a searchable string.
+ * Uses ctx.sessionManager.getEntries() if available, otherwise ctx.messages.
+ */
+function buildRecentContext(ctx: any): string {
+	const entries = ctx?.sessionManager?.getEntries?.();
+	if (Array.isArray(entries)) {
+		const turns = entries
+			.filter((e: any) => e?.type === "message" && e.message?.role && e.message?.content)
+			.slice(-10)
+			.map((e: any) => {
+				const role = e.message.role;
+				const text = messageContentToString(e.message.content).trim();
+				return text ? `${role}: ${text}` : "";
+			})
+			.filter(Boolean);
+		return turns.join("\n");
+	}
+
+	if (Array.isArray(ctx?.messages)) {
+		return ctx.messages
+			.filter((m: any) => m?.role && m?.content)
+			.slice(-10)
+			.map((m: any) => `${m.role}: ${messageContentToString(m.content).trim()}`)
+			.filter(Boolean)
+			.join("\n");
+	}
+
+	return "";
+}
+
+/**
+ * Try to answer the question from the provided conversation context.
+ * Simple keyword/fact matching: look for the context line that shares the most
+ * significant words with the question.
+ */
+function tryAnswerFromContext(question: string, recentContext: string | undefined): string | undefined {
+	if (!recentContext || recentContext.trim().length === 0) return undefined;
+
+	const q = question.toLowerCase();
+	const qWords = [...new Set(q.split(/[^a-z0-9]+/))]
+		.filter((w) => w.length > 3 && !CONTEXT_STOP_WORDS.has(w));
+	if (qWords.length === 0) return undefined;
+
+	const lines = recentContext.split(/\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+	let bestLine: string | undefined;
+	let bestScore = 0;
+
+	for (const line of lines) {
+		const lower = line.toLowerCase();
+		const hits = qWords.filter((w) => lower.includes(w)).length;
+		if (hits === 0) continue;
+		// Require either 2+ keyword hits or a strong fraction of the question words.
+		if (hits < 2 && hits / qWords.length < 0.4) continue;
+		if (hits > bestScore) {
+			bestScore = hits;
+			bestLine = line;
+		}
+	}
+
+	if (!bestLine) return undefined;
+	const answer = `From the current conversation:\n${bestLine}`;
+	return answer.length > MAX_ANSWER_CHARS ? answer.slice(0, MAX_ANSWER_CHARS) + "\n[answer truncated]" : answer;
+}
+
+/**
+ * Build the resolver that the subagent calls via ask_orchestrator.
+ *
+ * Resolution order:
+ * 1. Files explicitly referenced in the question/context
+ * 2. Project docs/
+ * 3. Recent orchestrator conversation context
+ * 4. User input (escalation)
+ */
+export function createAskOrchestratorResolver(ctx: any): (question: string, context?: string) => Promise<string> {
+	const cwd = ctx?.cwd ?? process.cwd();
+	const recentContext = ctx?.recentContext ?? buildRecentContext(ctx);
+	return async (question: string, context?: string) => {
+		const combined = context ? `${question}\n\nContext: ${context}` : question;
+
+		// 1. Answer from explicitly referenced files
+		const paths = extractReferencedPaths(combined, cwd);
+		if (paths.length > 0) {
+			const parts = paths.map((p) => `--- ${p}\n${readFilePreview(p)}`);
+			const answer = parts.join("\n\n");
+			return answer.length > MAX_ANSWER_CHARS ? answer.slice(0, MAX_ANSWER_CHARS) + "\n[answer truncated]" : answer;
+		}
+
+		// 2. Answer from docs/
+		const docAnswer = tryAnswerFromDocs(question, cwd);
+		if (docAnswer) return docAnswer;
+
+		// 3. Answer from recent conversation context (include any subagent-supplied context)
+		const contextToSearch = [context, recentContext].filter((c) => c && c.trim().length > 0).join("\n\n");
+		const contextAnswer = tryAnswerFromContext(question, contextToSearch);
+		if (contextAnswer) return contextAnswer;
+
+		// 4. Escalate to user
+		if (ctx?.ui?.input) {
+			const answer = await ctx.ui.input(question, "Answer for subagent...", { signal: ctx?.signal });
+			return answer ?? "[no answer provided]";
+		}
+
+		return "[no answer available]";
+	};
+}
+
+/**
+ * Parse a `## Scope` block from scout/researcher subagent output into the
+ * canonical `Scope` type. Returns `null` if the block is missing or malformed.
+ */
+export function extractScopeFromOutput(output: string): Scope | null {
+    const scopeMatch = output.match(/##\s+Scope\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
+    if (!scopeMatch) return null;
+    const block = scopeMatch[1];
+
+    const entries: Record<string, unknown> = {};
+    const lineRe = /^\s*[-*]\s*(\w+)\s*:\s*(.*)$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = lineRe.exec(block)) !== null) {
+        const key = m[1];
+        const raw = m[2].trim();
+        if (raw.startsWith('[') && raw.endsWith(']')) {
+            const inner = raw.slice(1, -1).trim();
+            entries[key] = inner ? inner.split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean) : [];
+        } else if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+            entries[key] = raw.slice(1, -1);
+        } else if (/^\d+$/.test(raw)) {
+            entries[key] = parseInt(raw, 10);
+        } else if (raw.toLowerCase() === 'true' || raw.toLowerCase() === 'yes') {
+            entries[key] = true;
+        } else if (raw.toLowerCase() === 'false' || raw.toLowerCase() === 'no') {
+            entries[key] = false;
+        } else {
+            entries[key] = raw;
+        }
+    }
+
+    const scopeKeys = ['filesToModify', 'filesToCreate', 'directories', 'changeType', 'maxLinesPerFile', 'maxFiles', 'requiresApprovalBeyondScope', 'gateMode'];
+    if (!scopeKeys.some(k => k in entries)) return null;
+
+    const changeType = entries.changeType === 'single-file' ? 'single-file' : 'multi-file';
+    const scope: Scope = {
+        filesToModify: Array.isArray(entries.filesToModify) ? entries.filesToModify as string[] : [],
+        filesToCreate: Array.isArray(entries.filesToCreate) ? entries.filesToCreate as string[] : [],
+        directories: Array.isArray(entries.directories) ? entries.directories as string[] : [],
+        maxFiles: typeof entries.maxFiles === 'number' ? entries.maxFiles : 10,
+        requiresApprovalBeyondScope: typeof entries.requiresApprovalBeyondScope === 'boolean' ? entries.requiresApprovalBeyondScope : true,
+        changeType,
+        maxLinesPerFile: typeof entries.maxLinesPerFile === 'number' ? entries.maxLinesPerFile : 400,
+        gateMode: entries.gateMode === 'relaxed' || entries.gateMode === 'strict'
+            ? entries.gateMode
+            : (changeType === 'single-file' ? 'relaxed' : 'strict'),
+    };
+    return scope;
+}
+
+function getDefaultWriterScope(cwd: string): Scope {
+    return {
+        filesToModify: [],
+        filesToCreate: [],
+        directories: [cwd],
+        maxFiles: 20,
+        requiresApprovalBeyondScope: true,
+        changeType: 'multi-file',
+        maxLinesPerFile: 400,
+        gateMode: 'strict',
+        boundaries: `Doc-friendly default scope. You may create and modify:\n- *.md files in the current working directory\n- files under docs/ recursively\n- common documentation filenames such as README, AGENTS.md, CLAUDE.md, LICENSE, CONTRIBUTING.md, CHANGELOG.md, CODE_OF_CONDUCT.md, and SECURITY.md`,
+    };
+}
 
 function extractFindingsFromOutput(output: string): { summary: string; key_files: string[]; issues: string[]; recommendation: string } | null {
     const findingsMatch = output.match(/##\s+Findings\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
@@ -125,12 +454,10 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 
 		// ── Render: what shows when tool is invoked ──
 		renderCall(args: any, theme: any, context: any) {
+			// Suppress call-time output. renderResult handles the visible header,
+			// so rendering here would duplicate the delegate header in chat.
 			const comp = context.lastComponent ?? new Text("", 0, 0);
-			const name = (args.specialist || "").charAt(0).toUpperCase() + (args.specialist || "").slice(1);
-			const task = args.task ? args.task.slice(0, 60) : "";
-			const content = theme.fg("toolTitle", theme.bold(`delegate ${name}`)) +
-				(task ? theme.fg("dim", `: ${task}`) : "");
-			comp.setText(content);
+			comp.setText("");
 			return comp;
 		},
 
@@ -172,15 +499,41 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				return { content: [{ type: "text" as const, text: "Provide specialist+task" }], details: {} } as any;
 			}
 
-			// === SCOPE VALIDATION: require scope for coder ===
+				const specialist: Specialist | undefined = SPECIALISTS[params.specialist];
+			if (!specialist) {
+				const available = Object.keys(SPECIALISTS).join(", ");
+				return { content: [{ type: "text" as const, text: `Unknown specialist: "${params.specialist}". Available: ${available}` }], details: {} } as any;
+			}
+
+			// Normalize explicit orchestrator scope; it always wins and updates the cache
+			let explicitScope: Scope | null = null;
+			if (params.scope) {
+				explicitScope = {
+					...params.scope,
+					filesToModify: params.scope.filesToModify ?? [],
+					filesToCreate: params.scope.filesToCreate ?? [],
+					directories: params.scope.directories ?? [],
+					maxFiles: params.scope.maxFiles ?? 10,
+					requiresApprovalBeyondScope: params.scope.requiresApprovalBeyondScope ?? true,
+					changeType: params.scope.changeType ?? "multi-file",
+					maxLinesPerFile: params.scope.maxLinesPerFile ?? 400,
+					gateMode: params.scope.gateMode,
+				boundaries: params.scope.boundaries,
+				};
+				_cachedScope = explicitScope;
+			}
+
+			// Determine scope for this delegation (coder requires scope, writer has doc-friendly defaults)
+			let scopeToUse: Scope | null = null;
 			if (params.specialist === "coder") {
-				if (!params.scope || (!params.scope.filesToModify?.length && !params.scope.filesToCreate?.length && !params.scope.directories?.length)) {
+				scopeToUse = explicitScope ?? _cachedScope;
+				if (!scopeToUse) {
 					return {
 						content: [{
 							type: "text" as const,
 							text: `⛔ **Scope required for coder.**
 
-You must pass a \`scope\` parameter when calling coder. Get this from scout's output or declare it yourself.
+You must pass a \`scope\` parameter when calling coder, or first delegate to scout/researcher so its \`## Scope\` output can be cached.
 
 \`\`\`
 delegate("coder", "fix the auth middleware", {
@@ -198,20 +551,10 @@ The scope tells the coder exactly which files it's allowed to touch.`
 						details: {},
 					} as any;
 				}
-				// Use scope from params — no text parsing needed
-				// Fill in defaults for hybrid scope fields
-				_cachedScope = {
-					...params.scope,
-					directories: params.scope.directories ?? [],
-					maxFiles: params.scope.maxFiles ?? 10,
-					requiresApprovalBeyondScope: params.scope.requiresApprovalBeyondScope ?? true,
-				};
-			}
-
-			const specialist: Specialist | undefined = SPECIALISTS[params.specialist];
-			if (!specialist) {
-				const available = Object.keys(SPECIALISTS).join(", ");
-				return { content: [{ type: "text" as const, text: `Unknown specialist: "${params.specialist}". Available: ${available}` }], details: {} } as any;
+			} else if (params.specialist === "writer") {
+				scopeToUse = explicitScope ?? _cachedScope ?? getDefaultWriterScope(ctx.cwd);
+			} else {
+				scopeToUse = explicitScope ?? null;
 			}
 
 			// Set up plan panel — consume or append a step for each delegation
@@ -233,8 +576,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 				details: { status: "running", specialist: specialist.name },
 			});
 
-			// Determine scope: for coder, use cached scope from previous subagent output
-			const scopeToUse = params.specialist === "coder" ? _cachedScope : null;
+			// scopeToUse resolved above (explicit > cached > writer defaults)
 
 			// Dynamic status: delegating
 			const orchestratorUi: OrchestratorUi | undefined = ctx?.ui ? ctx.ui : undefined;
@@ -281,9 +623,15 @@ The scope tells the coder exactly which files it's allowed to touch.`
 				}
 			} catch {}
 
+			const parentCtx: SubagentContext = {
+				modelRegistry: ctx.modelRegistry,
+				model: ctx.model,
+				onAskOrchestrator: createAskOrchestratorResolver(ctx),
+			};
+
 			const result = await runSubagent(
 				specialist, params.task, ctx.cwd,
-				{ modelRegistry: ctx.modelRegistry, model: ctx.model },
+				parentCtx,
 				signal, wrappedOnUpdate, scopeToUse, orchestratorUi,
 			);
 			const elapsedMs = Date.now() - startTime;
@@ -312,6 +660,14 @@ The scope tells the coder exactly which files it's allowed to touch.`
 
 					if (result.output) {
 						debugLog("delegate-tool: subagent completed", { specialist: params.specialist, outputLength: result.output.length });
+					}
+
+					// Cache scope from scout/researcher output for the next coder/writer
+					if (params.specialist === "scout" || params.specialist === "researcher") {
+						const extractedScope = extractScopeFromOutput(result.output);
+						if (extractedScope) {
+							_cachedScope = extractedScope;
+						}
 					}
 
 					const findings = extractFindingsFromOutput(result.output);
