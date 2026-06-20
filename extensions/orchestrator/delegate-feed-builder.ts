@@ -13,6 +13,8 @@ import {
 	addSubstep,
 	completeLastSubstep,
 	completeCurrentStep,
+	completeActiveSubstepWithLabel,
+	updateActiveSubstepOutput,
 	renderActivityFeed,
 	toolCallToSubstep,
 } from "./activity-feed.ts";
@@ -65,6 +67,30 @@ export class DelegateFeedBuilder {
 		// Add the new substep
 		this.state = addSubstep(this.state, label);
 		this.toolCallHistory.push({ tool: toolName, input });
+	}
+
+	/** Record a finding as a substep. */
+	onReportFinding(finding: { summary: string; key_files: string[] }): void {
+		if (!this.state) return;
+		this.state = addSubstep(this.state, `Finding: ${finding.summary}`);
+	}
+
+	/** Record a question to the orchestrator as a substep. */
+	onAskOrchestrator(question: string): void {
+		if (!this.state) return;
+		this.state = addSubstep(this.state, `Asking orchestrator: ${question}`);
+	}
+
+	/** Complete the active orchestrator question substep with the answer. */
+	onAskOrchestratorComplete(answer: string): void {
+		if (!this.state) return;
+		this.state = completeActiveSubstepWithLabel(this.state, `Orchestrator: ${answer}`);
+	}
+
+	/** Set output detail/preview on the active substep. */
+	setDetail(detail: string): void {
+		if (!this.state) return;
+		this.state = updateActiveSubstepOutput(this.state, detail);
 	}
 
 	/** Complete the delegation — finishes all open steps/substeps. */

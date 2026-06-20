@@ -159,6 +159,77 @@ describe('DelegateFeedBuilder', () => {
     });
   });
 
+  describe('onAskOrchestratorComplete', () => {
+    it('completes the active substep with orchestrator answer as label', () => {
+      const builder = new DelegateFeedBuilder();
+      builder.startDelegation('coder', 'fix bug');
+      builder.onAskOrchestrator('What does this function do?');
+      builder.onAskOrchestratorComplete('It does X');
+      const state = builder.getState()!;
+      const substep = state.steps[0].substeps[0];
+      expect(substep.completed).toBe(true);
+      expect(substep.label).toContain('Orchestrator: It does X');
+    });
+
+    it('no-op if delegation not started', () => {
+      const builder = new DelegateFeedBuilder();
+      builder.onAskOrchestratorComplete('answer');
+      expect(builder.getState()).toBeNull();
+    });
+  });
+
+  describe('onReportFinding', () => {
+    it('adds a substep with the question label', () => {
+      const builder = new DelegateFeedBuilder();
+      builder.startDelegation('coder', 'fix bug');
+      builder.onAskOrchestrator('What does this function do?');
+      const state = builder.getState()!;
+      expect(state.steps[0].substeps.length).toBe(1);
+      expect(state.steps[0].substeps[0].label).toContain('Asking orchestrator: What does this function do?');
+    });
+
+    it('no-op if delegation not started', () => {
+      const builder = new DelegateFeedBuilder();
+      builder.onAskOrchestrator('question?');
+      expect(builder.getState()).toBeNull();
+    });
+  });
+
+  describe('setDetail', () => {
+    it('updates output preview on active substep', () => {
+      const builder = new DelegateFeedBuilder();
+      builder.startDelegation('coder', 'fix bug');
+      builder.onToolCall('read', { path: 'src/auth.ts' });
+      builder.setDetail('Processing file X');
+      const state = builder.getState()!;
+      const substep = state.steps[0].substeps[0];
+      expect(substep.outputPreview).toBe('Processing file X');
+    });
+
+    it('no-op if delegation not started', () => {
+      const builder = new DelegateFeedBuilder();
+      builder.setDetail('detail');
+      expect(builder.getState()).toBeNull();
+    });
+  });
+
+  describe('onReportFinding', () => {
+    it('adds a substep with finding summary', () => {
+      const builder = new DelegateFeedBuilder();
+      builder.startDelegation('coder', 'fix bug');
+      builder.onReportFinding({ summary: 'Bug found', key_files: ['auth.ts'] });
+      const state = builder.getState()!;
+      expect(state.steps[0].substeps.length).toBe(1);
+      expect(state.steps[0].substeps[0].label).toContain('Finding: Bug found');
+    });
+
+    it('no-op if delegation not started', () => {
+      const builder = new DelegateFeedBuilder();
+      builder.onReportFinding({ summary: 'nope', key_files: [] });
+      expect(builder.getState()).toBeNull();
+    });
+  });
+
   describe('render', () => {
     it('returns empty string if no delegation started', () => {
       const builder = new DelegateFeedBuilder();
