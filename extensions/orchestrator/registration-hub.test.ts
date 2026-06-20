@@ -1,12 +1,19 @@
+/**
+ * RegistrationHub tests.
+ *
+ * registerFusionTool is NOT called from registerAllTools — it is deferred
+ * to the before_agent_start event handler (index.ts:48) because it calls
+ * pi.getAllTools() which is an action method illegal during extension loading.
+ */
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// ── Mock all 5 register functions using vi.hoisted ──────────────────────
-const { mockRegisterDelegateTool, mockRegisterPlanTool, mockRegisterCommands, mockRegisterFusionCommands, mockRegisterFusionTool } = vi.hoisted(() => ({
+// ── Mock all 4 register functions using vi.hoisted ──────────────────────
+const { mockRegisterDelegateTool, mockRegisterPlanTool, mockRegisterCommands, mockRegisterFusionCommands } = vi.hoisted(() => ({
 	mockRegisterDelegateTool: vi.fn(),
 	mockRegisterPlanTool: vi.fn(),
 	mockRegisterCommands: vi.fn(),
 	mockRegisterFusionCommands: vi.fn(),
-	mockRegisterFusionTool: vi.fn(),
 }));
 
 vi.mock('./delegate-tool', () => ({
@@ -20,9 +27,6 @@ vi.mock('./commands', () => ({
 }));
 vi.mock('./fusion-commands', () => ({
 	registerFusionCommands: mockRegisterFusionCommands,
-}));
-vi.mock('./fusion-tool', () => ({
-	registerFusionTool: mockRegisterFusionTool,
 }));
 
 import { registerAllTools } from './registration-hub';
@@ -70,20 +74,12 @@ describe('registerAllTools', () => {
 		expect(mockRegisterFusionCommands).toHaveBeenCalledWith(pi);
 	});
 
-	it('calls registerFusionTool with pi and cwd', () => {
-		const pi = createMockPi();
-		registerAllTools(pi, '/test/cwd');
-		expect(mockRegisterFusionTool).toHaveBeenCalledTimes(1);
-		expect(mockRegisterFusionTool).toHaveBeenCalledWith(pi, '/test/cwd');
-	});
-
-	it('calls all 5 register functions exactly once', () => {
-		const pi = createMockPi();
-		registerAllTools(pi, '/some/path');
-		expect(mockRegisterDelegateTool).toHaveBeenCalledTimes(1);
-		expect(mockRegisterPlanTool).toHaveBeenCalledTimes(1);
-		expect(mockRegisterCommands).toHaveBeenCalledTimes(1);
-		expect(mockRegisterFusionCommands).toHaveBeenCalledTimes(1);
-		expect(mockRegisterFusionTool).toHaveBeenCalledTimes(1);
-	});
+	it('calls all 4 register functions exactly once (fusion is deferred)', () => {
+			const pi = createMockPi();
+			registerAllTools(pi, '/some/path');
+			expect(mockRegisterDelegateTool).toHaveBeenCalledTimes(1);
+			expect(mockRegisterPlanTool).toHaveBeenCalledTimes(1);
+			expect(mockRegisterCommands).toHaveBeenCalledTimes(1);
+			expect(mockRegisterFusionCommands).toHaveBeenCalledTimes(1);
+		});
 });
