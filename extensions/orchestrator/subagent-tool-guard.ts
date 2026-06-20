@@ -8,6 +8,7 @@ import { ScopeGuard } from "./scope-guard.ts";
 import { _batchLoadSubagent, isPlanParsed } from "./subagent-runner.ts";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
+import { debugLog } from "./debug.ts";
 import { resolve } from "node:path";
 
 export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true) {
@@ -39,6 +40,8 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				const absolutePath = resolve(cwd, rawPath);
 				const pathAllowed = guard.isPathAllowed(absolutePath, 'write');
 				if (!pathAllowed.allowed) {
+					const expansion = guard.requestExpansion(rawPath);
+					debugLog("scope-guard: expansion request", expansion);
 					return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope` };
 				}
 				let fileContent = '';

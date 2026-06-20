@@ -28,6 +28,7 @@ vi.mock("node:fs", async () => {
 
 vi.mock("node:path", () => ({
 	resolve: (...args: string[]) => args.join("/"),
+	join: (...args: string[]) => args.join("/"),
 }));
 
 import { handleSubagentToolCall } from "./subagent-tool-guard";
@@ -40,6 +41,7 @@ ScopeGuardMock.mockImplementation(function (this: any, _cwd: string) {
 	this.isScopeValid = () => false;
 	this.isPathAllowed = () => ({ allowed: true });
 	this.checkFileSize = () => ({ allowed: true });
+	this.requestExpansion = () => null;
 });
 vi.mock("./scope-guard.ts", () => ({ ScopeGuard: ScopeGuardMock }));
 
@@ -112,6 +114,7 @@ describe("handleSubagentToolCall", () => {
 				this.isScopeValid = () => true;
 				this.isPathAllowed = () => ({ allowed: false, reason: "File not in approved scope: secret.ts" });
 				this.checkFileSize = () => ({ allowed: true });
+				this.requestExpansion = () => null;
 			});
 
 			const result = handleSubagentToolCall({
@@ -163,6 +166,7 @@ describe("handleSubagentToolCall", () => {
 				this.isScopeValid = () => true;
 				this.isPathAllowed = mockIsPathAllowed;
 				this.checkFileSize = () => ({ allowed: true });
+				this.requestExpansion = () => null;
 			});
 
 			const result = handleSubagentToolCall({
@@ -181,6 +185,7 @@ describe("handleSubagentToolCall", () => {
 				this.isScopeValid = () => true;
 				this.isPathAllowed = mockIsPathAllowed;
 				this.checkFileSize = () => ({ allowed: true });
+				this.requestExpansion = () => null;
 			});
 
 			handleSubagentToolCall({

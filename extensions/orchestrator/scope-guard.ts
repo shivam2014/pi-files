@@ -1,20 +1,23 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, isAbsolute, resolve } from 'path';
-import { ScopeManager, type ResolvedScope, type ScopeFileContract } from './scope-manager.ts';
 
-export type { ResolvedScope, ScopeFileContract };
+interface ResolvedScope {
+  filesToModify: string[];
+  filesToCreate: string[];
+  directories: string[];
+  maxFiles: number;
+  requiresApprovalBeyondScope: boolean;
+  changeType: 'single-file' | 'multi-file';
+  maxLinesPerFile: number;
+  gateMode: 'strict' | 'relaxed';
+  boundaries?: string;
+}
 
 export interface ScopeExpansionRequest {
   path: string;
-  currentScope: {
-    filesToModify: string[];
-    filesToCreate: string[];
-    directories: string[];
-  };
-  suggestedExpansion: {
-    filesToModify?: string[];
-    filesToCreate?: string[];
-    directories?: string[];
-  };
+  reason: string;
+  scopeManifest: ResolvedScope | null;
+  suggestedExpansion?: { directories?: string[]; filesToModify?: string[] };
 }
 
 function normalizePath(filePath: string, cwd: string): string | null {
@@ -27,12 +30,38 @@ function normalizePath(filePath: string, cwd: string): string | null {
 export class ScopeGuard {
   constructor(private cwd: string) {}
 
+  private _readScope(): ResolvedScope | null {
+    const path = join(this.cwd, '.pi', 'scope.json');
+    try {
+      if (!existsSync(path)) return null;
+      const raw = JSON.parse(readFileSync(path, 'utf-8'));
+      if (!raw.version || !raw.schema || !raw.scope) return null;
+      if (raw.version !== 1 || raw.schema !== 'scope-file-contract-v1') return null;
+      return raw.scope as ResolvedScope;
+    } catch {
+      return null;
+    }
+  }
+
   isScopeValid(): boolean {
-    return new ScopeManager(this.cwd).readScope() !== null;
+    return this._readScope() !== null;
+  }
+
+  requestExpansion(filePath: string): ScopeExpansionRequest | null {
+    const manifest = this._readScope();
+    if (!manifest) return null;
+    return {
+      path: filePath,
+      reason: `Path ${filePath} is not in the allowed scope`,
+      scopeManifest: manifest,
+      suggestedExpansion: {
+        filesToModify: [filePath],
+      },
+    };
   }
 
   isPathAllowed(filePath: string, operation: 'write' | 'edit' | 'read'): { allowed: boolean; reason?: string } {
-    const scope = new ScopeManager(this.cwd).readScope();
+    const scope = this._readScope();
     if (!scope) return { allowed: false, reason: 'No scope file' };
 
     const normalized = normalizePath(filePath, this.cwd);
@@ -60,7 +89,7 @@ export class ScopeGuard {
   }
 
   checkFileSize(filePath: string, content: string): { allowed: boolean; reason?: string } {
-    const scope = new ScopeManager(this.cwd).readScope();
+    const scope = this._readScope();
     if (!scope) return { allowed: false, reason: 'No scope file found' };
     if (scope.gateMode === 'relaxed') return { allowed: true };
     const maxLines = scope.maxLinesPerFile;
@@ -69,37 +98,5 @@ export class ScopeGuard {
     return { allowed: lines <= maxLines };
   }
 
-  requestExpansion(filePath: string): ScopeExpansionRequest | null {
-    const scope = new ScopeManager(this.cwd).readScope();
-    if (!scope) return null;
 
-    const normalized = normalizePath(filePath, this.cwd);
-    if (!normalized) return null;
-
-    // Check if path is already allowed
-    const allApproved = [...scope.filesToModify, ...scope.filesToCreate];
-    for (const approved of allApproved) {
-      const approvedRel = isAbsolute(approved) ? normalizePath(approved, this.cwd) : approved;
-      if (!approvedRel) continue;
-      if (approvedRel === normalized) return null;
-    }
-
-    for (const dir of scope.directories) {
-      const normalizedDir = dir.replace(/\/$/, '') + '/';
-      if (normalized.startsWith(normalizedDir) || normalized === dir) return null;
-    }
-
-    // Path is blocked, suggest expansion
-    return {
-      path: normalized,
-      currentScope: {
-        filesToModify: scope.filesToModify,
-        filesToCreate: scope.filesToCreate,
-        directories: scope.directories,
-      },
-      suggestedExpansion: {
-        filesToModify: [normalized],
-      },
-    };
-  }
 }
