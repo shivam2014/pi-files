@@ -255,4 +255,37 @@ describe("handleSubagentToolCall", () => {
 			});
 		});
 	});
+
+	describe("fusion allow-list enforcement", () => {
+		beforeEach(() => {
+			mockState.batchLoad = 0;
+		});
+
+		it("blocks fusion when explicitly disabled", () => {
+			const result = handleSubagentToolCall(
+				{ toolName: "fusion", input: { prompt: "analyze" } },
+				false,
+			);
+			expect(result).toEqual({
+				block: true,
+				reason: "Fusion is disabled. Enable it in .pi/fusion.json",
+			});
+		});
+
+		it("allows fusion when enabled", () => {
+			const result = handleSubagentToolCall(
+				{ toolName: "fusion", input: { prompt: "analyze" } },
+				true,
+			);
+			expect(result).toBeUndefined();
+		});
+
+		it("allows fusion with no second arg (default enabled)", () => {
+			const result = handleSubagentToolCall({
+				toolName: "fusion",
+				input: { prompt: "analyze" },
+			});
+			expect(result).toBeUndefined();
+		});
+	});
 });

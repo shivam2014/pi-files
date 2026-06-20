@@ -10,7 +10,10 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-export function handleSubagentToolCall(event: any) {
+export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true) {
+	if (!fusionEnabled && event.toolName === 'fusion') {
+		return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
+	}
 	if (_batchLoadSubagent > 0 && !isPlanParsed()) {
 		if (event.toolName !== "planSteps") {
 			return { block: true, reason: `Call planSteps({ goal, steps }) first before using ${event.toolName}.` };

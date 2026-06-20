@@ -34,7 +34,8 @@ export default function (pi: ExtensionAPI) {
 			batchLoad: _batchLoadSubagent,
 			envGuard: process.env[SUBAGENT_ENV_KEY],
 		});
-		pi.on("tool_call", handleSubagentToolCall);
+		const fusionConfig = loadFusionConfig(process.cwd());
+		pi.on("tool_call", (event) => handleSubagentToolCall(event, fusionConfig.enabled));
 		return;
 	}
 
