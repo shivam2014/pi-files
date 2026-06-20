@@ -4,6 +4,7 @@ import { executeDelegate } from "./delegate-controller.ts";
 const mockSpecialists = vi.hoisted(() => ({
   test: { name: "test", tools: ["read", "write"], systemPrompt: "test" },
   coder: { name: "coder", tools: ["edit", "write", "read", "bash"], systemPrompt: "coder" },
+  researcher: { name: "researcher", tools: ["read", "grep", "bash"], systemPrompt: "researcher" },
   writer: { name: "writer", tools: ["read", "write"], systemPrompt: "writer" },
 }));
 
@@ -105,6 +106,58 @@ describe("executeDelegate", () => {
       mockHasActivePlan.mockReturnValue(true);
       await executeDelegate({ specialist: "test", task: "step" }, createMockCtx(), vi.fn());
       expect(mockSetupPlanPanel).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("specialist name normalization", () => {
+    it("handles Researcher (capitalized)", async () => {
+      const r = await executeDelegate({ specialist: "Researcher", task: "x" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).not.toContain("Unknown specialist");
+      expect(r.details.specialist).toBe("researcher");
+    });
+
+    it("handles RESEARCHER (uppercase)", async () => {
+      const r = await executeDelegate({ specialist: "RESEARCHER", task: "x" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).not.toContain("Unknown specialist");
+      expect(r.details.specialist).toBe("researcher");
+    });
+
+    it("handles researcher (lowercase)", async () => {
+      const r = await executeDelegate({ specialist: "researcher", task: "x" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).not.toContain("Unknown specialist");
+      expect(r.details.specialist).toBe("researcher");
+    });
+
+    it("handles Coder (capitalized) — resolves, then fails on scope", async () => {
+      const r = await executeDelegate({ specialist: "Coder", task: "fix" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).not.toContain("Unknown specialist");
+      expect(r.content[0].text).toContain("Scope required for coder");
+    });
+
+    it("returns error for unknown specialist", async () => {
+      const r = await executeDelegate({ specialist: "unknown", task: "x" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).toContain('Unknown specialist: "unknown"');
+    });
+
+    it("protects against __proto__ pollution", async () => {
+      const r = await executeDelegate({ specialist: "__proto__", task: "x" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).toContain("Unknown specialist");
+    });
+
+    it("protects against constructor pollution", async () => {
+      const r = await executeDelegate({ specialist: "constructor", task: "x" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).toContain("Unknown specialist");
+    });
+
+    it("protects against toString pollution", async () => {
+      const r = await executeDelegate({ specialist: "toString", task: "x" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).toContain("Unknown specialist");
+    });
+
+    it("trims leading whitespace", async () => {
+      const r = await executeDelegate({ specialist: "  researcher", task: "x" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).not.toContain("Unknown specialist");
+      expect(r.details.specialist).toBe("researcher");
     });
   });
 

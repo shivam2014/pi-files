@@ -5,7 +5,7 @@
 
 import type { Specialist, DelegationMetrics, SubagentContext, Scope } from "./types.ts";
 import { SPECIALISTS } from "./specialists.ts";
-import { createAskOrchestratorResolver } from "./ask-resolver.ts";
+import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
 import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
 import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
@@ -61,11 +61,15 @@ export async function executeDelegate(
 		const result0: ExecuteDelegateResult = { content: [{ type: "text" as const, text: "Provide specialist+task" }], details: {} }; return result0;
 	}
 
-	const specialist: Specialist | undefined = SPECIALISTS[params.specialist];
+	const key = params.specialist?.toLowerCase().trim();
+	const specialist: Specialist | undefined = key && Object.hasOwn(SPECIALISTS, key) ? SPECIALISTS[key] : undefined;
 	if (!specialist) {
 		const available = Object.keys(SPECIALISTS).join(", ");
 		const result1: ExecuteDelegateResult = { content: [{ type: "text" as const, text: `Unknown specialist: "${params.specialist}". Available: ${available}` }], details: {} }; return result1;
 	}
+
+	// Normalize specialist name for case-insensitive comparison downstream
+	params = { ...params, specialist: specialist.name };
 
 	const { signal } = params;
 
@@ -118,6 +122,24 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		scopeToUse = explicitScope ?? getDefaultWriterScope(ctx.cwd);
 	} else {
 		scopeToUse = explicitScope ?? null;
+	}
+
+
+	// AskResolver gate - check if scope is clear before delegating
+	// If "ask" and ui.input is available, ask user for clarification
+	// If no ui.input, proceed anyway (backward compatible)
+	if (scopeToUse !== undefined && scopeToUse !== null) {
+		const gateResult = resolve(params.task, scopeToUse);
+		if (gateResult === "ask" && ctx?.ui?.input) {
+			const clarification = await ctx.ui.input(
+				`Scope is vague. What files to modify?\n\nTask: ${params.task}`,
+				params.task,
+				{ signal: ctx?.signal }
+			);
+			if (clarification && clarification.trim().length > 0 && clarification !== params.task) {
+				params = { ...params, task: clarification };
+			}
+		}
 	}
 
 	// Write scope for scope-guard enforcement before delegation
