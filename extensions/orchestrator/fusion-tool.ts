@@ -19,6 +19,10 @@ export function _resetTemperatureCacheForTests(): void {
 	temperaturePreferenceCache.clear();
 }
 
+export function _resetFusionRegistrationsForTests(): void {
+	_fusionRegistrations.clear();
+}
+
 export async function tryCompleteWithTemperatureFallback(
 	model: any,
 	payload: any,

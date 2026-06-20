@@ -19,7 +19,7 @@ import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed }
 import { clearPlanPanel } from "./plan-panel.ts";
 import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
-import { loadFusionConfig } from "./fusion-tool.ts";
+import { loadFusionConfig, registerFusionTool } from "./fusion-tool.ts";
 import { ScopeManager } from "./scope-manager.ts";
 import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
 import { buildOrchestratorPrompt } from "./prompt-builder.ts";
@@ -43,6 +43,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		new ScopeManager(process.cwd()).clearScope();
 		clearPlanPanel(ctx);
+		// Re-register fusion tool with project cwd so its config (enabled/disabled) is respected.
+		// Idempotent — safe to call even if already registered from extension init.
+		registerFusionTool(pi, ctx.cwd);
 		const fusionConfig = loadFusionConfig(ctx.cwd);
 		const activeTools = ["plan", "delegate"];
 		if (fusionConfig.enabled && pi.getAllTools().some((t: any) => t.name === "fusion")) {

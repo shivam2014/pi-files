@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFusionTool, loadFusionConfig } from "./fusion-tool";
+import { registerFusionTool, loadFusionConfig, _resetFusionRegistrationsForTests } from "./fusion-tool";
 import orchestrator from "./index";
 
 function createMockPi() {
@@ -56,6 +56,7 @@ describe("global fusion toggle", () => {
 	let cwd: string;
 
 	beforeEach(() => {
+		_resetFusionRegistrationsForTests();
 		pi = createMockPi();
 		cwd = makeTempDir();
 	});
