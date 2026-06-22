@@ -437,33 +437,22 @@ async function runPanelModel(
 	}
 }
 
-// ─── Tool Registration ─────────────────────────────────────
-
+/**
+ * Register the fusion tool. Called once during extension init.
+ *
+ * IMPORTANT: Does NOT call pi.getAllTools() or pi.unregisterTool().
+ * Those APIs mutate the tool registry, which changes prompt serialization
+ * order and destroys prefix cache reuse across turns.
+ *
+ * Always registers the tool (idempotent). Visibility is controlled
+ * entirely by setActiveTools() in before_agent_start.
+ */
 export function registerFusionTool(pi: ExtensionAPI, cwd: string): void {
 	const config = loadFusionConfig(cwd);
 	const existing = _fusionRegistrations.get(cwd);
 
-	if (config.enabled) {
-		// Idempotent: skip if already registered for this cwd.
-		if (existing?.registered) return;
-
-		// Also guard against an orphaned tool left in the registry.
-		if (pi.getAllTools().some((t: any) => t.name === "fusion")) {
-			_fusionRegistrations.set(cwd, { registered: true, config });
-			return;
-		}
-	} else {
-		// Disabled: unregister any existing fusion tool for this cwd.
-		if (pi.getAllTools().some((t: any) => t.name === "fusion") && typeof (pi as any).unregisterTool === "function") {
-			try {
-				(pi as any).unregisterTool("fusion");
-			} catch (err: any) {
-				debugLog("fusion-tool: unregister failed", { error: err.message ?? String(err) });
-			}
-		}
-		_fusionRegistrations.set(cwd, { registered: false, config });
-		return;
-	}
+	// Idempotent: skip if already registered for this cwd.
+	if (existing?.registered) return;
 
 	const parameters = Type.Object({
 		context: Type.String({
@@ -482,7 +471,7 @@ export function registerFusionTool(pi: ExtensionAPI, cwd: string): void {
 	pi.registerTool({
 		name: "fusion",
 		label: "Fusion",
-		description: "Multi-model deliberation tool. Runs a prompt against a panel of models, then a judge synthesizes their responses into structured analysis (consensus, contradictions, blind spots). Use when you need multi-model advice on complex planning decisions — typically after scout/researcher gather findings, before writing the final plan.",
+		description: "Multi-model analysis tool. Runs a prompt against a panel of models, then a judge synthesizes responses into structured analysis.",
 		parameters,
 
 		promptSnippet: "Get multi-model advice by running a prompt against a panel of models, then a judge provides structured analysis",

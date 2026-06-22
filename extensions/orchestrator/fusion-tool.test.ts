@@ -364,3 +364,18 @@ describe("sanitizeFusionConfig", () => {
 		expect(removed).toEqual([]);
 	});
 });
+
+describe("fusion tool schema", () => {
+	it("description is concise and matches plan/delegate style", async () => {
+		const pi = createMockPi();
+		registerFusionTool(pi as any, process.cwd());
+
+		const tool = pi.getAllTools().find((t: any) => t.name === "fusion");
+		expect(tool).toBeDefined();
+
+		const desc = (tool as any).description;
+		expect(desc.length).toBeLessThanOrEqual(130);
+		expect(desc).not.toContain("typically");
+		expect(desc).not.toContain("Use when you need");
+	});
+});
