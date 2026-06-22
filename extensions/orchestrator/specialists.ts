@@ -327,8 +327,8 @@ ${TERSE_INSTRUCTION}`,
 	},
 	writer: {
 		name: "writer",
-		description: "Documentation specialist with read/write access. Creates and edits markdown docs. Ideal for READMEs, API docs, and project documentation.",
-		tools: ["read", "write", "edit"],
+		description: "Documentation specialist with read/write access. Creates and edits markdown docs, uses ls/find to browse directories. Ideal for READMEs, API docs, and project documentation.",
+		tools: ["read", "write", "edit", "ls", "find"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a documentation writer. You create and edit docs.
@@ -380,3 +380,4 @@ export function getSpecialist(name: string): Specialist | undefined {
 export function listSpecialists(): string[] {
 	return Object.keys(SPECIALISTS);
 }
+

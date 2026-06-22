@@ -8,11 +8,11 @@
  * 1. Files referenced in the question
  * 2. Project docs/ directory
  * 3. Recent conversation context
- * 4. User input (escalation)
+ * 4. Orchestrator escalation
  */
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { join, resolve, isAbsolute, basename, extname } from "node:path";
+import { join, resolve as pathResolve, isAbsolute, basename, extname } from "node:path";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -49,12 +49,12 @@ export function resolveExistingPath(token: string, cwd: string): string | undefi
 	if (/^(https?|file):\/\//i.test(p)) return undefined;
 	if (p.startsWith("-") || p.startsWith("`")) return undefined;
 
-	let absolute = isAbsolute(p) ? p : resolve(cwd, p);
+	let absolute = isAbsolute(p) ? p : pathResolve(cwd, p);
 	if (!existsSync(absolute)) {
 		// Try basename-only tokens with common source extensions
 		if (!p.includes("/") && !p.includes("\\")) {
 			for (const ext of CODE_EXTENSIONS) {
-				const candidate = resolve(cwd, p + ext);
+				const candidate = pathResolve(cwd, p + ext);
 				if (existsSync(candidate)) {
 					absolute = candidate;
 					break;
@@ -246,7 +246,7 @@ export function tryAnswerFromContext(question: string, recentContext: string | u
  * 1. Files explicitly referenced in the question/context
  * 2. Project docs/
  * 3. Recent orchestrator conversation context
- * 4. User input (escalation)
+ * 4. Orchestrator escalation
  */
 export function createAskOrchestratorResolver(ctx: any): (question: string, context?: string) => Promise<string> {
 	const cwd = ctx?.cwd ?? process.cwd();
@@ -271,12 +271,69 @@ export function createAskOrchestratorResolver(ctx: any): (question: string, cont
 		const contextAnswer = tryAnswerFromContext(question, contextToSearch);
 		if (contextAnswer) return contextAnswer;
 
-		// 4. Escalate to user
-		if (ctx?.ui?.input) {
-			const answer = await ctx.ui.input(question, "Answer for subagent...", { signal: ctx?.signal });
-			return answer ?? "[no answer provided]";
-		}
-
-		return "[no answer available]";
+		// 4. Escalate to orchestrator
+		return "[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.";
 	};
+}
+
+
+// ─── AskResolver Boolean Gate ─────────────────────────────────────────────────────
+
+/**
+ * Scope type for the resolve gate.
+ * Compatible with existing ResolvedScope from scope-manager (directories field)
+ * and the PRD-specified allowedDirectories field.
+ */
+export type Scope = {
+	filesToModify: string[];
+	filesToCreate: string[];
+	directories?: string[];
+	allowedDirectories?: string[];
+	maxFiles?: number;
+	boundaries?: string;
+};
+
+/** Result of the AskResolver boolean gate */
+export type ResolveResult = "ask" | "proceed";
+
+/**
+ * Boolean gate: should the orchestrator ask the user before delegating?
+ *
+ * Returns "ask" when scope is too vague:
+ * - scope is null
+ * - filesToModify empty AND filesToCreate empty (no file specs)
+ * - filesToModify contains only wildcards ("*", "ALL")
+ * - only boundaries set, no file/dir specs
+ *
+ * Returns "proceed" when scope is concrete enough:
+ * - concrete file paths in filesToModify or filesToCreate
+ * - directories/allowedDirectories set with specific dirs
+ */
+export function resolve(request: string, scope: Scope | null): ResolveResult {
+	const s = scope;
+	// No scope defined → ask
+	if (s === null || s === undefined) return "ask";
+
+	// Concrete file specs → proceed (non-wildcard paths in filesToModify, or any filesToCreate)
+	const fMod = s.filesToModify;
+	const fCre = s.filesToCreate;
+	const hasConcreteModify = Array.isArray(fMod) && fMod.length > 0 &&
+		fMod.some((f) => f !== "*" && f.toUpperCase() !== "ALL" && f.trim().length > 0);
+	const hasConcreteCreate = Array.isArray(fCre) && fCre.length > 0;
+
+	if (hasConcreteModify || hasConcreteCreate) return "proceed";
+
+	// filesToModify has entries but all are wildcards → ask
+	if (Array.isArray(fMod) && fMod.length > 0) return "ask";
+
+	// No file specs — check directories / allowedDirectories as fallback
+	const dirs = s.directories ?? s.allowedDirectories ?? [];
+	if (Array.isArray(dirs) && dirs.length > 0) {
+		const hasConcreteDirs = dirs.some((d) => d !== "*" && d.toUpperCase() !== "ALL" && d.trim().length > 0);
+		if (hasConcreteDirs) return "proceed";
+		return "ask";
+	}
+
+	// No file specs, no directories → ask (boundaries alone are too vague)
+	return "ask";
 }

@@ -38,7 +38,10 @@ vi.mock("./scope-manager.ts", () => ({
   ScopeManager: vi.fn(function() { return { writeScope: vi.fn(), clearScope: mockClearScope }; }),
 }));
 
-vi.mock("./ask-resolver.ts", () => ({ createAskOrchestratorResolver: () => vi.fn() }));
+vi.mock("./ask-resolver.ts", async () => {
+  const actual = await vi.importActual<typeof import("./ask-resolver.ts")>("./ask-resolver.ts");
+  return { ...actual, createAskOrchestratorResolver: () => vi.fn() };
+});
 vi.mock("./debug.ts", () => ({ debugLog: vi.fn() }));
 vi.mock("./delegate-output-formatter.ts", () => ({
   extractFindingsFromOutput: vi.fn(() => null),
@@ -84,6 +87,40 @@ describe("executeDelegate", () => {
     it("returns error for coder without scope", async () => {
       const r = await executeDelegate({ specialist: "coder", task: "fix" }, createMockCtx(), vi.fn());
       expect(r.content[0].text).toContain("Scope required for coder");
+    });
+  });
+
+  describe("ask resolver gate", () => {
+    it("returns a clarification result instead of throwing when scope is vague", async () => {
+      const r = await executeDelegate(
+        {
+          specialist: "coder",
+          task: "refactor something somewhere",
+          scope: { filesToModify: [], filesToCreate: [] } as any,
+        },
+        createMockCtx(),
+        vi.fn(),
+      );
+      expect(r.content[0].text).toContain("Scope is vague");
+      expect(r.content[0].text).toContain("Orchestrator must clarify scope");
+      expect(r.details.status).toBe("needs-clarification");
+    });
+
+    it("guards against non-array filesToModify/filesToCreate in scope", async () => {
+      const r = await executeDelegate(
+        {
+          specialist: "writer",
+          task: "write docs",
+          scope: { filesToModify: "not-an-array" as any, filesToCreate: undefined as any, directories: ["/test/project"] } as any,
+        },
+        createMockCtx(),
+        vi.fn(),
+      );
+      expect(r.content[0].text).not.toContain("error");
+      expect(r.details.status).toBe("done");
+      const passedScope = mockRunSubagent.mock.calls[0][6];
+      expect(Array.isArray(passedScope.filesToModify)).toBe(true);
+      expect(Array.isArray(passedScope.filesToCreate)).toBe(true);
     });
   });
 

@@ -12,6 +12,7 @@ import {
 	buildRecentContext,
 	tryAnswerFromContext,
 	createAskOrchestratorResolver,
+	resolve,
 } from "./ask-resolver.ts";
 
 // ─── extractReferencedPaths ──────────────────────────────────────────────────
@@ -283,46 +284,46 @@ describe("createAskOrchestratorResolver", () => {
 		expect(uiInput).not.toHaveBeenCalled();
 	});
 
-	it("escalates to user when all resolution steps fail", async () => {
+	it("escalates to orchestrator when all resolution steps fail", async () => {
+		const input = vi.fn().mockResolvedValue("user answered");
 		const resolver = createAskOrchestratorResolver({
 			cwd,
-			ui: {
-				input: vi.fn().mockResolvedValue("user answered"),
-			},
+			ui: { input },
 		});
 
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("user answered");
+		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
+		expect(input).not.toHaveBeenCalled();
 	});
 
-	it("returns fallback when user cancels input", async () => {
+	it("returns orchestrator clarification when user cancels input", async () => {
+		const input = vi.fn().mockResolvedValue(undefined);
 		const resolver = createAskOrchestratorResolver({
 			cwd,
-			ui: {
-				input: vi.fn().mockResolvedValue(undefined),
-			},
+			ui: { input },
 		});
 
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("[no answer provided]");
+		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
+		expect(input).not.toHaveBeenCalled();
 	});
 
-	it("returns fallback when no UI is available", async () => {
+	it("returns orchestrator clarification when no UI is available", async () => {
 		const resolver = createAskOrchestratorResolver({ cwd });
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("[no answer available]");
+		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
 	});
 
 	it("handles empty question gracefully", async () => {
+		const input = vi.fn().mockResolvedValue("fallback");
 		const resolver = createAskOrchestratorResolver({
 			cwd,
-			ui: {
-				input: vi.fn().mockResolvedValue("fallback"),
-			},
+			ui: { input },
 		});
 
 		const answer = await resolver("");
-		expect(answer).toBe("fallback");
+		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
+		expect(input).not.toHaveBeenCalled();
 	});
 
 	it("handles context parameter together with question for file resolution", async () => {
@@ -345,5 +346,67 @@ describe("createAskOrchestratorResolver", () => {
 
 		expect(answer.length).toBeLessThan(12_000);
 		expect(answer).toContain("[file truncated]");
+	});
+});
+
+
+// ─── resolve ─────────────────────────────────────────────────────────────────────
+
+describe("resolve", () => {
+	it("returns ask for null scope", () => {
+		expect(resolve("fix the bug", null)).toBe("ask");
+	});
+
+	it("returns ask for empty scope (no files, no dirs)", () => {
+		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [] })).toBe("ask");
+	});
+
+	it("returns ask for scope with wildcard *", () => {
+		expect(resolve("fix the bug", { filesToModify: ["*"], filesToCreate: [] })).toBe("ask");
+	});
+
+	it("returns ask for scope with ALL", () => {
+		expect(resolve("fix the bug", { filesToModify: ["ALL"], filesToCreate: [] })).toBe("ask");
+	});
+
+	it("returns proceed for scope with concrete filesToModify", () => {
+		expect(resolve("fix the bug", { filesToModify: ["src/auth.ts"], filesToCreate: [] })).toBe("proceed");
+	});
+
+	it("returns proceed for scope with concrete filesToCreate", () => {
+		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: ["src/new.ts"] })).toBe("proceed");
+	});
+
+	it("returns ask for scope with only boundaries", () => {
+		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [], boundaries: "Only modify src/" })).toBe("ask");
+	});
+
+	it("returns proceed for scope with directories", () => {
+		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [], directories: ["src/"] })).toBe("proceed");
+	});
+
+	it("returns proceed for scope with allowedDirectories", () => {
+		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [], allowedDirectories: ["src/"] })).toBe("proceed");
+	});
+
+	it("returns proceed for empty request with concrete scope", () => {
+		expect(resolve("", { filesToModify: ["src/auth.ts"], filesToCreate: [] })).toBe("proceed");
+	});
+
+	it("returns ask for short request with empty scope", () => {
+		expect(resolve("hi", { filesToModify: [], filesToCreate: [] })).toBe("ask");
+	});
+
+	it("returns ask for scope with mixed wildcards and concrete paths — treats wildcards as non-concrete", () => {
+		// hasConcreteModify requires at least one non-wildcard entry
+		expect(resolve("fix bug", { filesToModify: ["*", "src/auth.ts"], filesToCreate: [] })).toBe("proceed");
+	});
+
+	it("returns ask for scope with only vague wildcard directories", () => {
+		expect(resolve("fix bug", { filesToModify: [], filesToCreate: [], directories: ["*"] })).toBe("ask");
+	});
+
+	it("returns proceed for scope with both wildcard files and concrete create files", () => {
+		expect(resolve("fix bug", { filesToModify: ["*"], filesToCreate: ["output.md"] })).toBe("proceed");
 	});
 });

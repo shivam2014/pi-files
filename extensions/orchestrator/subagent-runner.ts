@@ -40,6 +40,7 @@ import { _spinnerIndex, resetSpinner } from "./spinner-state.ts";
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { registerPeekFeed, updatePeek, updatePeekFeed } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
+import { composePacks, suggestPacks } from "./skill-packs.ts";
 
 /** Optional orchestrator UI for dynamic status messages */
 export interface OrchestratorUi {
@@ -132,7 +133,7 @@ export function createAskOrchestratorTool(
 	return defineTool({
 		name: "ask_orchestrator",
 		label: "Ask Orchestrator",
-		description: "Pause the subagent and ask the orchestrator a clarification question. The orchestrator answers from context, the codebase, or the user.",
+		description: "Pause the subagent and ask the orchestrator a clarification question. The orchestrator answers from context and the codebase. If it cannot answer, report the question back to the orchestrator in your final output.",
 		parameters: Type.Object({
 			question: Type.String({ description: "The clarification question for the orchestrator" }),
 			context: Type.Optional(Type.String({ description: "Optional extra context to help answer the question" })),
@@ -224,6 +225,7 @@ export async function runSubagent(
 	onUpdate?: (update: any) => void,
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
+	packs?: string[],
 ): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();
@@ -274,8 +276,10 @@ export async function runSubagent(
 				systemPromptOverride: () => {
 				let prompt = specialist.systemPrompt;
 				if (scope) {
-					const modFiles = scope.filesToModify.length > 0 ? scope.filesToModify.map(f => `  - ${f}`).join('\n') : '  - (none)';
-					const createFiles = scope.filesToCreate.length > 0 ? scope.filesToCreate.map(f => `  - ${f}`).join('\n') : '  - (none)';
+					const filesToModify = Array.isArray(scope.filesToModify) ? scope.filesToModify : [];
+					const filesToCreate = Array.isArray(scope.filesToCreate) ? scope.filesToCreate : [];
+					const modFiles = filesToModify.length > 0 ? filesToModify.map(f => `  - ${f}`).join('\n') : '  - (none)';
+					const createFiles = filesToCreate.length > 0 ? filesToCreate.map(f => `  - ${f}`).join('\n') : '  - (none)';
 					const dirs = scope.directories.length > 0 ? scope.directories.join(', ') : '(none)';
 					prompt += `\n\n## Scope Restrictions\nYou may ONLY modify/create files within this scope:\n- Files to modify:\n${modFiles}\n- Files to create:\n${createFiles}\n- Allowed directories: ${dirs}\n- Max files: ${scope.maxFiles ?? 10}\n- Changes beyond scope require approval: ${scope.requiresApprovalBeyondScope ?? true}\n`;
 					if (scope.changeType) {
@@ -288,7 +292,11 @@ export async function runSubagent(
 						prompt += `- Boundaries: ${scope.boundaries}\n`;
 					}
 				}
-				prompt += `\n\n### Clarification\nIf you need input from the orchestrator to continue, call ask_orchestrator({ question: "...", context: "..." }). The orchestrator will answer from context, the codebase, or ask the user.\n`;
+				// Apply optional skill-packs discipline injections (explicit packs win over heuristic suggestions)
+				const packsToUse = packs?.length ? packs : suggestPacks(task);
+				prompt = composePacks(prompt, packsToUse);
+
+				prompt += `\n\n### Clarification\nIf you need input from the orchestrator to continue, call ask_orchestrator({ question: "...", context: "..." }). The orchestrator answers from context and the codebase. If it cannot answer, report the question back to the orchestrator in your final output.\n`;
 				return prompt;
 			},
 				noContextFiles: true, // Don't load parent's AGENTS.md/context into subagent

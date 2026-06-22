@@ -70,7 +70,9 @@ export class ScopeGuard {
     }
 
     // Check direct file allowlists
-    const allApproved = [...scope.filesToModify, ...scope.filesToCreate];
+    const filesToModify = Array.isArray(scope.filesToModify) ? scope.filesToModify : [];
+    const filesToCreate = Array.isArray(scope.filesToCreate) ? scope.filesToCreate : [];
+    const allApproved = [...filesToModify, ...filesToCreate];
     for (const approved of allApproved) {
       const approvedRel = isAbsolute(approved) ? normalizePath(approved, this.cwd) : approved;
       if (!approvedRel) continue;

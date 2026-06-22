@@ -53,7 +53,7 @@ export interface ExecuteDelegateResult {
  * @returns Result with content and details
  */
 export async function executeDelegate(
-	params: { specialist: string; task: string; scope?: Scope; signal?: AbortSignal },
+	params: { specialist: string; task: string; scope?: Scope; packs?: string[]; signal?: AbortSignal },
 	ctx: any,
 	onUpdate: (update: any) => void,
 ): Promise<ExecuteDelegateResult> {
@@ -78,8 +78,8 @@ export async function executeDelegate(
 	if (params.scope) {
 		explicitScope = {
 			...params.scope,
-			filesToModify: params.scope.filesToModify ?? [],
-			filesToCreate: params.scope.filesToCreate ?? [],
+			filesToModify: Array.isArray(params.scope.filesToModify) ? params.scope.filesToModify : [],
+			filesToCreate: Array.isArray(params.scope.filesToCreate) ? params.scope.filesToCreate : [],
 			directories: params.scope.directories ?? [],
 			maxFiles: params.scope.maxFiles ?? 10,
 			requiresApprovalBeyondScope: params.scope.requiresApprovalBeyondScope ?? true,
@@ -126,19 +126,17 @@ The scope tells the coder exactly which files it's allowed to touch.`
 
 
 	// AskResolver gate - check if scope is clear before delegating
-	// If "ask" and ui.input is available, ask user for clarification
-	// If no ui.input, proceed anyway (backward compatible)
+	// If "ask", escalate to the orchestrator instead of asking the user
 	if (scopeToUse !== undefined && scopeToUse !== null) {
 		const gateResult = resolve(params.task, scopeToUse);
-		if (gateResult === "ask" && ctx?.ui?.input) {
-			const clarification = await ctx.ui.input(
-				`Scope is vague. What files to modify?\n\nTask: ${params.task}`,
-				params.task,
-				{ signal: ctx?.signal }
-			);
-			if (clarification && clarification.trim().length > 0 && clarification !== params.task) {
-				params = { ...params, task: clarification };
-			}
+		if (gateResult === "ask") {
+			const resultClarify: ExecuteDelegateResult = {
+				content: [{
+					type: "text" as const,
+					text: `Scope is vague. Orchestrator must clarify scope before delegating. Task: ${params.task}`,
+				}],
+				details: { status: "needs-clarification" },
+			}; return resultClarify;
 		}
 	}
 
@@ -220,7 +218,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	const result = await runSubagent(
 		specialist, params.task, ctx.cwd,
 		parentCtx,
-		signal, wrappedOnUpdate, scopeToUse, orchestratorUi,
+		signal, wrappedOnUpdate, scopeToUse, orchestratorUi, params.packs,
 	);
 	const elapsedMs = Date.now() - startTime;
 
