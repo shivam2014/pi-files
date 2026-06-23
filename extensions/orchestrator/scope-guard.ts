@@ -20,10 +20,11 @@ export interface ScopeExpansionRequest {
   suggestedExpansion?: { directories?: string[]; filesToModify?: string[] };
 }
 
-function normalizePath(filePath: string, cwd: string): string | null {
+function normalizePath(filePath: string, cwd: string): string {
   const absolute = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
   const rel = relative(cwd, absolute);
-  if (rel.startsWith('..') || isAbsolute(rel)) return null;
+  // If relative starts with '..', the path escapes cwd — return absolute
+  if (rel.startsWith('..') || isAbsolute(rel)) return absolute;
   return rel.replace(/\\/g, '/');
 }
 

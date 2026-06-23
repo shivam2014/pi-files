@@ -137,6 +137,75 @@ describe('ScopeGuard', () => {
       expect(result.allowed).toBe(false);
       expect(result.reason).toBeDefined();
     });
+
+    it('allows absolute path outside cwd when listed in filesToCreate', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: [],
+            filesToCreate: ['/tmp/output.txt'],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'single-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('/tmp/output.txt', 'write');
+      expect(result.allowed).toBe(true);
+    });
+
+    it('allows absolute directory outside cwd when listed in directories', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: [],
+            filesToCreate: [],
+            directories: ['/tmp/build/'],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('/tmp/build/bundle.js', 'write');
+      expect(result.allowed).toBe(true);
+    });
+
+    it('allows absolute path outside cwd when listed in filesToModify', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['/tmp/config.yaml'],
+            filesToCreate: [],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'single-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('/tmp/config.yaml', 'edit');
+      expect(result.allowed).toBe(true);
+    });
   });
 
   describe('checkFileSize', () => {
