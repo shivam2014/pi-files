@@ -40,7 +40,6 @@ import { _spinnerIndex, resetSpinner } from "./spinner-state.ts";
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { registerPeekFeed, updatePeek, updatePeekFeed } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
-import { composePacks, suggestPacks } from "./skill-packs.ts";
 
 /** Optional orchestrator UI for dynamic status messages */
 export interface OrchestratorUi {
@@ -225,7 +224,6 @@ export async function runSubagent(
 	onUpdate?: (update: any) => void,
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
-	packs?: string[],
 ): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();
@@ -292,11 +290,6 @@ export async function runSubagent(
 						prompt += `- Boundaries: ${scope.boundaries}\n`;
 					}
 				}
-				// Apply optional skill-packs discipline injections (explicit packs win over heuristic suggestions)
-				const packsToUse = packs?.length ? packs : suggestPacks(task);
-				prompt = composePacks(prompt, packsToUse);
-
-				prompt += `\n\n### Clarification\nIf you need input from the orchestrator to continue, call ask_orchestrator({ question: "...", context: "..." }). The orchestrator answers from context and the codebase. If it cannot answer, report the question back to the orchestrator in your final output.\n`;
 				return prompt;
 			},
 				noContextFiles: true, // Don't load parent's AGENTS.md/context into subagent

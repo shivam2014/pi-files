@@ -138,3 +138,28 @@ describe("appendix slimming (#39)", () => {
 		expect(appendix.length).toBeLessThan(4000);
 	});
 });
+describe("clarification deduplication (#40)", () => {
+	it("subagent-runner does not duplicate STEPS_MANDATE clarification text", async () => {
+		// STEPS_MANDATE in specialists.ts already tells subagents about ask_orchestrator.
+		// subagent-runner.ts's systemPromptOverride must NOT append a duplicate ### Clarification block.
+		// This test fails (RED) as long as the duplication exists.
+
+		// Get actual STEPS_MANDATE (bypass the mock at top of file)
+		const { STEPS_MANDATE } = await vi.importActual<typeof import("./specialists")>("./specialists");
+
+		// Sanity: STEPS_MANDATE covers ask_orchestrator
+		expect(STEPS_MANDATE).toContain("ask_orchestrator");
+		expect(STEPS_MANDATE).toContain("need input from the orchestrator");
+
+		// Read subagent-runner source to detect duplicate clarification inline
+		const { readFileSync } = await import("node:fs");
+		const { resolve } = await import("node:path");
+		const source = readFileSync(resolve(__dirname, "subagent-runner.ts"), "utf-8");
+
+		// The text 'ask_orchestrator({ question: "' (literal double-quoted ellipsis values)
+		// appears ONLY in the redundant ### Clarification block inside systemPromptOverride,
+		// NOT in STEPS_MANDATE (which uses `{ question, context? }` syntax).
+		// Assertion fails while duplication exists → RED phase.
+		expect(source).not.toContain('ask_orchestrator({ question: "');
+	});
+});
