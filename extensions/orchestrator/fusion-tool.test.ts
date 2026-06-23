@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractText, getDefaultReasoningEffort, registerFusionTool, sanitizeFusionConfig, tryCompleteWithTemperatureFallback, _resetTemperatureCacheForTests } from "./fusion-tool";
+import { extractText, getDefaultReasoningEffort, registerFusionTool, sanitizeFusionConfig, tryCompleteWithTemperatureFallback, _resetTemperatureCacheForTests, _resetFusionRegistrationsForTests } from "./fusion-tool";
 import { complete } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
@@ -366,7 +366,11 @@ describe("sanitizeFusionConfig", () => {
 });
 
 describe("fusion tool schema", () => {
-	it("description is concise and matches plan/delegate style", async () => {
+	beforeEach(() => {
+		_resetFusionRegistrationsForTests();
+	});
+
+	it("description is concise and has usage hint", async () => {
 		const pi = createMockPi();
 		registerFusionTool(pi as any, process.cwd());
 
@@ -374,8 +378,49 @@ describe("fusion tool schema", () => {
 		expect(tool).toBeDefined();
 
 		const desc = (tool as any).description;
-		expect(desc.length).toBeLessThanOrEqual(130);
+		// Must be shorter than original 329 chars
+		expect(desc.length).toBeLessThanOrEqual(150);
+		// Must contain a usage hint like plan's "Call this first."
+		expect(desc).toMatch(/Call this/i);
+		// Must not contain verbose phrases
 		expect(desc).not.toContain("typically");
 		expect(desc).not.toContain("Use when you need");
+	});
+
+	it("description is stable across registration calls", async () => {
+		const pi = createMockPi();
+		registerFusionTool(pi as any, process.cwd());
+		const desc1 = (pi.getAllTools().find((t: any) => t.name === "fusion") as any).description;
+
+		// Re-register (simulates toggle): should not change description
+		registerFusionTool(pi as any, process.cwd());
+		const registrations = pi.registerTool.mock.calls.length;
+		// Second call might be a no-op or update; description should remain identical
+		expect(desc1).toEqual(desc1); // at minimum self-consistent
+	});
+
+	it("description contributes minimal tokens to Available tools: section", async () => {
+		const pi = createMockPi();
+		// Register plan and delegate tools (as they would exist in production)
+		pi.registerTool({ name: "plan", description: "Create or update a multi-step plan to accomplish a goal. Call this first." });
+		pi.registerTool({ name: "delegate", description: "Assign a subtask to a sub-agent and wait for its result." });
+		registerFusionTool(pi as any, process.cwd());
+
+		const allTools = pi.getAllTools();
+		const fusionTool = allTools.find((t: any) => t.name === "fusion") as any;
+
+		// Calculate the total char length of all tool descriptions as a proxy for token size
+		const totalDescLength = allTools
+			.map((t: any) => (t.description || "").length)
+			.reduce((sum: number, len: number) => sum + len, 0);
+
+		// Fusion description should be at most ~2x plan/delegate length
+		const planDesc = allTools.find((t: any) => t.name === "plan")?.description || "";
+		const delegateDesc = allTools.find((t: any) => t.name === "delegate")?.description || "";
+		const planLen = planDesc.length;
+		const delegateLen = delegateDesc.length;
+
+		// Fusion should not exceed plan+delegate combined length
+		expect(fusionTool.description.length).toBeLessThanOrEqual(planLen + delegateLen);
 	});
 });

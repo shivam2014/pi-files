@@ -471,7 +471,7 @@ export function registerFusionTool(pi: ExtensionAPI, cwd: string): void {
 	pi.registerTool({
 		name: "fusion",
 		label: "Fusion",
-		description: "Multi-model analysis tool. Runs a prompt against a panel of models, then a judge synthesizes responses into structured analysis.",
+		description: "Multi-model analysis tool. Runs prompt against panel of models, then judge synthesizes into analysis. Call this for decisions.",
 		parameters,
 
 		promptSnippet: "Get multi-model advice by running a prompt against a panel of models, then a judge provides structured analysis",
