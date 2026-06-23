@@ -105,3 +105,36 @@ describe('buildOrchestratorPrompt', () => {
 		expect(result.systemPrompt).toContain('**test**');
 	});
 });
+
+describe("appendix slimming (#39)", () => {
+	beforeEach(() => {
+		vi.resetAllMocks();
+	});
+
+	it("does not duplicate caveman mode from base prompt", () => {
+		const basePrompt = "Some base instructions without Orchestrator header";
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
+		// The appendix should not include full caveman mode text
+		expect(systemPrompt).not.toContain("Respond terse like smart caveman");
+		expect(systemPrompt).not.toContain("Drop: articles");
+	});
+
+	it("keeps orchestrator-specific sections", () => {
+		const basePrompt = "Some base instructions";
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
+		// Must still contain delegation workflow
+		expect(systemPrompt).toContain("delegate(specialist, task)");
+		expect(systemPrompt).toContain("Specialist roster");
+		expect(systemPrompt).toContain("Scope requirement");
+		expect(systemPrompt).toContain("Execution Monitoring");
+		expect(systemPrompt).toContain("Audit Review");
+	});
+
+	it("reduces appendix character count compared to before", () => {
+		const basePrompt = "Some base instructions";
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
+		// The appended part should be reasonable (< 4000 chars)
+		const appendix = systemPrompt.replace(basePrompt, "").trim();
+		expect(appendix.length).toBeLessThan(4000);
+	});
+});
