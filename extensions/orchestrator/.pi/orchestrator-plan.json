@@ -1,11 +1,11 @@
 {
-  "goal": "fix",
+  "goal": "investigate",
   "steps": [
     {
-      "label": "Coder: fix",
+      "label": "Scout: investigate",
       "completed": true,
       "errored": false
     }
   ],
-  "startTime": 1781888179958
+  "startTime": 1781911086794
 }

@@ -18,6 +18,31 @@ const GIT_READ_COMMANDS = new Set([
 	"tag", "worktree",
 ]);
 
+// ── Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Find the git subcommand by skipping over global git options (flags like
+ * -C <path>, --git-dir=<path>, -c <name>=<value>, etc.) that precede it.
+ * Returns null if no subcommand is found.
+ */
+function findGitSubcommand(tokens: string[]): string | null {
+	const TAKES_ARG = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--exec-path"]);
+	let i = 0;
+	while (i < tokens.length) {
+		const t = tokens[i];
+		if (t === "--") break; // end of options marker
+		if (!t.startsWith("-")) return t; // first non-flag token = subcommand
+		if (TAKES_ARG.has(t)) {
+			i += 2; // skip flag and its value
+		} else if (t.includes("=")) {
+			i += 1; // flag with embedded value, e.g. --git-dir=/path
+		} else {
+			i += 1; // boolean flag (--paginate, --no-pager, --bare, etc.)
+		}
+	}
+	return null;
+}
+
 // ── git-read: Read-only git operations ──────────────────────────────────
 
 export const gitReadTool = defineTool({
@@ -32,7 +57,7 @@ export const gitReadTool = defineTool({
 	],
 	parameters: Type.Object({
 		args: Type.String({
-			description: "Git arguments (e.g., 'log --oneline -5', 'diff HEAD~1', 'status', 'branch -a')",
+			description: "Git arguments (e.g., 'log --oneline -5', 'diff HEAD~1', 'status', 'branch -a'). Supports git global flags like '-C <path>' and '--git-dir=<path>'.",
 		}),
 	}),
 	execute: async (_toolCallId, params) => {
@@ -43,11 +68,13 @@ export const gitReadTool = defineTool({
 				details: { exitCode: null },
 			};
 		}
-		const firstWord = args.split(/\s+/)[0];
-		if (!GIT_READ_COMMANDS.has(firstWord)) {
+		const tokens = args.split(/\s+/);
+		const subcommand = findGitSubcommand(tokens);
+		if (!subcommand || !GIT_READ_COMMANDS.has(subcommand)) {
 			const allowed = [...GIT_READ_COMMANDS].sort().join(", ");
+			const shown = subcommand ? `'git ${subcommand}'` : "the given arguments";
 			return {
-				content: [{ type: "text", text: `Error: 'git ${firstWord}' is not a read-only command.\nAllowed: ${allowed}` }],
+				content: [{ type: "text", text: `Error: ${shown} is not a read-only command.\nAllowed: ${allowed}` }],
 				details: { exitCode: null },
 			};
 		}

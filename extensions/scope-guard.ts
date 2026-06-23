@@ -19,15 +19,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
  * Normalize a file path against a working directory.
- * Returns a relative path with forward slashes.
- * Returns null if the path escapes the working directory.
+ * Returns a relative path with forward slashes for in-cwd paths.
+ * Returns the absolute path for out-of-cwd paths (e.g., /tmp/...).
  */
-function normalizePath(filePath: string, cwd: string): string | null {
-	const absolute = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-	const rel = relative(cwd, absolute);
-	// If relative starts with '..', the path escapes cwd
-	if (rel.startsWith("..") || isAbsolute(rel)) return null;
-	return rel.replace(/\\/g, "/");
+function normalizePath(filePath: string, cwd: string): string {
+  const absolute = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+  const rel = relative(cwd, absolute);
+  // If relative starts with '..', the path escapes cwd — return absolute
+  if (rel.startsWith("..") || isAbsolute(rel)) return absolute;
+  return rel.replace(/\\/g, "/");
 }
 
 interface Scope {
@@ -39,6 +39,10 @@ interface Scope {
 	changeType?: "single-file" | "multi-file";
 	maxLinesPerFile: number;
 	gateMode?: "strict" | "relaxed";
+}
+
+function asArray<T>(value: unknown): T[] {
+	return Array.isArray(value) ? (value as T[]) : [];
 }
 
 /** Throttle re-reads: check file at most once per N ms */
@@ -66,8 +70,12 @@ function readScope(cwd: string): Scope | null {
 			_touchedFiles.length = 0;
 			_lastScopeHash = hash;
 		}
-		const parsed = JSON.parse(raw) as Scope;
-		_cachedScope = parsed;
+		const parsed = JSON.parse(raw) as { version?: unknown; schema?: unknown; scope?: Scope };
+		if (parsed.version !== 1 || parsed.schema !== "scope-file-contract-v1" || !parsed.scope) {
+			_cachedScope = null;
+			return null;
+		}
+		_cachedScope = parsed.scope;
 		return _cachedScope;
 	} catch {
 		_cachedScope = null;
@@ -82,7 +90,9 @@ let _lastScopeHash = "";
 function isPathInScope(filePath: string, scope: Scope, cwd: string): boolean {
 	const relPath = normalizePath(filePath, cwd);
 	if (!relPath) return false;
-	const allApproved = [...scope.filesToModify, ...scope.filesToCreate];
+	const filesToModify = asArray<string>(scope.filesToModify);
+	const filesToCreate = asArray<string>(scope.filesToCreate);
+	const allApproved = [...filesToModify, ...filesToCreate];
 
 	for (const approved of allApproved) {
 		// Normalize: if approved is absolute, convert to relative
@@ -100,12 +110,16 @@ function isPathAllowed(path: string, scope: Scope, touchedFiles: string[], cwd: 
 	const normalized = normalizePath(path, cwd);
 	if (!normalized) return false;
 
+	const filesToModify = asArray<string>(scope.filesToModify);
+	const filesToCreate = asArray<string>(scope.filesToCreate);
+	const directories = asArray<string>(scope.directories);
+
 	// Direct file allowlist check
-	if (scope.filesToModify.includes(normalized)) return true;
-	if (scope.filesToCreate.includes(normalized)) return true;
+	if (filesToModify.includes(normalized)) return true;
+	if (filesToCreate.includes(normalized)) return true;
 
 	// Directory-level check
-	for (const dir of scope.directories) {
+	for (const dir of directories) {
 		const normalizedDir = dir.replace(/\/$/, "") + "/";
 		if (normalized.startsWith(normalizedDir) || normalized === dir) {
 			const touchedCount = touchedFiles.filter(f => normalizePath(f, cwd)?.startsWith(normalizedDir)).length;
@@ -139,9 +153,9 @@ export default function (pi: ExtensionAPI) {
 				block: true,
 				reason:
 					`[scope-guard] File not in approved scope: ${path}\n` +
-					`Approved to modify: ${scope.filesToModify.join(", ") || "(none)"}\n` +
-					`Approved to create: ${scope.filesToCreate.join(", ") || "(none)"}\n` +
-					`Directories allowed: ${scope.directories.join(", ") || "(none)"}\n` +
+					`Approved to modify: ${asArray<string>(scope.filesToModify).join(", ") || "(none)"}\n` +
+					`Approved to create: ${asArray<string>(scope.filesToCreate).join(", ") || "(none)"}\n` +
+					`Directories allowed: ${asArray<string>(scope.directories).join(", ") || "(none)"}\n` +
 					`Max files per directory: ${scope.maxFiles}\n` +
 					`Request scope expansion if needed.`,
 			};

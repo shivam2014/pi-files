@@ -246,6 +246,10 @@ export default function (pi: ExtensionAPI) {
 	// ── 0. Visual feedback on load ────────────────────────────────────────
 
 	pi.on("session_start", async () => {
+		// Clear read fingerprint cache on each session start so subagent
+		// sessions get fresh file reads instead of "already read" stubs.
+		readFingerprints.clear();
+
 		rtkAvailable = checkRtkVersion();
 		if (enabled) {
 			const rtkStatus = rtkAvailable ? "rtk ✓" : "";

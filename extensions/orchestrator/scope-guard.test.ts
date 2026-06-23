@@ -34,6 +34,18 @@ describe('ScopeGuard', () => {
       expect(guard.isScopeValid()).toBe(false);
     });
 
+    it('returns false for stale version field', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(join(tmpDir, '.pi', 'scope.json'), JSON.stringify({ version: 2, schema: 'scope-file-contract-v1', scope: {} }));
+      expect(guard.isScopeValid()).toBe(false);
+    });
+
+    it('returns false for stale schema field', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(join(tmpDir, '.pi', 'scope.json'), JSON.stringify({ version: 1, schema: 'v2', scope: {} }));
+      expect(guard.isScopeValid()).toBe(false);
+    });
+
     it('returns true for valid scope file', () => {
       mkdirSync(join(tmpDir, '.pi'), { recursive: true });
       writeFileSync(
@@ -125,6 +137,119 @@ describe('ScopeGuard', () => {
       expect(result.allowed).toBe(false);
       expect(result.reason).toBeDefined();
     });
+
+    it('allows absolute path outside cwd when listed in filesToCreate', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: [],
+            filesToCreate: ['/tmp/output.txt'],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'single-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('/tmp/output.txt', 'write');
+      expect(result.allowed).toBe(true);
+    });
+
+    it('allows absolute directory outside cwd when listed in directories', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: [],
+            filesToCreate: [],
+            directories: ['/tmp/build/'],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('/tmp/build/bundle.js', 'write');
+      expect(result.allowed).toBe(true);
+    });
+
+    it('allows absolute path outside cwd when listed in filesToModify', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['/tmp/config.yaml'],
+            filesToCreate: [],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'single-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('/tmp/config.yaml', 'edit');
+      expect(result.allowed).toBe(true);
+    });
+
+    it('handles scope with missing array fields (filesToModify/filesToCreate/directories undefined)', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            changeType: 'multi-file',
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      // Should NOT throw "is not iterable" — should return blocked gracefully
+      expect(() => guard.isPathAllowed('src/test.ts', 'write')).not.toThrow();
+      const result = guard.isPathAllowed('src/test.ts', 'write');
+      expect(result.allowed).toBe(false);
+    });
+
+    it('handles scope with only some array fields set', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['src/test.ts'],
+            // filesToCreate and directories intentionally omitted
+            changeType: 'multi-file',
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      expect(() => guard.isPathAllowed('src/test.ts', 'write')).not.toThrow();
+      expect(() => guard.isPathAllowed('other.ts', 'write')).not.toThrow();
+    });
   });
 
   describe('checkFileSize', () => {
@@ -148,7 +273,7 @@ describe('ScopeGuard', () => {
         })
       );
       const content = Array.from({ length: 15 }, (_, i) => `line ${i + 1}`).join('\n');
-      expect(guard.checkFileSize('test.ts', content)).toBe(false);
+      expect(guard.checkFileSize('test.ts', content).allowed).toBe(false);
     });
 
     it('allows content exceeding maxLinesPerFile when gateMode is relaxed', () => {
@@ -171,60 +296,55 @@ describe('ScopeGuard', () => {
         })
       );
       const content = Array.from({ length: 15 }, (_, i) => `line ${i + 1}`).join('\n');
-      expect(guard.checkFileSize('test.ts', content)).toBe(true);
+      expect(guard.checkFileSize('test.ts', content).allowed).toBe(true);
     });
   });
 
   describe('requestExpansion', () => {
-    it('returns expansion request for blocked path', () => {
-      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
-      writeFileSync(
-        join(tmpDir, '.pi', 'scope.json'),
-        JSON.stringify({
-          version: 1,
-          schema: 'scope-file-contract-v1',
-          scope: {
-            filesToModify: ['src/test.ts'],
-            filesToCreate: [],
-            directories: [],
-            maxFiles: 10,
-            requiresApprovalBeyondScope: true,
-            changeType: 'multi-file',
-            maxLinesPerFile: 400,
-            gateMode: 'strict',
-          },
-        })
-      );
-      const result = guard.requestExpansion('src/other.ts');
-      expect(result).not.toBeNull();
-      expect(result!.path).toBe('src/other.ts');
-      expect(result!.suggestedExpansion.filesToModify).toContain('src/other.ts');
-    });
-
-    it('returns null for allowed path', () => {
-      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
-      writeFileSync(
-        join(tmpDir, '.pi', 'scope.json'),
-        JSON.stringify({
-          version: 1,
-          schema: 'scope-file-contract-v1',
-          scope: {
-            filesToModify: ['src/test.ts'],
-            filesToCreate: [],
-            directories: [],
-            maxFiles: 10,
-            requiresApprovalBeyondScope: true,
-            changeType: 'multi-file',
-            maxLinesPerFile: 400,
-            gateMode: 'strict',
-          },
-        })
-      );
-      expect(guard.requestExpansion('src/test.ts')).toBeNull();
-    });
-
     it('returns null when no scope file exists', () => {
-      expect(guard.requestExpansion('src/test.ts')).toBeNull();
+      expect(guard.requestExpansion('src/new.ts')).toBeNull();
+    });
+
+    it('returns a request object with path and reason when scope exists', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: { filesToModify: [], filesToCreate: [], directories: [] },
+        })
+      );
+      const result = guard.requestExpansion('src/new.ts');
+      expect(result).not.toBeNull();
+      expect(result!.path).toBe('src/new.ts');
+      expect(result!.reason).toContain('is not in the allowed scope');
+      expect(result!.scopeManifest).toBeDefined();
+      expect(result!.suggestedExpansion?.filesToModify).toContain('src/new.ts');
+    });
+
+    it('includes scope manifest in the request', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['src/allowed.ts'],
+            filesToCreate: [],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.requestExpansion('src/new.ts');
+      expect(result!.scopeManifest!.filesToModify).toContain('src/allowed.ts');
+      expect(result!.scopeManifest!.maxFiles).toBe(10);
     });
   });
 });

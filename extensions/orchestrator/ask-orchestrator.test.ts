@@ -68,36 +68,36 @@ describe("createAskOrchestratorResolver", () => {
 		expect(uiInput).not.toHaveBeenCalled();
 	});
 
-	it("escalates to the user when no file or doc matches", async () => {
+	it("escalates to the orchestrator when no file or doc matches", async () => {
+		const input = vi.fn().mockResolvedValue("ask the user");
 		const resolver = createAskOrchestratorResolver({
 			cwd,
-			ui: {
-				input: vi.fn().mockResolvedValue("ask the user"),
-			},
+			ui: { input },
 		});
 
 		const answer = await resolver("What is the meaning of life?");
 
-		expect(answer).toBe("ask the user");
+		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
+		expect(input).not.toHaveBeenCalled();
 	});
 
-	it("returns a fallback when the user cancels input", async () => {
+	it("returns orchestrator clarification when the user cancels input", async () => {
+		const input = vi.fn().mockResolvedValue(undefined);
 		const resolver = createAskOrchestratorResolver({
 			cwd,
-			ui: {
-				input: vi.fn().mockResolvedValue(undefined),
-			},
+			ui: { input },
 		});
 
 		const answer = await resolver("What is the meaning of life?");
 
-		expect(answer).toBe("[no answer provided]");
+		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
+		expect(input).not.toHaveBeenCalled();
 	});
 
-	it("returns a fallback when no UI is available", async () => {
+	it("returns orchestrator clarification when no UI is available", async () => {
 		const resolver = createAskOrchestratorResolver({ cwd });
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("[no answer available]");
+		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
 	});
 });
 

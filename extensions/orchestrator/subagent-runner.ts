@@ -21,7 +21,6 @@ import { Type } from "typebox";
 
 import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Scope, Substep } from "./types.ts";
-import { ScopeManager } from "./scope-manager.ts";
 import {
 	addSubstep,
 	createActivityFeed,
@@ -133,7 +132,7 @@ export function createAskOrchestratorTool(
 	return defineTool({
 		name: "ask_orchestrator",
 		label: "Ask Orchestrator",
-		description: "Pause the subagent and ask the orchestrator a clarification question. The orchestrator answers from context, the codebase, or the user.",
+		description: "Pause the subagent and ask the orchestrator a clarification question. The orchestrator answers from context and the codebase. If it cannot answer, report the question back to the orchestrator in your final output.",
 		parameters: Type.Object({
 			question: Type.String({ description: "The clarification question for the orchestrator" }),
 			context: Type.Optional(Type.String({ description: "Optional extra context to help answer the question" })),
@@ -206,22 +205,6 @@ export function installSubagentEnv(env: NodeJS.ProcessEnv): void {
 }
 
 /**
- * Write scope file for scope-guard.ts enforcement.
- * Only written if scope is provided.
- */
-function writeScopeFile(cwd: string, scope?: Scope | null): void {
-	if (!scope) return;
-	new ScopeManager(cwd).writeScope(scope as any);
-}
-
-/**
- * Clear scope file after subagent completes.
- */
-function clearScopeFile(cwd: string): void {
-	new ScopeManager(cwd).clearScope();
-}
-
-/**
  * Run a specialist subagent with isolated session.
  *
  * @param specialist - The specialist definition (tools, system prompt)
@@ -242,9 +225,6 @@ export async function runSubagent(
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
 ): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
-	// Write scope file for scope-guard.ts enforcement
-	writeScopeFile(cwd, scope);
-
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();
 
@@ -294,9 +274,11 @@ export async function runSubagent(
 				systemPromptOverride: () => {
 				let prompt = specialist.systemPrompt;
 				if (scope) {
-					const modFiles = scope.filesToModify.length > 0 ? scope.filesToModify.map(f => `  - ${f}`).join('\n') : '  - (none)';
-					const createFiles = scope.filesToCreate.length > 0 ? scope.filesToCreate.map(f => `  - ${f}`).join('\n') : '  - (none)';
-					const dirs = scope.directories.length > 0 ? scope.directories.join(', ') : '(none)';
+					const filesToModify = Array.isArray(scope.filesToModify) ? scope.filesToModify : [];
+					const filesToCreate = Array.isArray(scope.filesToCreate) ? scope.filesToCreate : [];
+					const modFiles = filesToModify.length > 0 ? filesToModify.map(f => `  - ${f}`).join('\n') : '  - (none)';
+					const createFiles = filesToCreate.length > 0 ? filesToCreate.map(f => `  - ${f}`).join('\n') : '  - (none)';
+					const dirs = Array.isArray(scope.directories) && scope.directories.length > 0 ? scope.directories.join(', ') : '(none)';
 					prompt += `\n\n## Scope Restrictions\nYou may ONLY modify/create files within this scope:\n- Files to modify:\n${modFiles}\n- Files to create:\n${createFiles}\n- Allowed directories: ${dirs}\n- Max files: ${scope.maxFiles ?? 10}\n- Changes beyond scope require approval: ${scope.requiresApprovalBeyondScope ?? true}\n`;
 					if (scope.changeType) {
 						prompt += `- Change type: ${scope.changeType} (${scope.changeType === 'single-file' ? 'edit one file' : 'may edit multiple files'})\n`;
@@ -308,7 +290,6 @@ export async function runSubagent(
 						prompt += `- Boundaries: ${scope.boundaries}\n`;
 					}
 				}
-				prompt += `\n\n### Clarification\nIf you need input from the orchestrator to continue, call ask_orchestrator({ question: "...", context: "..." }). The orchestrator will answer from context, the codebase, or ask the user.\n`;
 				return prompt;
 			},
 				noContextFiles: true, // Don't load parent's AGENTS.md/context into subagent
@@ -716,6 +697,5 @@ export async function runSubagent(
 		// Always restore the original parent environment, even if the subagent
 		// failed before the session started.
 		installSubagentEnv(envSnapshot);
-		clearScopeFile(cwd);
 	}
 }
