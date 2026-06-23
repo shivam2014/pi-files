@@ -19,7 +19,7 @@ import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed }
 import { clearPlanPanel } from "./plan-panel.ts";
 import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
-import { loadFusionConfig, registerFusionTool } from "./fusion-tool.ts";
+import { loadFusionConfig } from "./fusion-tool.ts";
 import { ScopeManager } from "./scope-manager.ts";
 import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
 import { buildOrchestratorPrompt } from "./prompt-builder.ts";
@@ -39,20 +39,35 @@ export default function (pi: ExtensionAPI) {
 		return;
 	}
 
+	// ── Freeze active tools at session_start for prefix-cache stability ──
+	// MUST be in session_start (not before_agent_start) because:
+	//   - init: setActiveTools not yet bound (throws "Extension runtime not initialized")
+	//   - before_agent_start: causes 1-turn lag — turn 1 sees ALL tools, turn 2+ sees
+	//     narrowed set → "Available tools:" section differs → prefix cache broken
+	//   - session_start: runtime bound, fires before first createTurnState()
+	//     → prompt stable from turn 1 onward
+	//
+	// ⚠ TESTING NOTE: Tests must trigger "session_start" before "before_agent_start"
+	//    to exercise this handler. See fusion-toggle.test.ts for the pattern:
+	//      await pi.trigger("session_start", {}, { cwd })
+	//      await pi.trigger("before_agent_start", event, ctx)
+	//    Without this, setActiveTools never fires and getActiveToolsHistory() returns undefined.
+	pi.on("session_start", async (_event, ctx) => {
+		const cwd = ctx?.cwd ?? process.cwd();
+		const fusionConfig = loadFusionConfig(cwd);
+		const activeTools: string[] = ["plan", "delegate"];
+		if (fusionConfig.enabled) {
+			activeTools.push("fusion");
+		}
+		pi.setActiveTools(activeTools);
+	});
+
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
 		new ScopeManager(process.cwd()).clearScope();
 		clearPlanPanel(ctx);
-		// Re-register fusion tool with project cwd so its config (enabled/disabled) is respected.
-		// Idempotent — safe to call even if already registered from extension init.
-		registerFusionTool(pi, ctx.cwd);
-		const fusionConfig = loadFusionConfig(ctx.cwd);
-		const activeTools = ["plan", "delegate"];
-		if (fusionConfig.enabled && pi.getAllTools().some((t: any) => t.name === "fusion")) {
-			activeTools.push("fusion");
-		}
-		pi.setActiveTools(activeTools);
 
+		const fusionConfig = loadFusionConfig(ctx.cwd);
 		const parentSkills = event.systemPromptOptions?.skills;
 		return buildOrchestratorPrompt({
 			basePrompt: event.systemPrompt ?? "",

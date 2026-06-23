@@ -65,24 +65,33 @@ describe("global fusion toggle", () => {
 		rmSync(cwd, { recursive: true, force: true });
 	});
 
-	it("does not register fusion tool, omit prompt section, and limits active tools when disabled", async () => {
+	it("omits fusion from active tools and prompt section when disabled", async () => {
 		writeFusionConfig(cwd, { enabled: false });
 		orchestrator(pi as any);
+
+		// Fusion tool is always registered at init (idempotent)
+		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(true);
+
+		// Trigger session_start (where setActiveTools fires) before before_agent_start
+		await pi.trigger("session_start", {}, { cwd });
 
 		const event = { systemPrompt: "BASE", systemPromptOptions: {} };
 		const ctx = { cwd };
 		const results = await pi.trigger("before_agent_start", event, ctx);
 		const prompt = results[0]?.systemPrompt ?? event.systemPrompt;
 
-		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(false);
+		// But setActiveTools excludes fusion when disabled
 		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate"]);
 		expect(prompt).not.toContain("### Fusion Tool");
 		expect(prompt).toContain("## Orchestrator Mode");
 	});
 
-	it("registers fusion tool, includes prompt section, and adds fusion to active tools when enabled", async () => {
+	it("includes fusion in active tools and prompt section when enabled", async () => {
 		writeFusionConfig(cwd, { enabled: true });
 		orchestrator(pi as any);
+
+		// Trigger session_start (where setActiveTools fires) before before_agent_start
+		await pi.trigger("session_start", {}, { cwd });
 
 		const event = { systemPrompt: "BASE", systemPromptOptions: {} };
 		const ctx = { cwd };
@@ -98,27 +107,38 @@ describe("global fusion toggle", () => {
 	it("defaults to enabled when no config exists", async () => {
 		orchestrator(pi as any);
 
+		// Trigger session_start (where setActiveTools fires) before before_agent_start
+		await pi.trigger("session_start", {}, { cwd });
+
 		const event = { systemPrompt: "BASE", systemPromptOptions: {} };
 		const ctx = { cwd };
 		const results = await pi.trigger("before_agent_start", event, ctx);
 		const prompt = results[0]?.systemPrompt ?? event.systemPrompt;
 
-		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(true);
 		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate", "fusion"]);
 		expect(prompt).toContain("### Fusion Tool");
 	});
 
-	it("unregisters fusion tool when config changes from enabled to disabled", async () => {
+	it("fusion tool always registered — visibility controlled by setActiveTools", async () => {
 		writeFusionConfig(cwd, { enabled: true });
-		registerFusionTool(pi as any, cwd);
+		orchestrator(pi as any);
 		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(true);
 
+		// Simulate config change: setActiveTools controls visibility, not unregister
 		writeFusionConfig(cwd, { enabled: false });
-		registerFusionTool(pi as any, cwd);
-		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(false);
+		// Trigger session_start with the updated config to reflect the change
+		await pi.trigger("session_start", {}, { cwd });
+
+		const event = { systemPrompt: "BASE", systemPromptOptions: {} };
+		const ctx = { cwd };
+		await pi.trigger("before_agent_start", event, ctx);
+
+		// Tool still registered, but not in active tools
+		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(true);
+		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate"]);
 	});
 
-	it("is idempotent when enabled", async () => {
+	it("is idempotent when enabled", () => {
 		writeFusionConfig(cwd, { enabled: true });
 		registerFusionTool(pi as any, cwd);
 		registerFusionTool(pi as any, cwd);
