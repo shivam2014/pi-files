@@ -3,7 +3,7 @@
  *
  * Extracted from index.ts before_agent_start handler.
  * Generates delegation instructions with specialist roster, skills summary,
- * fusion section, and caveman mode instructions.
+ * fusion section, and delegation-specific instructions for orchestrator mode.
  */
 
 import { listSpecialists, SPECIALISTS } from "./specialists.ts";

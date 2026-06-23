@@ -392,11 +392,10 @@ describe("fusion tool schema", () => {
 		registerFusionTool(pi as any, process.cwd());
 		const desc1 = (pi.getAllTools().find((t: any) => t.name === "fusion") as any).description;
 
-		// Re-register (simulates toggle): should not change description
+		// Re-register (simulates toggle): description should not change
 		registerFusionTool(pi as any, process.cwd());
-		const registrations = pi.registerTool.mock.calls.length;
-		// Second call might be a no-op or update; description should remain identical
-		expect(desc1).toEqual(desc1); // at minimum self-consistent
+		const desc2 = (pi.getAllTools().find((t: any) => t.name === "fusion") as any).description;
+		expect(desc2).toEqual(desc1);
 	});
 
 	it("description contributes minimal tokens to Available tools: section", async () => {
