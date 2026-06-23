@@ -81,7 +81,8 @@ export class ScopeGuard {
     }
 
     // Check directory-level allowlist
-    for (const dir of scope.directories) {
+    const directories = Array.isArray(scope.directories) ? scope.directories : [];
+    for (const dir of directories) {
       const normalizedDir = dir.replace(/\/$/, '') + '/';
       if (normalized.startsWith(normalizedDir) || normalized === dir) {
         return { allowed: true };

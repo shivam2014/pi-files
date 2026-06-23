@@ -206,6 +206,50 @@ describe('ScopeGuard', () => {
       const result = guard.isPathAllowed('/tmp/config.yaml', 'edit');
       expect(result.allowed).toBe(true);
     });
+
+    it('handles scope with missing array fields (filesToModify/filesToCreate/directories undefined)', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            changeType: 'multi-file',
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      // Should NOT throw "is not iterable" — should return blocked gracefully
+      expect(() => guard.isPathAllowed('src/test.ts', 'write')).not.toThrow();
+      const result = guard.isPathAllowed('src/test.ts', 'write');
+      expect(result.allowed).toBe(false);
+    });
+
+    it('handles scope with only some array fields set', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['src/test.ts'],
+            // filesToCreate and directories intentionally omitted
+            changeType: 'multi-file',
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      expect(() => guard.isPathAllowed('src/test.ts', 'write')).not.toThrow();
+      expect(() => guard.isPathAllowed('other.ts', 'write')).not.toThrow();
+    });
   });
 
   describe('checkFileSize', () => {
