@@ -8,6 +8,8 @@ const mockSpecialists = vi.hoisted(() => ({
   writer: { name: "writer", tools: ["read", "write"], systemPrompt: "writer" },
 }));
 
+const mockResolve = vi.hoisted(() => vi.fn(() => "pass"));
+
 vi.mock("./specialists.ts", () => ({
   SPECIALISTS: mockSpecialists,
   getSpecialistSkills: (_name: string, override?: string[]) => override !== undefined ? override : [],
@@ -41,7 +43,10 @@ vi.mock("./scope-manager.ts", () => ({
   ScopeManager: vi.fn(function() { return { writeScope: vi.fn(), clearScope: mockClearScope }; }),
 }));
 
-vi.mock("./ask-resolver.ts", () => ({ createAskOrchestratorResolver: () => vi.fn() }));
+vi.mock("./ask-resolver.ts", () => ({
+  createAskOrchestratorResolver: () => vi.fn(),
+  resolve: (...args: any[]) => mockResolve(...args),
+}));
 vi.mock("./debug.ts", () => ({ debugLog: vi.fn() }));
 vi.mock("./delegate-output-formatter.ts", () => ({
   extractFindingsFromOutput: vi.fn(() => null),
@@ -169,6 +174,25 @@ describe("executeDelegate", () => {
       await executeDelegate({ specialist: "test", task: "x" }, createMockCtx(), vi.fn());
       expect(mockClearScope).toHaveBeenCalledOnce();
       expect(mockDecrementDelegationCount).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("ask-resolver gate", () => {
+    it("returns structured result when resolve() returns 'ask' instead of throwing", async () => {
+      // Force resolve to return "ask" (vague scope)
+      mockResolve.mockReturnValueOnce("ask");
+
+      const result = await executeDelegate(
+        { specialist: "writer", task: "write something vague", scope: { filesToModify: ["x.md"], filesToCreate: [] } },
+        createMockCtx(),
+        vi.fn(),
+      );
+
+      expect(result).toBeDefined();
+      expect(result.content).toBeDefined();
+      expect(result.content[0].type).toBe("text");
+      expect(result.content[0].text).toContain("clarify");
+      expect(result.details).toBeDefined();
     });
   });
 });

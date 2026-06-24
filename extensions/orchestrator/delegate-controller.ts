@@ -129,13 +129,15 @@ The scope tells the coder exactly which files it's allowed to touch.`
 
 
 	// AskResolver gate - check if scope is clear before delegating
-	// If "ask", escalate to the orchestrator instead of asking the user
+	// If "ask", return structured result for orchestrator self-correction (not throw)
 	if (scopeToUse !== undefined && scopeToUse !== null) {
 		const gateResult = resolve(params.task, scopeToUse);
 		if (gateResult === "ask") {
-			throw new Error(
-				`Scope is vague. Orchestrator must clarify scope before delegating. Task: ${params.task}`
-			);
+			const result: ExecuteDelegateResult = {
+				content: [{ type: "text", text: `⚠️ Scope is vague. Orchestrator must clarify scope before delegating to ${specialist.name}.\n\nTask: ${params.task}\n\nPlease provide a clearer task description or explicit scope, then retry.` }],
+				details: { specialist: specialist.name, task: params.task, status: "scope_vague", turns: 0 },
+			};
+			return result;
 		}
 	}
 
