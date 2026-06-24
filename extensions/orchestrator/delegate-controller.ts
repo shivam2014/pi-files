@@ -4,7 +4,7 @@
  */
 
 import type { Specialist, DelegationMetrics, SubagentContext, Scope } from "./types.ts";
-import { SPECIALISTS } from "./specialists.ts";
+import { SPECIALISTS, getSpecialistSkills } from "./specialists.ts";
 import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
 import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
 import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete } from "./plan-panel.ts";
@@ -53,7 +53,7 @@ export interface ExecuteDelegateResult {
  * @returns Result with content and details
  */
 export async function executeDelegate(
-	params: { specialist: string; task: string; scope?: Scope; packs?: string[]; signal?: AbortSignal },
+	params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal },
 	ctx: any,
 	onUpdate: (update: any) => void,
 ): Promise<ExecuteDelegateResult> {
@@ -71,6 +71,9 @@ export async function executeDelegate(
 	// Normalize specialist name for case-insensitive comparison downstream
 	params = { ...params, specialist: specialist.name };
 
+	// Resolve skills: override replaces defaults (issue #42)
+	const resolvedSkills = getSpecialistSkills(specialist.name, params.skills);
+
 	const { signal } = params;
 
 	// Normalize explicit orchestrator scope (no cache)
@@ -78,8 +81,8 @@ export async function executeDelegate(
 	if (params.scope) {
 		explicitScope = {
 			...params.scope,
-			filesToModify: Array.isArray(params.scope.filesToModify) ? params.scope.filesToModify : [],
-			filesToCreate: Array.isArray(params.scope.filesToCreate) ? params.scope.filesToCreate : [],
+			filesToModify: params.scope.filesToModify ?? [],
+			filesToCreate: params.scope.filesToCreate ?? [],
 			directories: params.scope.directories ?? [],
 			maxFiles: params.scope.maxFiles ?? 10,
 			requiresApprovalBeyondScope: params.scope.requiresApprovalBeyondScope ?? true,
@@ -130,13 +133,9 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	if (scopeToUse !== undefined && scopeToUse !== null) {
 		const gateResult = resolve(params.task, scopeToUse);
 		if (gateResult === "ask") {
-			const resultClarify: ExecuteDelegateResult = {
-				content: [{
-					type: "text" as const,
-					text: `Scope is vague. Orchestrator must clarify scope before delegating. Task: ${params.task}`,
-				}],
-				details: { status: "needs-clarification" },
-			}; return resultClarify;
+			throw new Error(
+				`Scope is vague. Orchestrator must clarify scope before delegating. Task: ${params.task}`
+			);
 		}
 	}
 
@@ -218,7 +217,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	const result = await runSubagent(
 		specialist, params.task, ctx.cwd,
 		parentCtx,
-		signal, wrappedOnUpdate, scopeToUse, orchestratorUi, params.packs,
+		signal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSkills,
 	);
 	const elapsedMs = Date.now() - startTime;
 

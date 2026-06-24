@@ -224,6 +224,7 @@ export async function runSubagent(
 	onUpdate?: (update: any) => void,
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
+	skills?: string[],
 ): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();
@@ -289,6 +290,10 @@ export async function runSubagent(
 					if (scope.boundaries) {
 						prompt += `- Boundaries: ${scope.boundaries}\n`;
 					}
+				}
+				// Inject skill references for SDK skill discovery (issue #41)
+				if (skills && skills.length > 0) {
+					prompt += `\n\n## Available Skills\nLoad these skills on demand via /<skill-name> when relevant to your task:\n${skills.map(s => `- /${s}`).join('\n')}`;
 				}
 				return prompt;
 			},

@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed } from "./subagent-runner.ts";
 import { clearPlanPanel } from "./plan-panel.ts";
@@ -24,6 +25,7 @@ import { ScopeManager } from "./scope-manager.ts";
 import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
 import { buildOrchestratorPrompt } from "./prompt-builder.ts";
 import { registerAllTools } from "./registration-hub.ts";
+import { join } from "node:path";
 
 export { getBashToolReplacement } from "./bash-interceptor.ts";
 
@@ -74,6 +76,22 @@ export default function (pi: ExtensionAPI) {
 			skills: parentSkills,
 			fusionEnabled: fusionConfig.enabled,
 		});
+	});
+
+	// ── Resources: Register ask-matt skills for SDK skill discovery (issue #41) ──
+	pi.on("resources_discover", async (event, ctx) => {
+		// getAgentDir() returns ~/.pi/agent — skills live under that directory
+		const skillsDir = join(getAgentDir(), "skills");
+		// Register the ask-matt skill paths that subagents might need
+		const skillPaths = [
+			join(skillsDir, "implement", "SKILL.md"),
+			join(skillsDir, "tdd", "SKILL.md"),
+			join(skillsDir, "review", "SKILL.md"),
+			join(skillsDir, "diagnosing-bugs", "SKILL.md"),
+			join(skillsDir, "agents-md-writer", "SKILL.md"),
+			join(skillsDir, "domain-modeling", "SKILL.md"),
+		];
+		return { skillPaths };
 	});
 
 	// ── Safety net: Block non-delegation tool calls ──

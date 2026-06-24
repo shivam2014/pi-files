@@ -61,6 +61,8 @@ export interface Specialist {
 	description?: string;
 	/** Tool names granted to this specialist */
 	tools: string[];
+	/** Default skill pack names loaded for this specialist (issue #42) */
+	skills?: string[];
 	/** Optional model override (e.g. "anthropic/claude-sonnet-4") */
 	model?: string;
 	/** Full system prompt used when creating the subagent session */

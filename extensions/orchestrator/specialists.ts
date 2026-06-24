@@ -5,7 +5,12 @@
  */
 
 import { type Specialist } from "./types.ts";
-import { SKILL_PACKS } from "./skill-packs.ts";
+
+// Inlined minimal-action discipline (formerly in skill-packs.ts, now removed per issue #41)
+const MINIMAL_ACTION = `## Minimal action
+Before each tool call, ask: what is the single smallest action that answers THIS step?
+Prefer ONE targeted command over reading many files. "Read issue #3" means run \`gh issue view 3\`, not read 8 source files to "understand context".
+If you have read more than 3 files without narrowing the question, STOP and call ask_orchestrator. Broad exploration is drift, not diligence.`;
 
 /**
  * Activity feed instruction template.
@@ -55,7 +60,10 @@ Example workflow:
 7. advanceStep()
 8. [output your findings]
 
-DO NOT output ## Goal / ## Steps sections. The planSteps() tool replaces them.`;
+DO NOT output ## Goal / ## Steps sections. The planSteps() tool replaces them.
+
+## Goal-achieved early stop
+Once you have achieved the task goal, STOP and report back to the orchestrator. Do NOT execute remaining planned steps just because they were listed. Example: if step 3 found the bug, report the finding — do not proceed to step 4 (fix) or step 5 (test) unless explicitly instructed.`;
 
 /**
  * Full caveman instruction — matches JuliusBrussee/caveman SKILL.md "full" intensity.
@@ -89,6 +97,7 @@ export const SPECIALISTS: Record<string, Specialist> = {
 		name: "scout",
 		description: "Read-only codebase investigator. Uses grep/find/ls tools to locate code, read to examine files. Ideal for architecture discovery, bug investigation, code tracing, and verifying file contents.",
 		tools: ["read", "grep", "find", "ls", "git-read", "gh"],
+		skills: ["diagnosing-bugs"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 IMPORTANT: Before doing any work, you MUST call planSteps() to register your plan. This is REQUIRED for the orchestrator to track progress. Example:
@@ -99,7 +108,7 @@ Then after each step, call advanceStep() to mark it complete.
 
 You are a read-only codebase investigator. You NEVER write or edit files.
 
-${SKILL_PACKS.minimalAction}
+${MINIMAL_ACTION}
 
 Your job:
 - Be fast. Use \`grep\` tool to search code contents, \`find\` tool to locate files by name/pattern, \`ls\` tool to list directories, then \`read\` key sections.
@@ -160,6 +169,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "coder",
 		description: "Implementation specialist with full read/write access. Uses edit/write for file changes, bash for verification. Ideal for implementing features and fixing bugs.",
 		tools: ["read", "bash", "edit", "write", "lint"],
+		skills: ["implement", "tdd"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are an implementation specialist. You write and edit code.
@@ -215,6 +225,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "reviewer",
 		description: "Read-only code reviewer. Checks for bugs, security issues, performance problems, and style violations. Outputs Critical/Warnings/Suggestions.",
 		tools: ["read", "bash", "grep"],
+		skills: ["review"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a code reviewer. You NEVER make changes.
@@ -264,6 +275,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "researcher",
 		description: "Read-only research specialist with web search capabilities. Searches the web, reads docs, configs, and code to answer questions with evidence-based answers and source references.",
 		tools: ["read", "web_search", "fetch_content", "ls", "grep", "find"],
+		skills: ["domain-modeling"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a research specialist with web search capabilities. You NEVER write files.
@@ -329,6 +341,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "writer",
 		description: "Documentation specialist with read/write access. Creates and edits markdown docs, uses ls/find to browse directories. Ideal for READMEs, API docs, and project documentation.",
 		tools: ["read", "write", "edit", "ls", "find"],
+		skills: ["agents-md-writer"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a documentation writer. You create and edit docs.
@@ -379,5 +392,17 @@ export function getSpecialist(name: string): Specialist | undefined {
 
 export function listSpecialists(): string[] {
 	return Object.keys(SPECIALISTS);
+}
+
+/**
+ * Get resolved skill list for a specialist, with optional per-delegation override.
+ * Override replaces defaults (not appends). Pass explicit [] to clear defaults.
+ */
+export function getSpecialistSkills(name: string, override?: string[]): string[] {
+	const spec = SPECIALISTS[name];
+	if (!spec) return override ?? [];
+	// undefined = use defaults; explicit array (even empty) = override
+	if (override !== undefined) return override;
+	return spec.skills ?? [];
 }
 

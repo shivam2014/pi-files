@@ -1,11 +1,16 @@
 {
-  "goal": "investigate",
+  "goal": "Goal",
   "steps": [
     {
-      "label": "Scout: investigate",
+      "label": "Step A",
       "completed": true,
+      "errored": false
+    },
+    {
+      "label": "Step B",
+      "completed": false,
       "errored": false
     }
   ],
-  "startTime": 1781911086794
+  "startTime": 1782182888210
 }

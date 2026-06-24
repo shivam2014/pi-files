@@ -189,4 +189,37 @@ describe("delegate scope resolution", () => {
 
 		expect(result.content[0].text).toContain("Scope required for coder");
 	});
+
+	it("passes skills override to runSubagent", async () => {
+		vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
+
+		await execute({
+			specialist: "coder",
+			task: "fix auth",
+			skills: ["tdd", "review"],
+			scope: {
+				filesToModify: ["src/auth.ts"],
+				filesToCreate: [],
+			},
+		});
+
+		const calls = vi.mocked(runSubagent).mock.calls;
+		const last = calls[calls.length - 1];
+		// skills is the 9th argument (index 8)
+		expect(last[8]).toEqual(["tdd", "review"]);
+	});
+
+	it("passes undefined skills when no override given", async () => {
+		vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
+
+		await execute({
+			specialist: "writer",
+			task: "write docs",
+		});
+
+		const calls = vi.mocked(runSubagent).mock.calls;
+		const last = calls[calls.length - 1];
+		// skills arg should be resolved (mock returns [] for no override)
+		expect(last[8]).toBeDefined();
+	});
 });

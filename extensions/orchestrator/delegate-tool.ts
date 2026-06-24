@@ -32,6 +32,9 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			task: Type.String({
 				description: "Task description for the specialist to execute",
 			}),
+			skills: Type.Optional(Type.Array(Type.String(), {
+				description: "Override the specialist's default skill pack(s) for this delegation (e.g. ['tdd', 'review']). Replaces defaults, does not append.",
+			})),
 			scope: Type.Optional(Type.Object({
 				filesToModify: Type.Array(Type.String(), {
 					description: "Existing files the specialist may modify",
@@ -114,7 +117,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 
 		async execute(toolCallId: string, params: any, signal: any, onUpdate: any, ctx: any) {
 			return executeDelegate(
-				{ specialist: params.specialist, task: params.task, scope: params.scope, signal },
+				{ specialist: params.specialist, task: params.task, skills: params.skills, scope: params.scope, signal },
 				ctx,
 				onUpdate,
 			);

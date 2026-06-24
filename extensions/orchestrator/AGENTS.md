@@ -27,11 +27,11 @@ Test snapshots, not exit codes. Verify actual TUI output, not pass/fail.
 - Spaghetti code — UI, session management, tool registration all mixed
 - Timer leaks from hot reload
 
-**Refactored** (11 files, modular):
+**Refactored** (20+ files, modular):
 - Scope lifecycle: extract → cache → write file → enforce via tool_call interceptor
 - Adaptive gating: block coder without prior scout scope
 - Timer self-check pattern for hot reload safety
-- Clean separation: `scope-guard.ts` is a separate enforcement layer that reads scope via ScopeManager (single data source)
+- Clean separation: `scope-guard.ts` has zero coupling to orchestrator module
 
 ---
 
@@ -40,13 +40,34 @@ Test snapshots, not exit codes. Verify actual TUI output, not pass/fail.
 | File | Role |
 |---|---|
 | `types.ts` | Shared interfaces: Scope, Specialist, OrchestratorStep, ScopeGateMode |
-| `delegate-tool.ts` | `delegate()` tool registration + adaptive gating + scope extraction |
-| `subagent-runner.ts` | Subagent session lifecycle + scope.json write |
-| `specialists.ts` | 5 specialist definitions + ACTIVITY_FEED_INSTRUCTION + TERSE_INSTRUCTION |
-| `plan-panel.ts` | Layer 1: Widget-based plan panel (persistent header) |
+| `index.ts` | Extension entry point — registration, system prompt injection, tool gating |
+| `delegate-tool.ts` | `delegate()` tool registration + scope extraction + adaptive gating |
+| `delegate-controller.ts` | Per-delegation lifecycle: start, finalize, error-step transitions |
+| `delegate-feed-builder.ts` | Live activity feed during subagent run |
+| `delegate-output-formatter.ts` | Post-run output decoration (findings, audit, metrics) |
+| `subagent-runner.ts` | Subagent session lifecycle, env isolation, output truncation |
+| `subagent-event-router.ts` | Routes subagent events to registered UI handlers |
+| `subagent-tool-guard.ts` | Tool allow/deny, planSteps-first ordering, bash routing |
+| `specialists.ts` | 5 specialist definitions + system prompts + ACTIVITY_FEED_INSTRUCTION |
+| `plan-panel.ts` | Layer 1: Widget-based plan panel (persistent header, 9-line budget) |
+| `plan-tool.ts` | `plan()` tool registration |
 | `activity-feed.ts` | Layer 2: Subagent tool block rendering in chat |
-| `scope-guard.ts` | (sibling) Tool_call interceptor, reads `.pi/scope.json`, blocks out-of-scope writes |
-| `commands.ts` | `/orchestrate` and `/specialists` slash commands |
+| `scope-manager.ts` | Scope concept ownership: normalize, write/read/clear `.pi/scope.json` |
+| `scope-guard.ts` | (sibling) Reads `.pi/scope.json`, blocks out-of-scope writes, fail-closed |
+| `ask-resolver.ts` | `createAskOrchestratorResolver` + `resolve()` boolean gate |
+| `bash-interceptor.ts` | Bash-to-tool substitution (cat→read, grep→grep, etc.) |
+| `prompt-builder.ts` | Orchestrator system prompt construction |
+| `registration-hub.ts` | Wires tools, commands, and event handlers into extension API |
+| `fusion-tool.ts` | Multi-model deliberation tool (panel → judge) |
+| `fusion-commands.ts` | `/fusion` slash command handler |
+| `fusion-tui.ts` | TUI model picker for fusion configuration |
+| `commands.ts` | `/orchestrate`, `/specialists`, `/debug-orchestrator` slash commands |
+| `peek-overlay.ts` | Layer 3: Ctrl+Q subagent conversation viewer |
+| `spinner-state.ts` | Shared spinner frame animation state |
+| `ui-utils.ts` | UI rendering helpers |
+| `skill-packs.ts` | Skill pack definitions for specialists |
+| `scout-tools.ts` | Custom read-only tools for the scout specialist |
+| `debug.ts` | Debug/logging utilities |
 
 ---
 
