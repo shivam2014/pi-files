@@ -6,6 +6,15 @@ import { registerDelegateTool } from "./delegate-tool";
 import { runSubagent } from "./subagent-runner";
 import type { Scope } from "./types";
 
+const mockHasActivePlan = vi.hoisted(() => vi.fn());
+const mockSetupPlanPanel = vi.hoisted(() => vi.fn());
+const mockStartDelegationStep = vi.hoisted(() => vi.fn());
+const mockFinalizePlanStep = vi.hoisted(() => vi.fn());
+const mockErrorPlanStep = vi.hoisted(() => vi.fn());
+const mockIncrementDelegationCount = vi.hoisted(() => vi.fn());
+const mockDecrementDelegationCount = vi.hoisted(() => vi.fn());
+const mockClearPlanIfComplete = vi.hoisted(() => vi.fn());
+
 vi.mock("./subagent-runner.ts", async () => {
 	return {
 		runSubagent: vi.fn(),
@@ -15,6 +24,19 @@ vi.mock("./subagent-runner.ts", async () => {
 		isPlanParsed: vi.fn(() => false),
 	};
 });
+
+vi.mock("./plan-panel.ts", () => ({
+	hasActivePlan: (...args: any[]) => mockHasActivePlan(...args),
+	setupPlanPanel: (...args: any[]) => mockSetupPlanPanel(...args),
+	startDelegationStep: (...args: any[]) => mockStartDelegationStep(...args),
+	finalizePlanStep: (...args: any[]) => mockFinalizePlanStep(...args),
+	errorPlanStep: (...args: any[]) => mockErrorPlanStep(...args),
+	incrementDelegationCount: (...args: any[]) => mockIncrementDelegationCount(...args),
+	decrementDelegationCount: (...args: any[]) => mockDecrementDelegationCount(...args),
+	clearPlanIfComplete: (...args: any[]) => mockClearPlanIfComplete(...args),
+}));
+
+mockHasActivePlan.mockReturnValue(true);
 
 function createMockPi() {
 	const tools: any[] = [];

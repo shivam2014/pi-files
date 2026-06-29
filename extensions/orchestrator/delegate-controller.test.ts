@@ -45,7 +45,7 @@ vi.mock("./scope-manager.ts", () => ({
 
 vi.mock("./ask-resolver.ts", () => ({
   createAskOrchestratorResolver: () => vi.fn(),
-  resolve: (...args: any[]) => mockResolve(...args),
+  resolve: (...args: unknown[]) => (mockResolve as (...args: unknown[]) => unknown)(...args),
 }));
 vi.mock("./debug.ts", () => ({ debugLog: vi.fn() }));
 vi.mock("./delegate-output-formatter.ts", () => ({
@@ -69,7 +69,7 @@ function createSubagentResult(overrides: Record<string, unknown> = {}) {
 describe("executeDelegate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockHasActivePlan.mockReturnValue(false);
+    mockHasActivePlan.mockReturnValue(true);
     mockRunSubagent.mockResolvedValue(createSubagentResult());
   });
 
@@ -105,9 +105,12 @@ describe("executeDelegate", () => {
       expect(r.details.turns).toBe(3);
     });
 
-    it("sets up plan panel when no active plan", async () => {
-      await executeDelegate({ specialist: "test", task: "plan" }, createMockCtx(), vi.fn());
-      expect(mockSetupPlanPanel).toHaveBeenCalledOnce();
+    it("returns error when no active plan", async () => {
+      mockHasActivePlan.mockReturnValue(false);
+      const r = await executeDelegate({ specialist: "test", task: "plan" }, createMockCtx(), vi.fn());
+      expect(r.content[0].text).toContain("No active plan");
+      expect(mockSetupPlanPanel).not.toHaveBeenCalled();
+      expect(mockStartDelegationStep).not.toHaveBeenCalled();
     });
 
     it("appends to existing plan", async () => {
@@ -183,7 +186,7 @@ describe("executeDelegate", () => {
       mockResolve.mockReturnValueOnce("ask");
 
       const result = await executeDelegate(
-        { specialist: "writer", task: "write something vague", scope: { filesToModify: ["x.md"], filesToCreate: [] } },
+        { specialist: "writer", task: "write something vague", scope: { filesToModify: ["x.md"], filesToCreate: [], directories: [], maxFiles: 10, requiresApprovalBeyondScope: true, changeType: "multi-file", maxLinesPerFile: 400, gateMode: "strict" } },
         createMockCtx(),
         vi.fn(),
       );

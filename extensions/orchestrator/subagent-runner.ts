@@ -34,6 +34,8 @@ import {
 	toolCallToSubstep,
 	updateActiveSubstepOutput,
 	renderSubstepLines,
+	substepToolDetail,
+	appendWebSearchResults,
 } from "./activity-feed.ts";
 import { compressOutput, inspectFeedState, snapshotFeedRender } from "./activity-feed.ts";
 import { _spinnerIndex, resetSpinner } from "./spinner-state.ts";
@@ -494,7 +496,9 @@ export async function runSubagent(
 				const substepLabel = toolCallToSubstep(event.toolName, event.args);
 				// Auto-create substep if feed is empty (model skipped text output)
 				feed = addSubstep(feed, substepLabel);
-				feed = setToolDetail(feed, substepLabel);
+				// Show multi-item detail (queries[], urls[]) in tool_detail instead of repeating substep label
+				const extraDetail = substepToolDetail(event.toolName, event.args);
+				feed = setToolDetail(feed, extraDetail ?? substepLabel);
 				recordTimelineFrame("tool_start", inspectFeedState(feed), snapshotFeedRender(feed));
 				_lastFeedSnapshot = null;
 				updatePeekFeed(feed);
@@ -572,7 +576,22 @@ export async function runSubagent(
 					}
 				}
 				feed = clearToolDetail(feed);
-				feed = completeLastSubstep(feed, outputPreview, isError);
+				// For web_search, enrich substep label with results count from tool result
+				let completedWithLabel = false;
+				if (event.toolName === "web_search" && !isError) {
+					const totalResults = (event.result as any)?.details?.totalResults;
+					if (typeof totalResults === "number") {
+						const step = feed.steps[feed.currentStep];
+						const sub = step?.substeps?.find(s => !s.completed);
+						if (sub?.label) {
+							feed = completeActiveSubstepWithLabel(feed, appendWebSearchResults(sub.label, totalResults), outputPreview, isError);
+							completedWithLabel = true;
+						}
+					}
+				}
+				if (!completedWithLabel) {
+					feed = completeLastSubstep(feed, outputPreview, isError);
+				}
 				// After edit/write tool completion, add lint indicator substep
 				if (!isError && (event.toolName === "edit" || event.toolName === "write")) {
 					feed = addSubstep(feed, `lint: checking ${(event as any).arguments?.filePath ?? (event as any).arguments?.path ?? "files"}...`);

@@ -151,14 +151,13 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	const stepLabel = `${specName}: ${params.task}`;
 
 	if (!hasActivePlan()) {
-		// Auto-create a 1-step plan from the delegation task (plan tool may have failed to register)
-		const autoGoal = params.task;
-		const autoSteps = [params.specialist + ": " + params.task];
-		setupPlanPanel(autoGoal, autoSteps, ctx);
-		startDelegationStep(stepLabel);
-	} else {
-		startDelegationStep(stepLabel);
+		// LLM must call plan() before delegate() — don't auto-create
+		return {
+			content: [{ type: "text", text: "No active plan. Call plan(goal, steps) first with a goal and step descriptions before delegating work." }],
+			details: {},
+		};
 	}
+	startDelegationStep(stepLabel);
 
 	onUpdate?.({
 		content: [{ type: "text", text: `${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} ${specialist.name}...` }],
