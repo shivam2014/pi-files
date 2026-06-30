@@ -12,6 +12,10 @@ The orchestrator extension has installed skills (`implement`, `tdd`, `review`, `
 
 5. **Missing domain vocabulary.** The `CONTEXT.md` glossary has no terms for skills, skill loading, skill injection, `read_skill`, or the ask-matt routing flow.
 
+6. **Plan lifecycle is brittle.** Once `plan()` is called, the orchestrator cannot add steps mid-plan. When a delegation reveals new work, the orchestrator must abandon the current plan and create a new one. The plan also auto-completes when all steps finish, causing the next `delegate()` to fail with "No active plan" until a new `plan()` is called.
+
+7. **Orchestrator has no active introspection.** The `<available_skills>` XML is passive (model sees it but can't query). There is no `list_skills()` or `list_tools()` tool for the orchestrator to dynamically discover what's available at runtime.
+
 ## Solution
 
 1. **Add `read_skill` tool to orchestrator.** A scoped tool that reads `SKILL.md` files by name (`read_skill("ask-matt")` → `~/.pi/agent/skills/ask-matt/SKILL.md`). Path-sandboxed to the skills directory. This gives the orchestrator skill access without allowing arbitrary file reads (preserving scout's role for codebase investigation).
@@ -48,6 +52,11 @@ The orchestrator extension has installed skills (`implement`, `tdd`, `review`, `
 16. As a developer, I want the `CONTEXT.md` updated with new skill-related domain terms, so that the project vocabulary stays consistent.
 
 17. As an orchestrator, I want to delegate simple read-only tasks to scout without specifying filesToModify/filesToCreate in scope, so that I'm not blocked by scope validation for non-modification tasks.
+
+18. As an orchestrator, I want to add new steps to an active plan mid-execution, so that I can adapt to new findings without restarting the plan.
+19. As an orchestrator, I want the plan to stay active after all steps finish, so that I can delegate additional work without re-declaring the plan.
+20. As an orchestrator, I want to list all available skills at runtime via a tool call, so that I can dynamically discover what skills are available.
+21. As an orchestrator, I want to list all available tools at runtime via a tool call, so that I can decide which tools to use without hardcoding.
 
 ## Implementation Decisions
 
@@ -93,6 +102,20 @@ The orchestrator extension has installed skills (`implement`, `tdd`, `review`, `
 - This causes delegation failures when the orchestrator tries to delegate simple `gh` or `read` tasks — scout refuses with "Scope is vague" because the orchestrator can't provide meaningful file lists for a read-only investigation.
 - The scope validation in `delegate-controller.ts` should distinguish between read-only toolsets (scout/reviewer/researcher) and modification-capable toolsets (coder/writer). For read-only specialists, `filesToModify: []` and `filesToCreate: []` should be the default, not a required explicit field.
 - Resolution path: detect the specialist's tool set. If the specialist lacks `edit`/`write` tools, relax the scope requirement to allow empty file lists.
+
+### Plan lifecycle management
+
+- After all declared steps complete, the plan should remain active (not auto-complete) so the orchestrator can continue delegating.
+- The orchestrator should be able to add new steps to an active plan via a `plan_add_steps` tool or similar mechanism.
+- The plan's progression is driven by the orchestrator's `advanceStep` calls, not by step completion count.
+- Backward compatible: existing plans continue to work, the change is in how completion is detected.
+
+### Orchestrator introspection tools
+
+- Add a `list_skills` tool: returns names and descriptions of all installed skills in `~/.pi/agent/skills/`.
+- Add a `list_tools` tool: returns the orchestrator's currently active tool set.
+- These are complementary to the passive `<available_skills>` XML — the model can query dynamically when needed.
+- Implementation: `list_skills` scans `~/.pi/agent/skills/` for SKILL.md files and parses frontmatter for name + description. `list_tools` returns `setActiveTools` array.
 
 ### Domain glossary (CONTEXT.md)
 
