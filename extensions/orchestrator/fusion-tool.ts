@@ -38,12 +38,20 @@ export async function tryCompleteWithTemperatureFallback(
 
 	try {
 		const result = await complete(model, payload, options);
+
+		// Any error when temperature was set — retry once without it
+		// (Some providers reject non-default temperatures, others wrap the error)
+		if (requestedTemperature != null && result?.stopReason === "error") {
+			debugLog("fusion-tool: retrying without temperature", { model: modelId, error: result.errorMessage });
+			temperaturePreferenceCache.set(modelId, false);
+			return complete(model, payload, { ...options, temperature: undefined });
+		}
+
 		temperaturePreferenceCache.set(modelId, true);
 		return result;
 	} catch (err: any) {
-		const msg = err?.message ?? String(err);
-		if (requestedTemperature != null && msg.toLowerCase().includes("temperature")) {
-			debugLog("fusion-tool: retrying without temperature", { model: modelId, error: msg });
+		if (requestedTemperature != null) {
+			debugLog("fusion-tool: retrying without temperature", { model: modelId, error: err?.message ?? String(err) });
 			temperaturePreferenceCache.set(modelId, false);
 			return complete(model, payload, { ...options, temperature: undefined });
 		}
@@ -348,8 +356,8 @@ async function runPanelModel(
 		if (loopCount > maxLoops) {
 			const currentText = assistantTextParts.join("\n");
 			debugLog("fusion-tool: panel model exceeded max loops", { model: modelId, loops: loopCount, textLength: currentText.length });
-			if (currentText) {
-				return { model: modelId, content: currentText, reports, error: "Max iterations exceeded" };
+			if (currentText || reports.length > 0) {
+				return { model: modelId, content: currentText || reports.join("\n"), reports: [...reports, "Error: Max iterations exceeded"] };
 			}
 			return { model: modelId, error: "Max iterations exceeded" };
 		}
@@ -532,14 +540,24 @@ IMPORTANT: For each distinct finding, insight, or recommendation you identify, y
 			});
 
 			// Run panel with concurrency limit of 2
-			const panelResults = await mapWithConcurrencyLimit(panelModels, 2, (model: any) =>
-				runPanelModel(model, systemPrompt, userPrompt, {
+			const panelResults = await mapWithConcurrencyLimit(panelModels, 2, async (model: any) => {
+				onUpdate?.({
+					content: [{ type: "text", text: `  ⏳ Panel: ${model.id}...` }],
+					details: { phase: "panel_running", model: model.id },
+				});
+				const result = await runPanelModel(model, systemPrompt, userPrompt, {
 					maxTokens: config.maxTokensPerPanel,
 					temperature: config.temperature,
 				}, registry, signal, onUpdate,
 					ctx.sessionManager.getSessionId(),
-				)
-			);
+				);
+				const statusIcon = result.error ? "✗" : "✓";
+				onUpdate?.({
+					content: [{ type: "text", text: `  ${statusIcon} Panel: ${model.id}${result.error ? ` — ${result.error}` : ""}` }],
+					details: { phase: "panel_complete", model: model.id, status: result.error ? "error" : "success" },
+				});
+				return result;
+			});
 
 			const succeeded = panelResults.filter((r: any) => r.content && !r.error);
 			const failed = panelResults.filter((r: any) => r.error || !r.content);
@@ -548,11 +566,6 @@ IMPORTANT: For each distinct finding, insight, or recommendation you identify, y
 				debugLog("fusion-tool: all panel models failed", { count: panelResults.length, errors: failed.map((r: any) => ({ model: r.model, error: r.error })) });
 				return formatPanelResults([], failed) as any;
 			}
-
-			onUpdate?.({
-				content: [{ type: "text", text: `⚡ Fusion: judge (${judgeModel.id})...` }],
-				details: { phase: "judge" },
-			});
 
 			// Judge
 			const judgeSystemPrompt = `You are a planning judge. Analyze the panel responses below and produce a structured JSON analysis.
@@ -586,6 +599,10 @@ Return valid JSON ONLY with these fields:
 			let judgeError: string | undefined;
 			let lastParseError = "";
 			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				onUpdate?.({
+					content: [{ type: "text", text: `  ⚡ Judge (${judgeModel.id}) — attempt ${attempt}/3...` }],
+					details: { phase: "judge_attempt", model: judgeModel.id, attempt, maxAttempts: 3 },
+				});
 				debugLog("fusion-tool: judge attempt", { model: judgeModel.id, attempt, maxAttempts });
 				let judgeResponse;
 				try {
@@ -644,6 +661,10 @@ Return valid JSON ONLY with these fields:
 					recommendationsCount: analysis.recommendations.length,
 				});
 				const formatted = formatFusionResult(analysis, succeeded, failed, panelModels, judgeModel);
+				onUpdate?.({
+					content: [{ type: "text", text: `  ✓ Analysis complete` }],
+					details: { phase: "complete" },
+				});
 				return {
 					content: [{ type: "text" as const, text: formatted }],
 					details: {

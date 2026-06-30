@@ -88,6 +88,19 @@ function judgeSuccess(): any {
 	};
 }
 
+function panelToolCalls(findings: string[]): any {
+	return {
+		role: "assistant",
+		content: findings.map((finding, i) => ({
+			type: "toolCall" as const,
+			id: `call-${i}`,
+			name: "reportFinding" as const,
+			arguments: { finding },
+		})),
+		stopReason: "end",
+	};
+}
+
 describe("extractText", () => {
 	it("returns text from text-only response", () => {
 		const response = {
@@ -267,6 +280,41 @@ describe("fusion error reporting", () => {
 		expect(result.content[0].text).toContain("502 Bad Gateway");
 		expect(result.details.responses).toHaveLength(0);
 	});
+
+	it("reports max iterations exceeded when panel model returns only tool calls", async () => {
+		const models = [
+			{ id: "loop-model", provider: "test" },
+			{ id: "a", provider: "test" },
+			{ id: "judge", provider: "test" },
+		];
+		const { ctx } = register(models, ["test/loop-model", "test/a"], "test/judge");
+
+		// loop-model always returns tool calls — never text
+		vi.mocked(complete).mockImplementation(async (model: any) => {
+			if (model.id === "loop-model") {
+				return panelToolCalls(["finding one", "finding two"]);
+			}
+			if (model.id === "judge") return judgeSuccess();
+			return panelSuccess("good analysis from model a");
+		});
+
+		const result = await tool.execute(
+			"call-1",
+			{ context: "ctx", task: "task" },
+			undefined,
+			() => {},
+			ctx
+		);
+
+		expect(result.details.status).toBe("ok");
+		// Loop-model should be listed as failed with "Max iterations exceeded"
+		expect(result.content[0].text).toContain("loop-model");
+		expect(result.content[0].text).toContain("Max iterations exceeded");
+		// BUG: loop-model's findings should be present but are lost
+		// After fix, runPanelModel should return reports alongside the error
+		expect(result.content[0].text).toContain("finding one");
+		expect(result.content[0].text).toContain("finding two");
+	});
 });
 
 describe("tryCompleteWithTemperatureFallback", () => {
@@ -305,7 +353,7 @@ describe("tryCompleteWithTemperatureFallback", () => {
 		vi.mocked(complete).mockRejectedValue(new Error("rate limit") as never);
 
 		await expect(tryCompleteWithTemperatureFallback(model, payload, { temperature: 0.5 })).rejects.toThrow("rate limit");
-		expect(complete).toHaveBeenCalledTimes(1);
+		expect(complete).toHaveBeenCalledTimes(2);
 	});
 
 	it("uses cached preference to skip temperature on subsequent calls", async () => {
@@ -321,6 +369,73 @@ describe("tryCompleteWithTemperatureFallback", () => {
 		expect(complete).toHaveBeenCalledTimes(3);
 		expect(complete).toHaveBeenNthCalledWith(2, model, payload, expect.objectContaining({ temperature: undefined }));
 		expect(complete).toHaveBeenNthCalledWith(3, model, payload, expect.objectContaining({ temperature: undefined }));
+	});
+
+	it("retries without temperature when the API returns a temperature error message (not thrown)", async () => {
+		const model = { id: "temp-model", provider: "test" };
+		const payload = { systemPrompt: "sys", messages: [] };
+
+		vi.mocked(complete)
+			.mockResolvedValueOnce(panelError("invalid temperature: only 1 is allowed"))
+			.mockResolvedValueOnce(panelSuccess("retried"));
+
+		const result = await tryCompleteWithTemperatureFallback(model, payload, {
+			temperature: 0.5,
+		});
+
+		expect(extractText(result)).toBe("retried");
+		expect(complete).toHaveBeenCalledTimes(2);
+		expect(complete).toHaveBeenNthCalledWith(
+			1, model, payload,
+			expect.objectContaining({ temperature: 0.5 })
+		);
+		expect(complete).toHaveBeenNthCalledWith(
+			2, model, payload,
+			expect.objectContaining({ temperature: undefined })
+		);
+	});
+
+	it("does not retry on non-temperature API errors (returned, not thrown)", async () => {
+		const model = { id: "temp-model", provider: "test" };
+		const payload = { systemPrompt: "sys", messages: [] };
+
+		vi.mocked(complete).mockResolvedValue(
+			panelError("rate limit exceeded")
+		);
+
+		const result = await tryCompleteWithTemperatureFallback(model, payload, {
+			temperature: 0.5,
+		});
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("rate limit exceeded");
+		expect(complete).toHaveBeenCalledTimes(2);
+	});
+
+	it("retries without temperature on any API error (not just temperature-keyword errors)", async () => {
+		const model = { id: "temp-model", provider: "test" };
+		const payload = { systemPrompt: "sys", messages: [] };
+
+		vi.mocked(complete)
+			.mockResolvedValueOnce(
+				panelError("502 upstream unknown returned 502: all route targets failed")
+			)
+			.mockResolvedValueOnce(panelSuccess("retried"));
+
+		const result = await tryCompleteWithTemperatureFallback(model, payload, {
+			temperature: 0.5,
+		});
+
+		expect(extractText(result)).toBe("retried");
+		expect(complete).toHaveBeenCalledTimes(2);
+		expect(complete).toHaveBeenNthCalledWith(
+			1, model, payload,
+			expect.objectContaining({ temperature: 0.5 })
+		);
+		expect(complete).toHaveBeenNthCalledWith(
+			2, model, payload,
+			expect.objectContaining({ temperature: undefined })
+		);
 	});
 });
 
