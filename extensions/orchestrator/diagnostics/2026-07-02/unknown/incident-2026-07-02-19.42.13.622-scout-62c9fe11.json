@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-02T19:42:13.622Z",
+  "specialist": "scout",
+  "task": "Read the format files in /Users/shivam94/.pi/agent/skills/domain-modeling/:\n1. CONTEXT-FORMAT.md — report the template/format for glossary entries\n2. ADR-FORMAT.md — report the template/format for ADRs\n\nGive me the exact formats to follow.",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 773,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-02T19:42:13.622Z-scout-273f04c2",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "deepseek-v4-flash-2",
+  "stopReason": "error",
+  "errorMessage": "400: {\"code\":\"invalid_request_error\",\"message\":\"Error from provider (Console Go): Upstream request failed\",\"param\":null,\"type\":\"invalid_request_error\"}"
+}

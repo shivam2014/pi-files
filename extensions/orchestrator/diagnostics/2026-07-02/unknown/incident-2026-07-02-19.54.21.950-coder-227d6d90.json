@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-02T19:54:21.950Z",
+  "specialist": "coder",
+  "task": "Create GitHub issue on shivam2014/pi-files with label \"ready-for-agent\".\n\nRun this exact command:\n\n```\ngh issue create \\\n  --repo shivam2014/pi-files \\\n  --label \"ready-for-agent\" \\\n  --title \"Slice A: Fusion foundation modules (utils, config, judge, format, models)\" \\\n  --body '## Parent\n\nhttps://github.com/shivam2014/pi-files/issues/81\n\n## What to build\n\nExtract 5 foundation modules from fusion-tool.ts, each getting its own file and test suite:\n\n- **fusion-utils.ts** — mapWithConcurrencyLimit, extractText (shared helpers)\n- **fusion-config.ts** — loadFusionConfig, saveFusionConfig, sanitizeFusionConfig, getDefaultReasoningEffort\n- **fusion-judge.ts** — parseJudgeAnalysis, extractJsonObject, type guards (isStringArray, isContradictions, isUniqueInsights)\n- **fusion-format.ts** — formatFusionResult, formatPanelResults\n- **fusion-models.ts** — resolveModels, resolveOneModel, autoDiversePanel\n\nEach module is extracted as pure functions with no side effects. The existing fusion-tool.ts imports from the new modules via re-exports — no behavioral changes.\n\nAll existing tests must pass after each extraction.\n\n## Acceptance criteria\n\n- [ ] fusion-utils.ts created with mapWithConcurrencyLimit and extractText\n- [ ] fusion-utils.test.ts created with unit tests\n- [ ] fusion-config.ts created with all 4 config functions\n- [ ] fusion-config.test.ts created with unit tests (temp files for load/save)\n- [ ] fusion-judge.ts created with parseJudgeAnalysis and type guards\n- [ ] fusion-judge.test.ts created with sample LLM output parsing tests\n- [ ] fusion-format.ts created with formatFusionResult and formatPanelResults\n- [ ] fusion-format.test.ts created with structured data formatting tests\n- [ ] fusion-models.ts created with 3 model resolution functions\n- [ ] fusion-models.test.ts created with mock ModelRegistry tests\n- [ ] All existing tests in the repo still pass\n- [ ] No behavioral changes to any public export\n\n## Blocked by\n\nNone — can start immediately\n\n## Notes\n\n- Config loading must respect .pi/scope.json (ADR-0001) and fail-closed on malformed config (ADR-0002)\n- Type guards in fusion-judge.ts should be exported for reuse by other modules if needed\n- fusion-utils.ts must not import from any other new module (it'\\''s the leaf dependency)'\n```\n\nReport the issue URL returned.",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 812,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-02T19:54:21.950Z-coder-6b47c2be",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "deepseek-v4-flash-2",
+  "stopReason": "error",
+  "errorMessage": "400: {\"code\":\"invalid_request_error\",\"message\":\"Error from provider (Console Go): Upstream request failed\",\"param\":null,\"type\":\"invalid_request_error\"}"
+}

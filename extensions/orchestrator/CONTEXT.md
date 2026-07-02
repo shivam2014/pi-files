@@ -24,6 +24,22 @@ Module that runs after the subagent returns and only handles final output decora
 
 _Avoid:_ output parser, result renderer, response formatter
 
+**FusionConfig**:
+Configuration management for the Fusion tool: loads/saves/validates fusion settings (panel model IDs, judge model ID, temperature, reasoning effort) from disk. Fail-closed on malformed config per ADR-0002.
+_Avoid_: Fusion settings, fusion options
+
+**FusionOrchestrate**:
+Coordinates the fusion pipeline: runs panel models → judges analysis → formats output. Owns the FusionRunContext for a single invocation. Keeps the registration layer (fusion-tool.ts) thin by separating orchestration from tool registration.
+_Avoid_: Fusion pipeline, fusion orchestrator
+
+**FusionRunContext**:
+Per-execution context bag for a single fusion tool invocation. Holds temperature fallback cache, retry counts, and timing metadata. Eliminates module-level mutable state and guarantees cache safety (no state leaks across delegations).
+_Avoid_: FusionContext, run state
+
+**FusionUtils**:
+Shared utility helpers for the Fusion subsystem: extractText (extracts text from SDK responses), mapWithConcurrencyLimit (parallel execution with concurrency cap). Implementation module, not a domain concept.
+_Avoid_: (none)
+
 ## PlanPanel
 
 UI component for the orchestrator-level plan widget. Encapsulates plan state, widget handle, session id, and timers in a class or context-bound object with explicit lifecycle methods. One instance per orchestrator session, not per process; multiple pi instances may run concurrently as orchestrators, so PlanPanel must be scoped to a single orchestrator session and not shared globally.

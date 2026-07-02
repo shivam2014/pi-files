@@ -137,6 +137,16 @@ export interface ReadSkillParams {
 	name: string;
 }
 
+/** Context for delegate-controller — thin typed wrapper over raw ExtensionContext */
+export interface DelegateControllerContext {
+	cwd: string;
+	sessionId?: string;
+	modelRegistry?: any;
+	model?: any;
+	ui?: any;  // ExtensionContext.ui
+	notify?: (msg: string, level: string) => void;
+}
+
 /** Diagnostic metrics for a subagent session (issue #68) */
 export interface SubagentDiagnostic {
 	schemaVersion: number;

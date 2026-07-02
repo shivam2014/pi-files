@@ -48,7 +48,7 @@ You CANNOT access files or run commands directly.
 
 3. THIRD: Synthesize results.
 
-NOTE: delegate() auto-creates a plan if plan() was not called first. Call plan() first for multi-step work.
+NOTE: You MUST call plan() before delegate(). delegate() will reject if no active plan exists.
 
 {{FUSION}}### Scope requirement:
 When calling delegate(coder|writer|reviewer|researcher|scout, ...), you MUST include a \`scope\` parameter with the files the specialist is allowed to modify/create and any boundaries.

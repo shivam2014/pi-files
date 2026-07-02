@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractText, getDefaultReasoningEffort, registerFusionTool, sanitizeFusionConfig, tryCompleteWithTemperatureFallback, _resetTemperatureCacheForTests, _resetFusionRegistrationsForTests } from "./fusion-tool";
+import { getDefaultReasoningEffort, registerFusionTool, sanitizeFusionConfig, tryCompleteWithTemperatureFallback, _resetTemperatureCacheForTests, _resetFusionRegistrationsForTests } from "./fusion-tool";
+import { extractText } from "./fusion-utils.ts";
 import { complete } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
