@@ -111,13 +111,13 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	const specName = specialist.name.charAt(0).toUpperCase() + specialist.name.slice(1);
 	const stepLabel = `${specName}: ${params.task}`;
 
-	if (!hasActivePlan()) {
+	if (!hasActivePlan(ctx)) {
 		return {
 			content: [{ type: "text", text: "No active plan. Call plan(goal, steps) first with a goal and step descriptions before delegating work." }],
 			details: {},
 		};
 	}
-	startDelegationStep(stepLabel);
+	startDelegationStep(stepLabel, ctx);
 
 	onUpdate?.({
 		content: [{ type: "text", text: `${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} ${specialist.name}...` }],
@@ -133,7 +133,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		}
 	} catch {}
 
-	incrementDelegationCount();
+	incrementDelegationCount(ctx);
 
 	// ── Metrics tracking ──
 	const metrics: DelegationMetrics = {
@@ -206,7 +206,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	if (diagnostic) {
 		// Notify user via SDK
 		try {
-			ctx.ui.notify(
+			ctx.ui?.notify(
 				`⚠ Diagnostic: ${diagnostic.specialist} failed — ${diagnostic.errorMessage || `0 tool calls in ${diagnostic.turns} turn(s)`}`,
 				"warning"
 			);
@@ -224,10 +224,10 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		// Inline display — add substep to current plan step
 		try {
 			const label = `⚠ Diagnostic: ${diagnostic.specialist} ${diagnostic.turns}t ${diagnostic.toolCalls}tc`;
-			updatePlanStepDetail([label]);
+			updatePlanStepDetail([label], ctx);
 			recordTimelineFrame('subagent_diagnostic_captured', {
 				diagnosticId: `${diagnostic.timestamp}-${diagnostic.specialist}-${diagnostic.task.length.toString()}`,
-			});
+			}, undefined, ctx);
 		} catch (e) {
 			debugLog('[diagnostic] display failed', e);
 		}
@@ -267,7 +267,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 			finalizePlanStep(ctx);
 		}
 	} finally {
-		decrementDelegationCount();
+		decrementDelegationCount(ctx);
 		clearPlanIfComplete(ctx);
 		hidePeek();
 		unregisterPeekFeed();

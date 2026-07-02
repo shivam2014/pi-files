@@ -228,6 +228,7 @@ export class PlanPanel {
 
 	clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 		if (this._activeDelegations > 0 && this.planState?.sessionId === this._sessionId) return;
+		const sessionId = this._sessionId;
 		this.dumpTimelineToDisk();
 		this._sessionId = null;
 		this.stopPlanTimer();
@@ -235,6 +236,7 @@ export class PlanPanel {
 		this._lastWidgetContent = null;
 		if (this._setWidget) this._setWidget(WIDGET_KEY, undefined);
 		this._setWidget = null;
+		if (sessionId) _removeSession(sessionId);
 	}
 
 	pushPlanStep(label: string): void {
@@ -423,20 +425,20 @@ export const completePlanStep = (c: any) => _resolveCtx(c)?.completePlanStep(c);
 export const finalizePlanStep = (c: any) => _resolveCtx(c)?.finalizePlanStep(c);
 export const clearPlanIfComplete = (c: any) => _resolveCtx(c)?.clearPlanIfComplete(c);
 export const errorPlanStep = (c: any, a?: boolean, e?: string) => _resolveCtx(c)?.errorPlanStep(c, a, e);
-export const incrementDelegationCount = () => _currentInstance?.incrementDelegationCount();
-export const decrementDelegationCount = () => _currentInstance?.decrementDelegationCount();
-export const summarizeGoal = (g: string) => _currentInstance?.summarizeGoal(g);
-export const generatePlanFromPrompt = (p: string) => _currentInstance?.generatePlanFromPrompt(p);
-export const inspectPlanState = () => _currentInstance?.inspectPlanState();
-export const snapshotPlanRender = () => _currentInstance?.snapshotPlanRender();
-export const recordTimelineFrame = (e: string, f?: Record<string, unknown> | null, r?: string) => _currentInstance?.recordTimelineFrame(e, f, r);
-export const getTimeline = () => _currentInstance?.getTimeline();
-export const getTimelineDiff = () => _currentInstance?.getTimelineDiff();
-export const hasActivePlan = () => _currentInstance?.hasActivePlan() ?? false;
-export const pushPlanStep = (l: string) => _currentInstance?.pushPlanStep(l);
-export const startDelegationStep = (l: string) => _currentInstance?.startDelegationStep(l);
-export const updatePlanStepDetail = (d: string | string[]) => _currentInstance?.updatePlanStepDetail(d);
-export const addSteps = (s: string[]) => _currentInstance?.addSteps(s);
-export const retryPlanStep = () => _currentInstance?.retryPlanStep();
-export const renderPlanStatusText = () => _currentInstance?.renderPlanStatusText();
-export const dumpTimelineToDisk = () => _currentInstance?.dumpTimelineToDisk();
+export const incrementDelegationCount = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.incrementDelegationCount(); };
+export const decrementDelegationCount = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.decrementDelegationCount(); };
+export const summarizeGoal = (g: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.summarizeGoal(g); };
+export const generatePlanFromPrompt = (p: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.generatePlanFromPrompt(p); };
+export const inspectPlanState = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.inspectPlanState(); };
+export const snapshotPlanRender = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.snapshotPlanRender(); };
+export const recordTimelineFrame = (e: string, f?: Record<string, unknown> | null, r?: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.recordTimelineFrame(e, f, r); };
+export const getTimeline = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.getTimeline(); };
+export const getTimelineDiff = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.getTimelineDiff(); };
+export const hasActivePlan = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.hasActivePlan() ?? false; };
+export const pushPlanStep = (l: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.pushPlanStep(l); };
+export const startDelegationStep = (l: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.startDelegationStep(l); };
+export const updatePlanStepDetail = (d: string | string[], ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.updatePlanStepDetail(d); };
+export const addSteps = (s: string[], ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.addSteps(s); };
+export const retryPlanStep = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.retryPlanStep(); };
+export const renderPlanStatusText = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.renderPlanStatusText(); };
+export const dumpTimelineToDisk = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.dumpTimelineToDisk(); };
