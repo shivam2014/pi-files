@@ -19,11 +19,22 @@
  */
 
 import { existsSync } from "node:fs";
-import { join, isAbsolute, resolve, dirname, parse } from "node:path";
+import { join, isAbsolute, resolve, dirname, parse, delimiter } from "node:path";
 import { homedir, platform } from "node:os";
 import { spawn, spawnSync } from "node:child_process";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+
+/** Build shell environment with SDK bin dir prepended to PATH (mirrors SDK's internal getShellEnv) */
+function getShellEnv(): NodeJS.ProcessEnv {
+    const binDir = join(getAgentDir(), "bin");
+    const pathKey = Object.keys(process.env).find(k => k.toLowerCase() === "path") ?? "PATH";
+    const currentPath = process.env[pathKey] ?? "";
+    const pathEntries = currentPath.split(delimiter).filter(Boolean);
+    const hasBinDir = pathEntries.includes(binDir);
+    const updatedPath = hasBinDir ? currentPath : [binDir, currentPath].filter(Boolean).join(delimiter);
+    return { ...process.env, [pathKey]: updatedPath };
+}
 
 // ── Path helpers ──────────────────────────────────────────────────────
 
@@ -300,8 +311,9 @@ function detectTool(filePath: string, cwd: string): LintTool | null {
 
 function runTool(tool: LintTool, filePath: string): Promise<LintResult> {
 	return new Promise((resolve) => {
-		const child = spawn(tool.tool, tool.args, {
+		const child = spawn("/bin/bash", ["-c", 'exec "$@"', "bash", tool.tool, ...tool.args], {
 			cwd: tool.cwd || process.cwd(),
+			env: getShellEnv(),
 			stdio: ["ignore", "pipe", "pipe"],
 			timeout: 10_000,
 		});
@@ -532,11 +544,11 @@ export default function (pi: ExtensionAPI) {
 
 			return new Promise((resolve) => {
 				const proc = spawn(
-					"npx",
-					["tsc", "--noEmit", "--pretty", "false"],
+					"/bin/bash",
+					["-c", 'exec "$@"', "bash", "npx", "tsc", "--noEmit", "--pretty", "false"],
 					{
 						cwd: ctx.cwd,
-						shell: false,
+						env: getShellEnv(),
 						stdio: ["ignore", "pipe", "pipe"],
 					},
 				);
