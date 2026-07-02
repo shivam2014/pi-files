@@ -295,7 +295,7 @@ export class PlanPanel {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
 		const idx = this.planState.steps.findIndex((s) => s.active);
 		if (idx >= 0) {
-			this.planState.steps[idx].errored = !aborted;
+			this.planState.steps[idx].errored = true;
 			this.planState.steps[idx].errorMessage = errorMessage;
 			this.planState.steps[idx].active = false;
 			this.planState.steps[idx].detail = undefined;
