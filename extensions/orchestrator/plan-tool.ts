@@ -6,7 +6,7 @@ import { setupPlanPanel, summarizeGoal, addSteps } from "./plan-panel.ts";
 function deriveGoal(goal: string | undefined, steps: string[] | undefined): string {
     if (goal?.trim()) return goal.trim();
     const stepsText = steps?.filter(Boolean).join(" ").trim();
-    if (stepsText) return summarizeGoal(stepsText);
+    if (stepsText) return summarizeGoal(stepsText) ?? "Untitled plan";
     return "Untitled plan";
 }
 

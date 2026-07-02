@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDefaultReasoningEffort, registerFusionTool, sanitizeFusionConfig, tryCompleteWithTemperatureFallback, _resetTemperatureCacheForTests, _resetFusionRegistrationsForTests } from "./fusion-tool";
 import { extractText } from "./fusion-utils.ts";
-import { complete } from "@earendil-works/pi-ai";
+import { complete } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
-vi.mock("@earendil-works/pi-ai", () => {
+vi.mock("@earendil-works/pi-ai/compat", () => {
 	return {
 		complete: vi.fn(),
 	};

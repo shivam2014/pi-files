@@ -206,7 +206,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	if (diagnostic) {
 		// Notify user via SDK
 		try {
-			ctx.ui?.notify(
+			ctx.ui?.notify?.(
 				`⚠ Diagnostic: ${diagnostic.specialist} failed — ${diagnostic.errorMessage || `0 tool calls in ${diagnostic.turns} turn(s)`}`,
 				"warning"
 			);

@@ -173,7 +173,7 @@ export class PlanPanel {
 		}, 1000);
 	}
 
-	private stopPlanTimer(): void {
+	stopPlanTimer(): void {
 		if (this._planTimer !== null) { clearInterval(this._planTimer); this._planTimer = null; }
 		if (this._spinnerTimer !== null) { clearInterval(this._spinnerTimer); this._spinnerTimer = null; }
 	}

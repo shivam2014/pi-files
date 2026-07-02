@@ -67,9 +67,9 @@ export function registerCommands(pi: ExtensionAPI): void {
 			const text = snapshotPlanRender();
 			try {
 				const { writeFileSync } = await import("node:fs");
-				writeFileSync("/tmp/orchestrator-render.txt", text, "utf-8");
+				writeFileSync("/tmp/orchestrator-render.txt", text ?? "", "utf-8");
 			} catch (e) { console.error("[commands] write failed:", e); }
-			ctx.ui.notify(`Render captured → /tmp/orchestrator-render.txt (${text.length} chars)`, "info");
+			ctx.ui.notify(`Render captured → /tmp/orchestrator-render.txt (${text?.length ?? 0} chars)`, "info");
 		},
 	});
 
@@ -83,7 +83,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 				const { writeFileSync } = await import("node:fs");
 				writeFileSync("/tmp/orchestrator-timeline.json", json, "utf-8");
 			} catch (e) { console.error("[commands] write failed:", e); }
-			ctx.ui.notify(`Timeline: ${tl.length} frames → /tmp/orchestrator-timeline.json`, "info");
+			ctx.ui.notify(`Timeline: ${tl?.length ?? 0} frames → /tmp/orchestrator-timeline.json`, "info");
 		},
 	});
 
@@ -97,7 +97,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 				const { writeFileSync } = await import("node:fs");
 				writeFileSync("/tmp/orchestrator-timeline-diff.json", json, "utf-8");
 			} catch (e) { console.error("[commands] write failed:", e); }
-			ctx.ui.notify(`Timeline diff: ${diff.count} transitions → /tmp/orchestrator-timeline-diff.json`, "info");
+			ctx.ui.notify(`Timeline diff: ${diff?.count ?? 0} transitions → /tmp/orchestrator-timeline-diff.json`, "info");
 		},
 	});
 
