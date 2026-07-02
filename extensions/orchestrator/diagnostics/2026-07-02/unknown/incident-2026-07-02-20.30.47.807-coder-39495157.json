@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-02T20:30:47.807Z",
+  "specialist": "coder",
+  "task": "Add tests for `loadFusionConfig` and `saveFusionConfig` at the end of the existing test file `/Users/shivam94/.pi/agent/extensions/orchestrator/fusion-config.test.ts`.\n\nRead the file first, then append these test blocks at the end (before the closing of the file):\n\n```typescript\nimport { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { tmpdir } from \"node:os\";\n\ndescribe(\"loadFusionConfig\", () => {\n\tlet tmpDir: string;\n\n\tbeforeEach(() => {\n\t\ttmpDir = mkdtempSync(join(tmpdir(), \"fusion-config-test-\"));\n\t\tmkdirSync(join(tmpDir, \".pi\"), { recursive: true });\n\t});\n\n\tafterEach(() => {\n\t\trmSync(tmpDir, { recursive: true, force: true });\n\t});\n\n\tit(\"returns defaults when no config file exists\", () => {\n\t\tconst config = loadFusionConfig(tmpDir);\n\t\texpect(config.enabled).toBe(true);\n\t\texpect(config.panel).toEqual([]);\n\t\texpect(config.judge).toBe(\"\");\n\t\texpect(config.maxPanelModels).toBe(3);\n\t\texpect(config.temperature).toBe(0.3);\n\t\texpect(config.maxTokensPerPanel).toBe(2048);\n\t\texpect(config.maxTokensForJudge).toBe(4096);\n\t});\n\n\tit(\"loads config from project .pi/fusion.json\", () => {\n\t\tconst projectConfig = { enabled: false, temperature: 0.7 };\n\t\twriteFileSync(join(tmpDir, \".pi\", \"fusion.json\"), JSON.stringify(projectConfig));\n\t\tconst config = loadFusionConfig(tmpDir);\n\t\texpect(config.enabled).toBe(false);\n\t\texpect(config.temperature).toBe(0.7);\n\t});\n\n\tit(\"sanitizes config when availableModelIds provided\", () => {\n\t\tconst projectConfig = { panel: [\"valid/gpt4\", \"stale/model\"] };\n\t\twriteFileSync(join(tmpDir, \".pi\", \"fusion.json\"), JSON.stringify(projectConfig));\n\t\tconst config = loadFusionConfig(tmpDir, [\"valid/gpt4\"]);\n\t\texpect(config.panel).toEqual([\"valid/gpt4\"]);\n\t});\n});\n\ndescribe(\"saveFusionConfig\", () => {\n\tlet tmpDir: string;\n\n\tbeforeEach(() => {\n\t\ttmpDir = mkdtempSync(join(tmpdir(), \"fusion-config-test-\"));\n\t\tmkdirSync(join(tmpDir, \".pi\"), { recursive: true });\n\t});\n\n\tafterEach(() => {\n\t\trmSync(tmpDir, { recursive: true, force: true });\n\t});\n\n\tit(\"writes config to project .pi/fusion.json\", () => {\n\t\tsaveFusionConfig(tmpDir, { temperature: 0.5 });\n\t\tconst saved = JSON.parse(readFileSync(join(tmpDir, \".pi\", \"fusion.json\"), \"utf-8\"));\n\t\texpect(saved.temperature).toBe(0.5);\n\t});\n\n\tit(\"merges with existing config\", () => {\n\t\twriteFileSync(join(tmpDir, \".pi\", \"fusion.json\"), JSON.stringify({ enabled: false, temperature: 0.3 }));\n\t\tsaveFusionConfig(tmpDir, { temperature: 0.9 });\n\t\tconst saved = JSON.parse(readFileSync(join(tmpDir, \".pi\", \"fusion.json\"), \"utf-8\"));\n\t\texpect(saved.enabled).toBe(false);\n\t\texpect(saved.temperature).toBe(0.9);\n\t});\n\n\tit(\"creates .pi directory if missing\", () => {\n\t\trmSync(join(tmpDir, \".pi\"), { recursive: true, force: true });\n\t\tsaveFusionConfig(tmpDir, { enabled: true });\n\t\texpect(existsSync(join(tmpDir, \".pi\", \"fusion.json\"))).toBe(true);\n\t});\n});\n```\n\nAlso add `import { loadFusionConfig, saveFusionConfig } from \"./fusion-config.ts\";` at the top of the file — it likely only imports `getDefaultReasoningEffort` and `sanitizeFusionConfig` currently.\n\nAfter editing, run: `cd /Users/shivam94/.pi/agent/extensions/orchestrator && npx vitest run fusion-config.test.ts --reporter=verbose`\n\nReport the test results.",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 875,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-02T20:30:47.807Z-coder-00e58544",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "deepseek-v4-flash-2",
+  "stopReason": "error",
+  "errorMessage": "400: {\"code\":\"invalid_request_error\",\"message\":\"Error from provider (Console Go): Upstream request failed\",\"param\":null,\"type\":\"invalid_request_error\"}"
+}

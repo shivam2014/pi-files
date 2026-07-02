@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { getDefaultReasoningEffort, sanitizeFusionConfig } from "./fusion-config.ts";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { getDefaultReasoningEffort, sanitizeFusionConfig, loadFusionConfig, saveFusionConfig } from "./fusion-config.ts";
 
 describe("getDefaultReasoningEffort", () => {
 	it("returns medium for null model", () => {
@@ -72,5 +75,77 @@ describe("sanitizeFusionConfig", () => {
 		const { config, removed } = sanitizeFusionConfig(input, availableModels);
 		expect(config).toMatchObject(input);
 		expect(removed).toEqual([]);
+	});
+});
+
+describe("loadFusionConfig", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "fusion-config-test-"));
+		mkdirSync(join(tmpDir, ".pi"), { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("returns defaults when no config file exists", () => {
+		const config = loadFusionConfig(tmpDir);
+		expect(config.enabled).toBe(true);
+		expect(config.panel).toEqual([]);
+		expect(config.judge).toBe("");
+		expect(config.maxPanelModels).toBe(3);
+		expect(config.temperature).toBe(0.3);
+		expect(config.maxTokensPerPanel).toBe(2048);
+		expect(config.maxTokensForJudge).toBe(4096);
+	});
+
+	it("loads config from project .pi/fusion.json", () => {
+		const projectConfig = { enabled: false, temperature: 0.7 };
+		writeFileSync(join(tmpDir, ".pi", "fusion.json"), JSON.stringify(projectConfig));
+		const config = loadFusionConfig(tmpDir);
+		expect(config.enabled).toBe(false);
+		expect(config.temperature).toBe(0.7);
+	});
+
+	it("sanitizes config when availableModelIds provided", () => {
+		const projectConfig = { panel: ["valid/gpt4", "stale/model"] };
+		writeFileSync(join(tmpDir, ".pi", "fusion.json"), JSON.stringify(projectConfig));
+		const config = loadFusionConfig(tmpDir, ["valid/gpt4"]);
+		expect(config.panel).toEqual(["valid/gpt4"]);
+	});
+});
+
+describe("saveFusionConfig", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "fusion-config-test-"));
+		mkdirSync(join(tmpDir, ".pi"), { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("writes config to project .pi/fusion.json", () => {
+		saveFusionConfig(tmpDir, { temperature: 0.5 });
+		const saved = JSON.parse(readFileSync(join(tmpDir, ".pi", "fusion.json"), "utf-8"));
+		expect(saved.temperature).toBe(0.5);
+	});
+
+	it("merges with existing config", () => {
+		writeFileSync(join(tmpDir, ".pi", "fusion.json"), JSON.stringify({ enabled: false, temperature: 0.3 }));
+		saveFusionConfig(tmpDir, { temperature: 0.9 });
+		const saved = JSON.parse(readFileSync(join(tmpDir, ".pi", "fusion.json"), "utf-8"));
+		expect(saved.enabled).toBe(false);
+		expect(saved.temperature).toBe(0.9);
+	});
+
+	it("creates .pi directory if missing", () => {
+		rmSync(join(tmpDir, ".pi"), { recursive: true, force: true });
+		saveFusionConfig(tmpDir, { enabled: true });
+		expect(existsSync(join(tmpDir, ".pi", "fusion.json"))).toBe(true);
 	});
 });

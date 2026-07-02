@@ -36,9 +36,16 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				if (pathMatches) filePaths.push(...pathMatches);
 			}
 
+			// Derive operation from tool name — reads always safe, writes require scope approval
+			const readOnlyTools = new Set(['read', 'grep', 'find', 'ls', 'git-read', 'head', 'tail', 'wc', 'file']);
+			const writeTools = new Set(['edit', 'write']);
+			const operation = writeTools.has(event.toolName) ? 'write'
+				: readOnlyTools.has(event.toolName) ? 'read'
+				: 'write'; // fail-closed: unknown tools treated as mutations
+
 			for (const rawPath of filePaths) {
 				const absolutePath = resolve(cwd, rawPath);
-				const pathAllowed = guard.isPathAllowed(absolutePath, 'write');
+				const pathAllowed = guard.isPathAllowed(absolutePath, operation);
 				if (!pathAllowed.allowed) {
 					const expansion = guard.requestExpansion(rawPath);
 					debugLog("scope-guard: expansion request", expansion);

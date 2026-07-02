@@ -137,11 +137,11 @@ When you finish your analysis, output a structured scope section:
 ## Scope
 - filesToModify: ["path/to/file1.ts", "path/to/file2.ts"]
 - filesToCreate: ["path/to/newfile.ts"]
-- allowedDirectories: ["path/to/allowed/dir"]
+- directories: ["path/to/allowed/dir"]
 - maxFiles: 15
 - maxLinesPerFile: 400
 - changeType: "single-file" | "multi-file"
-- requiresApproval: true | false
+- requiresApprovalBeyondScope: true | false
 
 Be realistic about changeType:
 - "single-file": change touches only one file, trivial edit
@@ -312,11 +312,11 @@ When you finish your analysis, output a structured scope section:
 ## Scope
 - filesToModify: ["path/to/file1.ts", "path/to/file2.ts"]
 - filesToCreate: ["path/to/newfile.ts"]
-- allowedDirectories: ["path/to/allowed/dir"]
+- directories: ["path/to/allowed/dir"]
 - maxFiles: 15
 - maxLinesPerFile: 400
 - changeType: "single-file" | "multi-file"
-- requiresApproval: true | false
+- requiresApprovalBeyondScope: true | false
 
 Be realistic about changeType:
 - "single-file": change touches only one file, trivial edit
