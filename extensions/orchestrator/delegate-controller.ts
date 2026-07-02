@@ -252,6 +252,9 @@ The scope tells the coder exactly which files it's allowed to touch.`
 			sessionId: ctx.sessionId || 'unknown',
 			metrics,
 			agentDir: getAgentDir(),
+			model: result?.model,
+			stopReason: result?.stopReason,
+			errorMessage: result?.errorMessage,
 		});
 		if (diagnostic) {
 			debugLog('[diagnostic]', diagnostic.specialist, diagnostic.turns, diagnostic.toolCalls);
@@ -401,7 +404,7 @@ ${trail}
 
 		// Mark plan step — now always runs correctly
 		if (hasError) {
-			errorPlanStep(ctx, isAborted);
+			errorPlanStep(ctx, isAborted, result?.errorMessage);
 		} else {
 			finalizePlanStep(ctx);
 		}

@@ -83,6 +83,7 @@ export interface PlanStep {
 	completed: boolean;
 	active: boolean;
 	errored?: boolean;
+	errorMessage?: string;
 	detail?: string;
 	detailLines?: string[];
 	startTime?: number;
@@ -161,5 +162,9 @@ export interface SubagentDiagnostic {
 	kind: 'silent_failure' | 'crash';
 	diagnosticId: string;
 	agentDir?: string;
+	model?: string;
+	stopReason?: string;
+	errorMessage?: string;
+	httpStatus?: number;
 }
 

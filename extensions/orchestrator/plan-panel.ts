@@ -89,7 +89,16 @@ export class PlanPanel {
 			}
 			return { label: truncateLabel(ps.label, 120), completed: ps.completed, startTime: ps.startTime, endTime: ps.endTime, substeps };
 		});
-		return { goal: state.goal, steps, currentStep: state.steps.findIndex(s => s.active), rawText: "", planParsed: false };
+		const erroredStep = state.steps.find(s => s.errored);
+		return {
+			goal: state.goal,
+			steps,
+			currentStep: state.steps.findIndex(s => s.active),
+			rawText: "",
+			planParsed: false,
+			errored: !!erroredStep,
+			errorMessage: erroredStep?.errorMessage,
+		};
 	}
 
 	private trimToBudget(lines: string[], budget: number): string[] {
@@ -282,11 +291,12 @@ export class PlanPanel {
 		this._renderWidget();
 	}
 
-	errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, aborted?: boolean): void {
+	errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, aborted?: boolean, errorMessage?: string): void {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
 		const idx = this.planState.steps.findIndex((s) => s.active);
 		if (idx >= 0) {
 			this.planState.steps[idx].errored = !aborted;
+			this.planState.steps[idx].errorMessage = errorMessage;
 			this.planState.steps[idx].active = false;
 			this.planState.steps[idx].detail = undefined;
 			this.planState.steps[idx].endTime = Date.now();
@@ -316,6 +326,7 @@ export class PlanPanel {
 		const idx = this.planState.steps.findIndex((s) => s.errored);
 		if (idx >= 0) {
 			this.planState.steps[idx].errored = false;
+			this.planState.steps[idx].errorMessage = undefined;
 			this.planState.steps[idx].completed = false;
 			this.planState.steps[idx].active = true;
 			this.planState.steps[idx].detail = undefined;
@@ -367,7 +378,7 @@ export const completePlanStep = (c: { ui: { setWidget: (k: string, v: string[] |
 export const finalizePlanStep = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.finalizePlanStep(c);
 export const addSteps = (s: string[]) => _instance.addSteps(s);
 export const clearPlanIfComplete = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.clearPlanIfComplete(c);
-export const errorPlanStep = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }, a?: boolean) => _instance.errorPlanStep(c, a);
+export const errorPlanStep = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }, a?: boolean, e?: string) => _instance.errorPlanStep(c, a, e);
 export const retryPlanStep = () => _instance.retryPlanStep();
 export const renderPlanStatusText = () => _instance.renderPlanStatusText();
 export const dumpTimelineToDisk = () => _instance.dumpTimelineToDisk();

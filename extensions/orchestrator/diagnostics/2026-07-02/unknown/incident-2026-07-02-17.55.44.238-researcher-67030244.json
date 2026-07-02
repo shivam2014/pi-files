@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-02T17:55:44.238Z",
+  "specialist": "researcher",
+  "task": "Search the web for information about this error:\n\nError: `\"Error from provider (Console Go): Upstream request failed\"` — 400 error when using OpenCode Go provider through Nyro AI Gateway.\n\nSearch for:\n1. \"opencode go upstream request failed\" \n2. \"opencode go error 400\"\n3. \"Console Go upstream request failed\" \n4. \"opencode.ai upstream request failed\"\n5. \"Nyro opencode go provider error\"\n\nLook for:\n- Other users reporting this exact error\n- OpenCode Go known issues or outages\n- OpenCode Go Discord/community discussions\n- GitHub issues on Nyro repo about OpenCode Go\n- How to fix or work around\n\nAlso fetch any relevant pages or discussions found. Report all findings with source URLs.",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 806,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-02T17:55:44.239Z-researcher-1c1c5071",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "deepseek-v4-flash-2",
+  "stopReason": "error",
+  "errorMessage": "400: {\"code\":\"invalid_request_error\",\"message\":\"Error from provider (Console Go): Upstream request failed\",\"param\":null,\"type\":\"invalid_request_error\"}"
+}

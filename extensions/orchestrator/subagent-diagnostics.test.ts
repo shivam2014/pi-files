@@ -17,6 +17,8 @@ const baseInput: CaptureDiagnosticInput = {
   specialist: 'coder',
   task: 'Fix the auth middleware in src/auth.ts',
   sessionId: 'sess-001',
+  model: 'test-model',
+  stopReason: 'end_turn',
   metrics: {
     readCalls: 2,
     grepCalls: 1,
@@ -200,6 +202,8 @@ const sampleDiagnostic: SubagentDiagnostic = {
   },
   kind: 'silent_failure',
   diagnosticId: 'test-diag-001',
+  model: 'test-model',
+  stopReason: 'end_turn',
 };
 
 describe('persistDiagnostic', () => {

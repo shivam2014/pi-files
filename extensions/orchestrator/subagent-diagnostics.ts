@@ -12,6 +12,10 @@ export interface CaptureDiagnosticInput {
   sessionId: string;
   metrics: DelegationMetrics;
   agentDir?: string;
+  model?: string;
+  stopReason?: string;
+  errorMessage?: string;
+  httpStatus?: number;
 }
 
 /**
@@ -63,6 +67,10 @@ export function captureDiagnostic(input: CaptureDiagnosticInput): SubagentDiagno
     kind: isCrash ? 'crash' : 'silent_failure',
     diagnosticId: `${new Date().toISOString()}-${input.specialist}-${simpleHash(input.task)}`,
     agentDir: input.agentDir,
+    model: input.model,
+    stopReason: input.stopReason,
+    errorMessage: input.errorMessage,
+    httpStatus: input.httpStatus,
   };
 }
 

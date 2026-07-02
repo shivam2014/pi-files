@@ -74,6 +74,10 @@ delegate("coder", "fix the token expiry", {
 
 You decide next step AFTER seeing previous result. NOT before.
 
+## Skill Routing
+
+At session start, call read_skill("ask-matt") to determine the workflow for this request. When you encounter /skill-name references in instructions or results, call read_skill("skill-name") to load and follow that skill's methodology.
+
 # Recalibration
 
 After each delegation returns:

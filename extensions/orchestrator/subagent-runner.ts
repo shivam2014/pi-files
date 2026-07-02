@@ -240,7 +240,7 @@ export async function runSubagent(
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
 	suggestedSkills?: string[],
-): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
+): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[]; stopReason?: string; errorMessage?: string; model?: string }> {
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();
 
@@ -455,7 +455,10 @@ export async function runSubagent(
 		signal?.addEventListener("abort", () => peekAbort.abort(), { once: true });
 		peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
 
-		const unsubscribe = session.subscribe((event) => {
+		let lastStopReason: string | undefined;
+let lastErrorMessage: string | undefined;
+
+const unsubscribe = session.subscribe((event) => {
 			// Standard assistant message delta
 			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 				output += event.assistantMessageEvent.delta;
@@ -479,6 +482,10 @@ export async function runSubagent(
 			if (event.type === "message_end") {
 				if (event.message?.role === "assistant") {
 					turns++;
+					// Capture stopReason and errorMessage from the assistant message
+					const assistantMsg = event.message as any;
+					lastStopReason = assistantMsg.stopReason;
+					lastErrorMessage = assistantMsg.errorMessage;
 					const text = renderActivityFeed(specialist.name, feed);
 					onUpdate?.({
 						content: [{ type: "text", text }],
@@ -676,7 +683,9 @@ export async function runSubagent(
 			finalStatus = "completed";
 		} catch (error) {
 			const isAborted = signal?.aborted || (error instanceof Error && error.name === "AbortError");
-			const errorMsg = error instanceof Error ? error.message : String(error);
+			const errorMsg = lastErrorMessage && typeof lastErrorMessage === 'string' && lastErrorMessage.length > 0
+				? lastErrorMessage
+				: error instanceof Error ? error.message : String(error);
 			finalStatus = isAborted ? "aborted" : "error";
 			// Surface error in activity feed before cleanup
 			feed = markFeedError(feed, errorMsg);
@@ -728,7 +737,7 @@ export async function runSubagent(
 			}
 		}
 
-		return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime, toolCallTrail };
+		return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime, toolCallTrail, stopReason: lastStopReason, errorMessage: lastErrorMessage, model: (model as any)?.id ?? (model as any)?.model ?? undefined };
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error);
 		const stack = error instanceof Error ? error.stack : "";
