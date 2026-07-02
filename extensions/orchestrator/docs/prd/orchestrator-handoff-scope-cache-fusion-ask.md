@@ -40,7 +40,7 @@ Build a tighter, safer hand-off pipeline inside the orchestrator extension:
 14. As an orchestrator agent, I want fusion instructions removed from the system prompt when fusion is off so that the model is not tempted to call a missing tool.
 15. As a subagent, I want to ask the orchestrator a question mid-task so that I do not have to guess or abandon the session.
 16. As an orchestrator agent, I want to answer subagent questions from context or the codebase so that simple blockers are resolved without disturbing the user.
-17. As an orchestrator agent, I want questions that require user input to be escalated clearly so that the user knows the subagent is waiting.
+17. As an orchestrator agent, I want questions that require user input to be escalated back to me so that I can decide how to handle them without disturbing the user.
 18. As a user, I want clarification rounds to appear as `Clarified:` entries in the activity feed so that I can see when and why the subagent paused.
 19. As a tester, I want each of these behaviors exercised through existing module seams so that the PRD can be verified without large UI harnesses.
 20. As a maintainer, I want the canonical working copy (`/Users/shivam94/.pi/agent/extensions/orchestrator`) to remain the source of truth and the `~/pi-files/extensions/orchestrator` backup to be unaffected by active development.
@@ -82,7 +82,7 @@ Build a tighter, safer hand-off pipeline inside the orchestrator extension:
 - **`ask_orchestrator` tool.** Register a new subagent tool `ask_orchestrator(question: string, context?: string)`.
   - When called, the subagent session pauses and the question is surfaced to the orchestrator layer via the existing `onUpdate` / activity-feed pipeline as a `Clarified:` entry.
   - The orchestrator first attempts to answer from its own context (recent delegations, files read, plan goal) or the codebase (using `read`/`grep` tools, which orchestrator mode normally blocks—this is an explicit exception for answering clarifications).
-  - If the orchestrator cannot answer confidently, it escalates to the user and waits for a response.
+  - If the orchestrator cannot answer confidently, it returns a text escalation string that the orchestrator LLM sees in the subagent result and decides how to handle — the user is never prompted directly.
   - The answer is returned to the same subagent session as the tool result; the subagent resumes without losing turn history.
   - Activity feed rendering adds a `Clarified:` substep under the current step so the pause/answer is visible in Layer 2 chat blocks.
 - **Tool registry hygiene.** Ensure `registerFusionTool` and `registerPlanTool` do not duplicate registrations if the extension lifecycle calls them multiple times. Use `pi.getAllTools()` membership checks or unregister + re-register consistently.

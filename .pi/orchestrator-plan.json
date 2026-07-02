@@ -1,0 +1,11 @@
+{
+  "goal": "investigate",
+  "steps": [
+    {
+      "label": "Scout: investigate",
+      "completed": true,
+      "errored": false
+    }
+  ],
+  "startTime": 1781953821123
+}

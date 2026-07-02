@@ -16,10 +16,33 @@ export interface TimelineEntry {
 	feedRender?: string;
 }
 
+/**
+ * PlanPanel — per-session plan state and timeline rendering.
+ *
+ * ## Instance resolution
+ * This module exports 23 proxy functions that forward to a PlanPanel instance.
+ * Two resolution strategies:
+ *
+ *   **Map lookup (6 functions)** — Functions that receive `ctx` resolve the
+ *   PlanPanel instance by `ctx.sessionManager.sessionId`. These are the
+ *   lifecycle boundary functions: setupPlanPanel, clearPlanPanel,
+ *   completePlanStep, finalizePlanStep, clearPlanIfComplete, errorPlanStep.
+ *
+ *   **_currentInstance (17 functions)** — Functions without `ctx` use a
+ *   module-scoped `_currentInstance` pointer. These are only safe to call
+ *   after `setupPlanPanel` has set the pointer for the current session.
+ *   In concurrent multi-session scenarios, these may target the wrong
+ *   session's panel. See also: VISION.md, ADR-0003.
+ *
+ * ## Lifecycle
+ * PlanPanel instances live in a module-scoped `Map<string, PlanPanel>`
+ * keyed by `sessionId`. They are created by `_resolveOrCreate(ctx)` and
+ * should be cleaned up via `_removeSession(sessionId)` when a session ends.
+ */
+
 const MAX_TIMELINE_FRAMES = 500;
 const WIDGET_KEY = "orchestrator-status";
 const BUDGET = 9;
-const TIMER_KEY = "__orchestrator_plan_timers__";
 
 export class PlanPanel {
 	private _timeline: TimelineEntry[] = [];
@@ -29,13 +52,11 @@ export class PlanPanel {
 	private planState: { goal: string; steps: PlanStep[]; startTime: number; sessionId: string } | null = null;
 	private _setWidget: ((key: string, content: string[] | undefined) => void) | null = null;
 	private _lastWidgetContent: string[] | null = null;
+	private _planTimer: ReturnType<typeof setInterval> | null = null;
+	private _spinnerTimer: ReturnType<typeof setInterval> | null = null;
 
 	incrementDelegationCount(): void { this._activeDelegations++; }
 	decrementDelegationCount(): void { this._activeDelegations = Math.max(0, this._activeDelegations - 1); }
-
-	private _reg(): { planTimer: ReturnType<typeof setInterval> | null; spinnerTimer: ReturnType<typeof setInterval> | null } {
-		return ((globalThis as any)[TIMER_KEY] ??= { planTimer: null, spinnerTimer: null });
-	}
 
 	private savePlanState(): void {
 		if (!this.planState) return;
@@ -89,7 +110,16 @@ export class PlanPanel {
 			}
 			return { label: truncateLabel(ps.label, 120), completed: ps.completed, startTime: ps.startTime, endTime: ps.endTime, substeps };
 		});
-		return { goal: state.goal, steps, currentStep: state.steps.findIndex(s => s.active), rawText: "", planParsed: false };
+		const erroredStep = state.steps.find(s => s.errored);
+		return {
+			goal: state.goal,
+			steps,
+			currentStep: state.steps.findIndex(s => s.active),
+			rawText: "",
+			planParsed: false,
+			errored: !!erroredStep,
+			errorMessage: erroredStep?.errorMessage,
+		};
 	}
 
 	private trimToBudget(lines: string[], budget: number): string[] {
@@ -127,22 +157,20 @@ export class PlanPanel {
 
 	private startPlanTimer(): void {
 		this.stopPlanTimer();
-		const r = this._reg();
 		const self = this;
-		r.spinnerTimer = setInterval(() => {
-			if (self._reg().spinnerTimer !== r.spinnerTimer) { clearInterval(r.spinnerTimer!); return; }
+		this._spinnerTimer = setInterval(() => {
+			if (self._spinnerTimer === null) return;
 			if (self.planState) { advanceSpinner(); self._renderWidget(); } else { self.stopPlanTimer(); }
 		}, 80);
-		r.planTimer = setInterval(() => {
-			if (self._reg().planTimer !== r.planTimer) { clearInterval(r.planTimer!); return; }
+		this._planTimer = setInterval(() => {
+			if (self._planTimer === null) return;
 			if (self.planState) { self._renderWidget(); } else { self.stopPlanTimer(); }
 		}, 1000);
 	}
 
 	private stopPlanTimer(): void {
-		const r = this._reg();
-		if (r.planTimer !== null) { clearInterval(r.planTimer); r.planTimer = null; }
-		if (r.spinnerTimer !== null) { clearInterval(r.spinnerTimer); r.spinnerTimer = null; }
+		if (this._planTimer !== null) { clearInterval(this._planTimer); this._planTimer = null; }
+		if (this._spinnerTimer !== null) { clearInterval(this._spinnerTimer); this._spinnerTimer = null; }
 	}
 
 	inspectPlanState(): Record<string, unknown> | null {
@@ -151,6 +179,7 @@ export class PlanPanel {
 			index: i, label: s.label,
 			state: s.completed ? "completed" : s.errored ? "errored" : s.active ? "active" : "pending",
 			substepCount: (s as any).detailLines?.length ?? 0, detail: s.detail ?? null,
+			startTime: s.startTime ?? null,
 		}));
 		return { goal: this.planState.goal, steps, completedCount: this.planState.steps.filter(s => s.completed).length, totalCount: this.planState.steps.length, activeDelegations: this._activeDelegations, elapsedMs: Date.now() - this.planState.startTime };
 	}
@@ -199,6 +228,7 @@ export class PlanPanel {
 
 	clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 		if (this._activeDelegations > 0 && this.planState?.sessionId === this._sessionId) return;
+		const sessionId = this._sessionId;
 		this.dumpTimelineToDisk();
 		this._sessionId = null;
 		this.stopPlanTimer();
@@ -206,6 +236,7 @@ export class PlanPanel {
 		this._lastWidgetContent = null;
 		if (this._setWidget) this._setWidget(WIDGET_KEY, undefined);
 		this._setWidget = null;
+		if (sessionId) _removeSession(sessionId);
 	}
 
 	pushPlanStep(label: string): void {
@@ -274,15 +305,19 @@ export class PlanPanel {
 	}
 
 	clearPlanIfComplete(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
-		if (!this.planState || !this.planState.steps.every(s => s.completed)) return;
-		this.clearPlanPanel(ctx);
+		if (!this.planState || this.planState.sessionId !== this._sessionId || !this.planState.steps.every(s => s.completed)) return;
+		// Keep plan alive — do NOT call clearPlanPanel(). Just stop timer and re-render.
+		this.stopPlanTimer();
+		this.dumpTimelineToDisk();
+		this._renderWidget();
 	}
 
-	errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, aborted?: boolean): void {
+	errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, aborted?: boolean, errorMessage?: string): void {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
 		const idx = this.planState.steps.findIndex((s) => s.active);
 		if (idx >= 0) {
-			this.planState.steps[idx].errored = !aborted;
+			this.planState.steps[idx].errored = true;
+			this.planState.steps[idx].errorMessage = errorMessage;
 			this.planState.steps[idx].active = false;
 			this.planState.steps[idx].detail = undefined;
 			this.planState.steps[idx].endTime = Date.now();
@@ -290,11 +325,29 @@ export class PlanPanel {
 		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame(aborted ? "step_aborted" : "step_error");
 	}
 
+	addSteps(newSteps: string[]): void {
+		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
+		for (const label of newSteps) {
+			if (!this.planState.steps.some(s => s.label === label)) {
+				this.planState.steps.push({
+					label,
+					completed: false,
+					errored: false,
+					active: false,
+					startTime: Date.now(),
+				});
+			}
+		}
+		this._renderWidget();
+		this.savePlanState();
+	}
+
 	retryPlanStep(): void {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
 		const idx = this.planState.steps.findIndex((s) => s.errored);
 		if (idx >= 0) {
 			this.planState.steps[idx].errored = false;
+			this.planState.steps[idx].errorMessage = undefined;
 			this.planState.steps[idx].completed = false;
 			this.planState.steps[idx].active = true;
 			this.planState.steps[idx].detail = undefined;
@@ -326,26 +379,66 @@ export class PlanPanel {
 	}
 }
 
-const _instance = new PlanPanel();
-export const incrementDelegationCount = () => _instance.incrementDelegationCount();
-export const decrementDelegationCount = () => _instance.decrementDelegationCount();
-export const summarizeGoal = (g: string) => _instance.summarizeGoal(g);
-export const generatePlanFromPrompt = (p: string) => _instance.generatePlanFromPrompt(p);
-export const inspectPlanState = () => _instance.inspectPlanState();
-export const snapshotPlanRender = () => _instance.snapshotPlanRender();
-export const recordTimelineFrame = (e: string, f?: Record<string, unknown> | null, r?: string) => _instance.recordTimelineFrame(e, f, r);
-export const getTimeline = () => _instance.getTimeline();
-export const getTimelineDiff = () => _instance.getTimelineDiff();
-export const hasActivePlan = () => _instance.hasActivePlan();
-export const clearPlanPanel = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.clearPlanPanel(c);
-export const pushPlanStep = (l: string) => _instance.pushPlanStep(l);
-export const startDelegationStep = (l: string) => _instance.startDelegationStep(l);
-export const updatePlanStepDetail = (d: string | string[]) => _instance.updatePlanStepDetail(d);
-export const setupPlanPanel = (g: string, s: string[], c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.setupPlanPanel(g, s, c);
-export const completePlanStep = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.completePlanStep(c);
-export const finalizePlanStep = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.finalizePlanStep(c);
-export const clearPlanIfComplete = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.clearPlanIfComplete(c);
-export const errorPlanStep = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }, a?: boolean) => _instance.errorPlanStep(c, a);
-export const retryPlanStep = () => _instance.retryPlanStep();
-export const renderPlanStatusText = () => _instance.renderPlanStatusText();
-export const dumpTimelineToDisk = () => _instance.dumpTimelineToDisk();
+const _instances = new Map<string, PlanPanel>();
+let _currentInstance: PlanPanel | null = null;
+
+function _removeSession(sessionId: string): void {
+	const panel = _instances.get(sessionId);
+	if (panel) {
+		panel.stopPlanTimer();
+		_instances.delete(sessionId);
+	}
+	if (_currentInstance === panel) {
+		_currentInstance = null;
+	}
+}
+
+function _resolveCtx(ctx: any): PlanPanel | null {
+	const sessionId = ctx?.sessionManager?.sessionId;
+	if (sessionId) {
+		return _instances.get(sessionId) ?? null;
+	}
+	return _currentInstance;
+}
+
+function _resolveOrCreate(ctx: any): PlanPanel {
+	const sessionId = ctx?.sessionManager?.sessionId;
+	let panel: PlanPanel;
+	if (sessionId && _instances.has(sessionId)) {
+		panel = _instances.get(sessionId)!;
+		// Guard: ensure old timers are stopped when reusing a session
+		panel.stopPlanTimer();
+	} else if (sessionId) {
+		panel = new PlanPanel();
+		_instances.set(sessionId, panel);
+	} else {
+		// No sessionId — use or create a default instance
+		panel = _currentInstance ?? new PlanPanel();
+	}
+	_currentInstance = panel;
+	return panel;
+}
+
+export const setupPlanPanel = (g: string, s: string[], c: any) => _resolveOrCreate(c).setupPlanPanel(g, s, c);
+export const clearPlanPanel = (c: any) => _resolveCtx(c)?.clearPlanPanel(c);
+export const completePlanStep = (c: any) => _resolveCtx(c)?.completePlanStep(c);
+export const finalizePlanStep = (c: any) => _resolveCtx(c)?.finalizePlanStep(c);
+export const clearPlanIfComplete = (c: any) => _resolveCtx(c)?.clearPlanIfComplete(c);
+export const errorPlanStep = (c: any, a?: boolean, e?: string) => _resolveCtx(c)?.errorPlanStep(c, a, e);
+export const incrementDelegationCount = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.incrementDelegationCount(); };
+export const decrementDelegationCount = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.decrementDelegationCount(); };
+export const summarizeGoal = (g: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.summarizeGoal(g); };
+export const generatePlanFromPrompt = (p: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.generatePlanFromPrompt(p); };
+export const inspectPlanState = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.inspectPlanState(); };
+export const snapshotPlanRender = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.snapshotPlanRender(); };
+export const recordTimelineFrame = (e: string, f?: Record<string, unknown> | null, r?: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.recordTimelineFrame(e, f, r); };
+export const getTimeline = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.getTimeline(); };
+export const getTimelineDiff = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.getTimelineDiff(); };
+export const hasActivePlan = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.hasActivePlan() ?? false; };
+export const pushPlanStep = (l: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.pushPlanStep(l); };
+export const startDelegationStep = (l: string, ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.startDelegationStep(l); };
+export const updatePlanStepDetail = (d: string | string[], ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.updatePlanStepDetail(d); };
+export const addSteps = (s: string[], ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.addSteps(s); };
+export const retryPlanStep = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.retryPlanStep(); };
+export const renderPlanStatusText = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.renderPlanStatusText(); };
+export const dumpTimelineToDisk = (ctx?: any) => { const panel = ctx ? _resolveCtx(ctx) : _currentInstance; return panel?.dumpTimelineToDisk(); };

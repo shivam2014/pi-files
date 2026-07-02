@@ -35,6 +35,7 @@ interface TUI {
 // ============================================================================
 
 const MAX_PEEK_LINES = 50;
+export const MIN_HEIGHT = 9;
 const X_PRESS_WINDOW_MS = 600;
 
 // ============================================================================
@@ -63,7 +64,7 @@ let _registeredGoal: string = "";
 // PeekComponent — renders live subagent content inside the overlay
 // ============================================================================
 
-class PeekComponent implements Component {
+export class PeekComponent implements Component {
     private _cachedLines: string[] | null = null;
 
     render(width: number): string[] {
@@ -119,13 +120,17 @@ class PeekComponent implements Component {
         const footer = "Esc: close  xx\u2032: abort";
         lines.push(footer);
 
+        while (lines.length < MIN_HEIGHT) {
+            lines.push('');
+        }
+
         this._cachedLines = lines;
         return lines;
     }
 
     handleInput(data: string): void {
-        // Escape → close overlay
-        if (data === "escape" || data === "esc") {
+        const keyCode = data.charCodeAt(0) || 0;
+        if (data === 'escape' || data === 'esc' || data === '27' || keyCode === 27 || data === '\\x1b' || data === 'ctrl+q' || data === 'C-q') {
             hidePeek();
             return;
         }
@@ -160,15 +165,17 @@ function truncate(text: string, maxLen: number): string {
     return text.slice(0, maxLen - 1) + "…";
 }
 
-function startSpinnerTimer(): void {
+export function startSpinnerTimer(): void {
     stopSpinnerTimer();
     _spinnerTimer = setInterval(() => {
         advanceSpinner();
-        _peekTui?.requestRender();
-    }, 80);
+        if (_peekHandle && !_peekHandle.isHidden()) {
+            _peekTui?.requestRender();
+        }
+    }, 250);
 }
 
-function stopSpinnerTimer(): void {
+export function stopSpinnerTimer(): void {
     if (_spinnerTimer !== null) {
         clearInterval(_spinnerTimer);
         _spinnerTimer = null;
@@ -274,8 +281,8 @@ export function showPeek(
                 _peekHandle = handle;
             },
         },
-    ).catch(() => {
-        // Overlay dismissed — clean up silently
+    ).catch((err: unknown) => {
+        console.error('[peek] overlay error:', err);
         clearPeekState();
     });
 }
@@ -325,7 +332,7 @@ export function setPeekGoal(goal: string): void {
 export function hidePeek(): void {
     stopSpinnerTimer();
     if (_peekHandle) {
-        try { _peekHandle.hide(); } catch {}
+        try { _peekHandle.hide(); } catch (err: unknown) { console.error('[peek] hide error:', err); }
     }
     clearPeekState();
 }

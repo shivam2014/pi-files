@@ -8,6 +8,19 @@
 
 import { listSpecialists, SPECIALISTS } from "./specialists.ts";
 
+const ROUTING_TABLE = `
+### Task Routing
+| Task type | Specialist | Default skills |
+|-----------|------------|----------------|
+| Investigate codebase / find files | scout | diagnosing-bugs |
+| Implement feature / fix bug | coder | implement, tdd |
+| Review code / diff | reviewer | review |
+| Research docs / web | researcher | domain-modeling |
+| Create/edit docs | writer | agents-md-writer |
+| Triage issues | — (inline) | triage |
+| Plan refactor / design | — (inline) | grill-with-docs |
+`;
+
 const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error (destructive operations, broad file changes)\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n`;
 
 const DELEGATION_INSTRUCTIONS_TEMPLATE = `
@@ -25,17 +38,17 @@ You CANNOT access files or run commands directly.
 
 ### Specialist roster:
 {{ROSTER}}
-{{SKILLS}}
+{{ROUTING}}{{SKILLS}}
 
 ### Workflow:
 1. FIRST: Call plan(goal, steps) to declare the overall plan. The goal is a one-line summary. The steps are the actions you will delegate. Example:
    plan("Fix auth bug", ["Read auth middleware", "Fix token validation", "Write tests", "Verify"])
 
-2. SECOND: For each step, call delegate(specialist, task, scope) to execute work.
+2. SECOND: For each step, call delegate(specialist, task, scope) to execute work. Optionally pass skills: string[] to override the specialist's default skill pack(s) for this delegation.
 
 3. THIRD: Synthesize results.
 
-NOTE: delegate() auto-creates a plan if plan() was not called first. Call plan() first for multi-step work.
+NOTE: You MUST call plan() before delegate(). delegate() will reject if no active plan exists.
 
 {{FUSION}}### Scope requirement:
 When calling delegate(coder|writer|reviewer|researcher|scout, ...), you MUST include a \`scope\` parameter with the files the specialist is allowed to modify/create and any boundaries.
@@ -60,6 +73,10 @@ delegate("coder", "fix the token expiry", {
 \`\`\`
 
 You decide next step AFTER seeing previous result. NOT before.
+
+## Skill Routing
+
+At session start, call read_skill("ask-matt") to determine the workflow for this request. When you encounter /skill-name references in instructions or results, call read_skill("skill-name") to load and follow that skill's methodology.
 
 # Recalibration
 
@@ -133,6 +150,7 @@ export function buildOrchestratorPrompt(options: {
 	// Assemble instructions
 	const instructions = DELEGATION_INSTRUCTIONS_TEMPLATE
 		.replace("{{ROSTER}}", rosterLines)
+		.replace("{{ROUTING}}", ROUTING_TABLE)
 		.replace("{{SKILLS}}", skillsSection)
 		.replace("{{FUSION}}", fusionSection);
 

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-02T20:11:02.540Z",
+  "specialist": "scout",
+  "task": "Read the ROUTING_TABLE constant from `~/.pi/agent/extensions/orchestrator/prompt-builder.ts`. Find the line where it's defined and show the full content. Use grep to find 'ROUTING_TABLE' in the file.",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 771,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-02T20:11:02.540Z-scout-749babca",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "deepseek-v4-flash-2",
+  "stopReason": "error",
+  "errorMessage": "400: {\"code\":\"invalid_request_error\",\"message\":\"Error from provider (Console Go): Upstream request failed\",\"param\":null,\"type\":\"invalid_request_error\"}"
+}

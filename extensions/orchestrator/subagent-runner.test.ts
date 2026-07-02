@@ -8,10 +8,14 @@ import {
 	cleanSubagentEnv,
 	installSubagentEnv,
 	SUBAGENT_ENV_KEY,
+	resolveSkillPaths,
 } from "./subagent-runner.ts";
 import { shortenLabel, truncateLabel } from "../token-saver.ts";
 import { registerFusionTool } from "./fusion-tool.ts";
 import { createActivityFeed, addStep, completeCurrentStep, markFeedError } from "./activity-feed.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 describe("truncateSubagentOutput", () => {
 	it("returns output unchanged when under cap", () => {
@@ -104,6 +108,41 @@ describe("token-saver immutability", () => {
 		const original = input;
 		truncateLabel(input, 10);
 		expect(input).toBe(original);
+	});
+});
+
+describe("resolveSkillPaths", () => {
+	let testDir: string;
+
+	beforeEach(() => {
+		testDir = mkdtempSync(join(tmpdir(), "orchestrator-test-"));
+		// Create two existing skills
+		mkdirSync(join(testDir, "skills", "skill-a"), { recursive: true });
+		writeFileSync(join(testDir, "skills", "skill-a", "SKILL.md"), "a");
+		mkdirSync(join(testDir, "skills", "skill-b"), { recursive: true });
+		writeFileSync(join(testDir, "skills", "skill-b", "SKILL.md"), "b");
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	it("resolves skill names to existing paths under agentDir/skills/<name>/SKILL.md", () => {
+		const result = resolveSkillPaths(["skill-a", "skill-b"], testDir);
+		expect(result).toEqual([
+			join(testDir, "skills", "skill-a", "SKILL.md"),
+			join(testDir, "skills", "skill-b", "SKILL.md"),
+		]);
+	});
+
+	it("returns empty array for empty input", () => {
+		const result = resolveSkillPaths([], testDir);
+		expect(result).toEqual([]);
+	});
+
+	it("filters out non-existent skills", () => {
+		const result = resolveSkillPaths(["skill-a", "non-existent"], testDir);
+		expect(result).toEqual([join(testDir, "skills", "skill-a", "SKILL.md")]);
 	});
 });
 

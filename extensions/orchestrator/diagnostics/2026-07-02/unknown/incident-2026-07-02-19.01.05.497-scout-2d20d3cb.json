@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-02T19:01:05.497Z",
+  "specialist": "scout",
+  "task": "I need to verify that the `errorMessage` field actually renders in the TUI plan panel widget when a step errors.\n\nRead `activity-feed.ts` at ~/.pi/agent/extensions/orchestrator/activity-feed.ts:\n\n1. Search for how `state.errorMessage` is used in the render functions:\n   ```\n   grep -n \"errorMessage\" ~/.pi/agent/extensions/orchestrator/activity-feed.ts\n   ```\n\n2. Read the `renderActivityFeed` error path — lines around where `state.errored` is checked.\n   The full rendering function — how does it display the error message when the feed is in errored state?\n\n3. Does `renderActivityFeed` have an `errorMessage` render path? If so, what format? If not, where's the gap?\n\n4. Also check `plan-panel.ts`'s `renderPlanLines()` or `_renderWidget()` — does it call `renderActivityFeed` with the feed state, and does the feed state actually contain the `errorMessage` from `toFeedState()`?\n\nReport: Is the errorMessage visibly rendered in the TUI, or is it stored but never displayed?",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 1084,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-02T19:01:05.497Z-scout-06e33c2b",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "deepseek-v4-flash-2",
+  "stopReason": "error",
+  "errorMessage": "400: {\"code\":\"invalid_request_error\",\"message\":\"Error from provider (Console Go): Upstream request failed\",\"param\":null,\"type\":\"invalid_request_error\"}"
+}

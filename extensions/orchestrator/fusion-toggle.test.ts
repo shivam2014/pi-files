@@ -81,7 +81,7 @@ describe("global fusion toggle", () => {
 		const prompt = results[0]?.systemPrompt ?? event.systemPrompt;
 
 		// But setActiveTools excludes fusion when disabled
-		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate"]);
+		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate", "read_skill", "list_skills", "list_tools"]);
 		expect(prompt).not.toContain("### Fusion Tool");
 		expect(prompt).toContain("## Orchestrator Mode");
 	});
@@ -99,7 +99,7 @@ describe("global fusion toggle", () => {
 		const prompt = results[0]?.systemPrompt ?? event.systemPrompt;
 
 		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(true);
-		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate", "fusion"]);
+		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate", "fusion", "read_skill", "list_skills", "list_tools"]);
 		expect(prompt).toContain("### Fusion Tool");
 		expect(prompt).toContain("## Orchestrator Mode");
 	});
@@ -115,7 +115,7 @@ describe("global fusion toggle", () => {
 		const results = await pi.trigger("before_agent_start", event, ctx);
 		const prompt = results[0]?.systemPrompt ?? event.systemPrompt;
 
-		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate", "fusion"]);
+		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate", "fusion", "read_skill", "list_skills", "list_tools"]);
 		expect(prompt).toContain("### Fusion Tool");
 	});
 
@@ -135,7 +135,7 @@ describe("global fusion toggle", () => {
 
 		// Tool still registered, but not in active tools
 		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(true);
-		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate"]);
+		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "delegate", "read_skill", "list_skills", "list_tools"]);
 	});
 
 	it("is idempotent when enabled", () => {

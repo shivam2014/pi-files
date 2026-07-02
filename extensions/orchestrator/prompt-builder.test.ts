@@ -133,9 +133,9 @@ describe("appendix slimming (#39)", () => {
 	it("reduces appendix character count compared to before", () => {
 		const basePrompt = "Some base instructions";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
-		// The appended part should be reasonable (< 4000 chars)
+		// The appended part should be reasonable (< 4500 chars — includes routing table)
 		const appendix = systemPrompt.replace(basePrompt, "").trim();
-		expect(appendix.length).toBeLessThan(4000);
+		expect(appendix.length).toBeLessThan(4500);
 	});
 });
 describe("clarification deduplication (#40)", () => {
@@ -161,5 +161,30 @@ describe("clarification deduplication (#40)", () => {
 		// NOT in STEPS_MANDATE (which uses `{ question, context? }` syntax).
 		// Assertion fails while duplication exists → RED phase.
 		expect(source).not.toContain('ask_orchestrator({ question: "');
+	});
+});
+
+describe("routing table (#43)", () => {
+	it("includes task routing table in orchestrator prompt", () => {
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt: "base", fusionEnabled: false });
+		expect(systemPrompt).toContain("Task Routing");
+		expect(systemPrompt).toContain("specialist");
+		expect(systemPrompt).toContain("skills");
+	});
+
+	it("routing table maps task types to specialist + skills", () => {
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt: "base", fusionEnabled: false });
+		expect(systemPrompt).toContain("diagnosing-bugs");
+		expect(systemPrompt).toContain("agents-md-writer");
+		expect(systemPrompt).toContain("review");
+	});
+});
+
+describe("goal-achieved early stop (#45)", () => {
+	it("STEPS_MANDATE contains early-stop instruction", async () => {
+		const { STEPS_MANDATE } = await vi.importActual<typeof import("./specialists")>("./specialists");
+		expect(STEPS_MANDATE).toContain("Goal-achieved early stop");
+		expect(STEPS_MANDATE).toContain("STOP and report back");
+		expect(STEPS_MANDATE).toContain("Do NOT execute remaining planned steps");
 	});
 });

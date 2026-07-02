@@ -14,6 +14,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed } from "./subagent-runner.ts";
 import { clearPlanPanel } from "./plan-panel.ts";
@@ -24,6 +25,9 @@ import { ScopeManager } from "./scope-manager.ts";
 import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
 import { buildOrchestratorPrompt } from "./prompt-builder.ts";
 import { registerAllTools } from "./registration-hub.ts";
+import { createReadSkillTool } from "./read-skill-tool.ts";
+import { SPECIALISTS } from "./specialists.ts";
+import { join } from "node:path";
 
 export { getBashToolReplacement } from "./bash-interceptor.ts";
 
@@ -59,6 +63,9 @@ export default function (pi: ExtensionAPI) {
 		if (fusionConfig.enabled) {
 			activeTools.push("fusion");
 		}
+		activeTools.push("read_skill");
+		activeTools.push("list_skills");
+		activeTools.push("list_tools");
 		pi.setActiveTools(activeTools);
 	});
 
@@ -76,6 +83,20 @@ export default function (pi: ExtensionAPI) {
 		});
 	});
 
+	// ── Resources: Register ask-matt skills for SDK skill discovery (issue #41) ──
+	pi.on("resources_discover", async (event, ctx) => {
+		// getAgentDir() returns ~/.pi/agent — skills live under that directory
+		const skillsDir = join(getAgentDir(), "skills");
+		// Dynamically resolve skill paths from the specialist roster
+		const skillPaths: string[] = [];
+		for (const specialist of Object.values(SPECIALISTS)) {
+			for (const skillName of specialist.suggestedSkills ?? []) {
+				skillPaths.push(join(skillsDir, skillName, "SKILL.md"));
+			}
+		}
+		return { skillPaths };
+	});
+
 	// ── Safety net: Block non-delegation tool calls ──
 	pi.on("tool_call", async (event, ctx) => {
 		// Subagent: enforce planSteps-first before any other tool
@@ -88,7 +109,7 @@ export default function (pi: ExtensionAPI) {
 		if (event.toolName === "fusion" && !pi.getAllTools().some((t: any) => t.name === "fusion")) {
 			return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 		}
-		if (event.toolName !== "delegate" && event.toolName !== "plan" && event.toolName !== "fusion") {
+		if (event.toolName !== "delegate" && event.toolName !== "plan" && event.toolName !== "plan_add_steps" && event.toolName !== "fusion" && event.toolName !== "read_skill" && event.toolName !== "list_skills" && event.toolName !== "list_tools") {
 			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
 		}
 	});
@@ -108,6 +129,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Register tools, commands, and shortcuts ──
 	registerAllTools(pi, process.cwd());
+	pi.registerTool(createReadSkillTool());
 
 	// ── Ctrl+Q: Peek overlay (Layer 3, mnemonic "quick peek") ──
 	pi.registerShortcut("ctrl+q", {

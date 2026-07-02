@@ -5,7 +5,15 @@
  */
 
 import { type Specialist } from "./types.ts";
-import { SKILL_PACKS } from "./skill-packs.ts";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
+// Inlined minimal-action discipline (formerly in skill-packs.ts, now removed per issue #41)
+const MINIMAL_ACTION = `## Minimal action
+Before each tool call, ask: what is the single smallest action that answers THIS step?
+Prefer ONE targeted command over reading many files. "Read issue #3" means run \`gh issue view 3\`, not read 8 source files to "understand context".
+If you have read more than 3 files without narrowing the question, STOP and call ask_orchestrator. Broad exploration is drift, not diligence.`;
 
 /**
  * Activity feed instruction template.
@@ -34,7 +42,9 @@ When given a task, follow this workflow:
 
 5. **Do NOT list tool commands as steps.** Tool calls are tracked automatically. Steps describe what you're accomplishing.
 
-6. **Complete your plan BEFORE making any tool calls.** The plan is your roadmap.`;
+6. **Complete your plan BEFORE making any tool calls.** The plan is your roadmap.
+
+7. **Use offset for truncated output** — If \`read\` output shows "[...N lines truncated]", use the \`offset\` parameter to continue reading.`;
 
 export const STEPS_MANDATE = `
 
@@ -55,7 +65,10 @@ Example workflow:
 7. advanceStep()
 8. [output your findings]
 
-DO NOT output ## Goal / ## Steps sections. The planSteps() tool replaces them.`;
+DO NOT output ## Goal / ## Steps sections. The planSteps() tool replaces them.
+
+## Goal-achieved early stop
+Once you have achieved the task goal, STOP and report back to the orchestrator. Do NOT execute remaining planned steps just because they were listed. Example: if step 3 found the bug, report the finding — do not proceed to step 4 (fix) or step 5 (test) unless explicitly instructed.`;
 
 /**
  * Full caveman instruction — matches JuliusBrussee/caveman SKILL.md "full" intensity.
@@ -89,6 +102,7 @@ export const SPECIALISTS: Record<string, Specialist> = {
 		name: "scout",
 		description: "Read-only codebase investigator. Uses grep/find/ls tools to locate code, read to examine files. Ideal for architecture discovery, bug investigation, code tracing, and verifying file contents.",
 		tools: ["read", "grep", "find", "ls", "git-read", "gh"],
+		suggestedSkills: ["diagnosing-bugs"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 IMPORTANT: Before doing any work, you MUST call planSteps() to register your plan. This is REQUIRED for the orchestrator to track progress. Example:
@@ -99,7 +113,7 @@ Then after each step, call advanceStep() to mark it complete.
 
 You are a read-only codebase investigator. You NEVER write or edit files.
 
-${SKILL_PACKS.minimalAction}
+${MINIMAL_ACTION}
 
 Your job:
 - Be fast. Use \`grep\` tool to search code contents, \`find\` tool to locate files by name/pattern, \`ls\` tool to list directories, then \`read\` key sections.
@@ -123,11 +137,11 @@ When you finish your analysis, output a structured scope section:
 ## Scope
 - filesToModify: ["path/to/file1.ts", "path/to/file2.ts"]
 - filesToCreate: ["path/to/newfile.ts"]
-- allowedDirectories: ["path/to/allowed/dir"]
+- directories: ["path/to/allowed/dir"]
 - maxFiles: 15
 - maxLinesPerFile: 400
 - changeType: "single-file" | "multi-file"
-- requiresApproval: true | false
+- requiresApprovalBeyondScope: true | false
 
 Be realistic about changeType:
 - "single-file": change touches only one file, trivial edit
@@ -160,6 +174,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "coder",
 		description: "Implementation specialist with full read/write access. Uses edit/write for file changes, bash for verification. Ideal for implementing features and fixing bugs.",
 		tools: ["read", "bash", "edit", "write", "lint"],
+		suggestedSkills: ["implement", "tdd"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are an implementation specialist. You write and edit code.
@@ -215,6 +230,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "reviewer",
 		description: "Read-only code reviewer. Checks for bugs, security issues, performance problems, and style violations. Outputs Critical/Warnings/Suggestions.",
 		tools: ["read", "bash", "grep"],
+		suggestedSkills: ["review"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a code reviewer. You NEVER make changes.
@@ -264,6 +280,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "researcher",
 		description: "Read-only research specialist with web search capabilities. Searches the web, reads docs, configs, and code to answer questions with evidence-based answers and source references.",
 		tools: ["read", "web_search", "fetch_content", "ls", "grep", "find"],
+		suggestedSkills: ["domain-modeling"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a research specialist with web search capabilities. You NEVER write files.
@@ -295,11 +312,11 @@ When you finish your analysis, output a structured scope section:
 ## Scope
 - filesToModify: ["path/to/file1.ts", "path/to/file2.ts"]
 - filesToCreate: ["path/to/newfile.ts"]
-- allowedDirectories: ["path/to/allowed/dir"]
+- directories: ["path/to/allowed/dir"]
 - maxFiles: 15
 - maxLinesPerFile: 400
 - changeType: "single-file" | "multi-file"
-- requiresApproval: true | false
+- requiresApprovalBeyondScope: true | false
 
 Be realistic about changeType:
 - "single-file": change touches only one file, trivial edit
@@ -329,6 +346,7 @@ ${TERSE_INSTRUCTION}`,
 		name: "writer",
 		description: "Documentation specialist with read/write access. Creates and edits markdown docs, uses ls/find to browse directories. Ideal for READMEs, API docs, and project documentation.",
 		tools: ["read", "write", "edit", "ls", "find"],
+		suggestedSkills: ["agents-md-writer"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
 You are a documentation writer. You create and edit docs.
@@ -379,5 +397,50 @@ export function getSpecialist(name: string): Specialist | undefined {
 
 export function listSpecialists(): string[] {
 	return Object.keys(SPECIALISTS);
+}
+
+/**
+ * Generate the skill section for a subagent's system prompt.
+ * Skills are task-driven — the subagent selects based on the task description,
+ * not hard-bound to the specialist role.
+ */
+export function buildSkillSection(specialistName: string, suggestedSkills: string[]): string {
+    const lines = [
+        '',
+        '## Skills',
+        '',
+        `You are an expert ${specialistName}. If your task below explicitly names a skill (e.g., /skill-name), load it via read_skill() and follow its instructions.`,
+        '',
+        'Otherwise, scan <available_skills> above and pick the best match for your task. Read the relevant skill file via read_skill() and follow its methodology.',
+        '',
+        'If no skill matches your task, proceed without one.',
+        '',
+        'After completing your task, note which skills you loaded.',
+        '',
+    ];
+    return lines.join('\n');
+}
+
+/**
+ * Get resolved skill list for a specialist, with optional per-delegation override.
+ *
+ * By default, override MERGES with defaults (deduped). Pass
+ * `disableDefaults: true` to make override fully replace defaults.
+ * If override is undefined or empty, returns defaults unchanged.
+ *
+ * @param name - Specialist name
+ * @param override - Optional skill names to add (merged with defaults unless disabled)
+ * @param disableDefaults - If true, override replaces defaults instead of merging
+ */
+export function getSpecialistSkills(name: string, override?: string[], disableDefaults = false): string[] {
+	const spec = SPECIALISTS[name];
+	if (!spec) return override ?? [];
+	// No override or empty = return defaults
+	if (override === undefined || override.length === 0) return spec.suggestedSkills ?? [];
+	// disableDefaults = skip merge, use override directly
+	if (disableDefaults) return override;
+	// Merge: deduped union of defaults + override
+	const merged = new Set([...(spec.suggestedSkills ?? []), ...override]);
+	return [...merged];
 }
 

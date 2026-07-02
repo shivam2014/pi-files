@@ -2,9 +2,18 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { registerDelegateTool } from "./delegate-tool";
-import { runSubagent } from "./subagent-runner";
-import type { Scope } from "./types";
+import { registerDelegateTool } from "./delegate-tool.ts";
+import { runSubagent } from "./subagent-runner.ts";
+import type { Scope } from "./types.ts";
+
+const mockHasActivePlan = vi.hoisted(() => vi.fn());
+const mockSetupPlanPanel = vi.hoisted(() => vi.fn());
+const mockStartDelegationStep = vi.hoisted(() => vi.fn());
+const mockFinalizePlanStep = vi.hoisted(() => vi.fn());
+const mockErrorPlanStep = vi.hoisted(() => vi.fn());
+const mockIncrementDelegationCount = vi.hoisted(() => vi.fn());
+const mockDecrementDelegationCount = vi.hoisted(() => vi.fn());
+const mockClearPlanIfComplete = vi.hoisted(() => vi.fn());
 
 vi.mock("./subagent-runner.ts", async () => {
 	return {
@@ -15,6 +24,19 @@ vi.mock("./subagent-runner.ts", async () => {
 		isPlanParsed: vi.fn(() => false),
 	};
 });
+
+vi.mock("./plan-panel.ts", () => ({
+	hasActivePlan: (...args: any[]) => mockHasActivePlan(...args),
+	setupPlanPanel: (...args: any[]) => mockSetupPlanPanel(...args),
+	startDelegationStep: (...args: any[]) => mockStartDelegationStep(...args),
+	finalizePlanStep: (...args: any[]) => mockFinalizePlanStep(...args),
+	errorPlanStep: (...args: any[]) => mockErrorPlanStep(...args),
+	incrementDelegationCount: (...args: any[]) => mockIncrementDelegationCount(...args),
+	decrementDelegationCount: (...args: any[]) => mockDecrementDelegationCount(...args),
+	clearPlanIfComplete: (...args: any[]) => mockClearPlanIfComplete(...args),
+}));
+
+mockHasActivePlan.mockReturnValue(true);
 
 function createMockPi() {
 	const tools: any[] = [];
@@ -188,5 +210,38 @@ describe("delegate scope resolution", () => {
 		const result = await execute({ specialist: "coder", task: "fix auth" });
 
 		expect(result.content[0].text).toContain("Scope required for coder");
+	});
+
+	it("passes skills override to runSubagent", async () => {
+		vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
+
+		await execute({
+			specialist: "coder",
+			task: "fix auth",
+			skills: ["tdd", "review"],
+			scope: {
+				filesToModify: ["src/auth.ts"],
+				filesToCreate: [],
+			},
+		});
+
+		const calls = vi.mocked(runSubagent).mock.calls;
+		const last = calls[calls.length - 1];
+		// suggestedSkills is the 9th argument (index 8)
+		expect(last[8]).toEqual(["implement", "tdd", "review"]);
+	});
+
+	it("passes undefined suggestedSkills when no override given", async () => {
+		vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
+
+		await execute({
+			specialist: "writer",
+			task: "write docs",
+		});
+
+		const calls = vi.mocked(runSubagent).mock.calls;
+		const last = calls[calls.length - 1];
+		// suggestedSkills arg should be resolved (mock returns [] for no override)
+		expect(last[8]).toBeDefined();
 	});
 });

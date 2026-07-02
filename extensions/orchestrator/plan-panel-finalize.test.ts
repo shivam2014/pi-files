@@ -3,8 +3,11 @@ import {
 	setupPlanPanel,
 	completePlanStep,
 	finalizePlanStep,
+	clearPlanIfComplete,
+	clearPlanPanel,
 	hasActivePlan,
 	inspectPlanState,
+	addSteps,
 } from "./plan-panel.ts";
 
 interface PlanState {
@@ -15,6 +18,7 @@ interface PlanState {
 		state: string;
 		substepCount: number;
 		detail: string | null;
+		startTime: number | null;
 	}>;
 	completedCount: number;
 	totalCount: number;
@@ -91,5 +95,103 @@ describe("finalizePlanStep matches completePlanStep", () => {
 		// Even with singleton state, both should not throw
 		expect(() => completePlanStep(mockCtx())).not.toThrow();
 		expect(() => finalizePlanStep(mockCtx())).not.toThrow();
+	});
+});
+
+describe("clearPlanIfComplete", () => {
+	beforeEach(() => {
+		// Ensure clean state
+		if (hasActivePlan()) {
+			clearPlanPanel(mockCtx());
+		}
+	});
+
+	it("keeps planState alive after all steps completed", () => {
+		setupPlanPanel("Goal", ["Step A"], mockCtx());
+		expect(hasActivePlan()).toBe(true);
+
+		// Complete the only step
+		finalizePlanStep(mockCtx());
+
+		// Now all steps are completed
+		clearPlanIfComplete(mockCtx());
+
+		// Plan should still be active (not cleared)
+		expect(hasActivePlan()).toBe(true);
+
+		const state = inspectPlanState() as unknown as PlanState;
+		expect(state).not.toBeNull();
+		expect(state.completedCount).toBe(state.totalCount);
+		expect(state.steps[0].state).toBe("completed");
+	});
+
+	it("does nothing when not all steps completed", () => {
+		setupPlanPanel("Goal", ["Step A", "Step B"], mockCtx());
+		expect(hasActivePlan()).toBe(true);
+
+		// Complete only first step
+		finalizePlanStep(mockCtx());
+
+		// Not all done — clearPlanIfComplete should no-op
+		clearPlanIfComplete(mockCtx());
+
+		expect(hasActivePlan()).toBe(true);
+		const state = inspectPlanState() as unknown as PlanState;
+		expect(state.completedCount).toBe(1);
+		expect(state.totalCount).toBe(2);
+	});
+
+	it("does nothing when no active plan", () => {
+		// No plan active
+		if (hasActivePlan()) clearPlanPanel(mockCtx());
+		expect(hasActivePlan()).toBe(false);
+		expect(() => clearPlanIfComplete(mockCtx())).not.toThrow();
+	});
+});
+
+describe("addSteps", () => {
+	beforeEach(() => {
+		if (hasActivePlan()) {
+			clearPlanPanel(mockCtx());
+		}
+	});
+
+	it("adds new steps to an existing plan", () => {
+		setupPlanPanel("Goal", ["Step A", "Step B"], mockCtx());
+		expect(hasActivePlan()).toBe(true);
+
+		addSteps(["Step C", "Step D"]);
+
+		const state = inspectPlanState() as unknown as PlanState;
+		expect(state.totalCount).toBe(4);
+		expect(state.steps[2].label).toBe("Step C");
+		expect(state.steps[3].label).toBe("Step D");
+		expect(state.steps[2].state).toBe("pending");
+		expect(state.steps[3].state).toBe("pending");
+		expect(state.steps[2].startTime).toBeDefined();
+		expect(state.steps[3].startTime).toBeDefined();
+		expect(typeof state.steps[2].startTime).toBe("number");
+		expect(typeof state.steps[3].startTime).toBe("number");
+	});
+
+	it("does not duplicate existing steps", () => {
+		setupPlanPanel("Goal", ["Step A"], mockCtx());
+		expect(hasActivePlan()).toBe(true);
+
+		addSteps(["Step A", "Step B"]);
+
+		const state = inspectPlanState() as unknown as PlanState;
+		expect(state.totalCount).toBe(2);
+		expect(state.steps[0].label).toBe("Step A");
+		expect(state.steps[1].label).toBe("Step B");
+		expect(state.steps[1].startTime).toBeDefined();
+		expect(typeof state.steps[1].startTime).toBe("number");
+	});
+
+	it("does nothing when no active plan", () => {
+		if (hasActivePlan()) clearPlanPanel(mockCtx());
+		expect(hasActivePlan()).toBe(false);
+		expect(() => addSteps(["Step X"])).not.toThrow();
+		expect(hasActivePlan()).toBe(false);
 	});
 });

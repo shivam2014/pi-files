@@ -18,9 +18,12 @@ import {
 	defineTool,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { existsSync } from "fs";
+import { join } from "path";
 
 import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Scope, Substep } from "./types.ts";
+import { buildSkillSection } from "./specialists.ts";
 import {
 	addSubstep,
 	createActivityFeed,
@@ -34,6 +37,8 @@ import {
 	toolCallToSubstep,
 	updateActiveSubstepOutput,
 	renderSubstepLines,
+	substepToolDetail,
+	appendWebSearchResults,
 } from "./activity-feed.ts";
 import { compressOutput, inspectFeedState, snapshotFeedRender } from "./activity-feed.ts";
 import { _spinnerIndex, resetSpinner } from "./spinner-state.ts";
@@ -49,6 +54,16 @@ export interface OrchestratorUi {
 }
 
 export const SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
+
+/**
+ * Resolve skill names to existing SKILL.md paths under agentDir.
+ * Filters out skills whose SKILL.md doesn't exist on disk.
+ */
+export function resolveSkillPaths(skills: string[], agentDir: string): string[] {
+	return skills
+		.map(s => join(agentDir, 'skills', s, 'SKILL.md'))
+		.filter(existsSync);
+}
 
 /** Module-level guards for orchestrator registration skipping. */
 export let _batchLoadSubagent = 0;
@@ -224,7 +239,8 @@ export async function runSubagent(
 	onUpdate?: (update: any) => void,
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
-): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
+	suggestedSkills?: string[],
+): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[]; stopReason?: string; errorMessage?: string; model?: string }> {
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();
 
@@ -263,6 +279,11 @@ export async function runSubagent(
 		envSnapshot = snapshotSubagentEnv();
 		installSubagentEnv(cleanSubagentEnv(envSnapshot));
 
+		// Resolve skill names to paths for DefaultResourceLoader, filtering to existing files
+		const resolvedSkillPaths = (suggestedSkills ?? [])
+			.map(s => join(getAgentDir(), 'skills', s, 'SKILL.md'))
+			.filter(existsSync);
+
 		// Load extensions for subagent, flag context so orchestrator skips re-registration
 		_batchLoadSubagent++;
 		process.env[SUBAGENT_ENV_KEY] = "1";
@@ -271,6 +292,7 @@ export async function runSubagent(
 			loader = new DefaultResourceLoader({
 				cwd,
 				agentDir: getAgentDir(),
+				additionalSkillPaths: resolvedSkillPaths,
 				systemPromptOverride: () => {
 				let prompt = specialist.systemPrompt;
 				if (scope) {
@@ -289,6 +311,10 @@ export async function runSubagent(
 					if (scope.boundaries) {
 						prompt += `- Boundaries: ${scope.boundaries}\n`;
 					}
+				}
+				// Skill section: task-driven skill selection
+				if (suggestedSkills && suggestedSkills.length > 0) {
+					prompt += buildSkillSection(specialist.name, suggestedSkills);
 				}
 				return prompt;
 			},
@@ -429,6 +455,9 @@ export async function runSubagent(
 		signal?.addEventListener("abort", () => peekAbort.abort(), { once: true });
 		peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
 
+		let lastStopReason: string | undefined;
+		let lastErrorMessage: string | undefined;
+
 		const unsubscribe = session.subscribe((event) => {
 			// Standard assistant message delta
 			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
@@ -453,6 +482,10 @@ export async function runSubagent(
 			if (event.type === "message_end") {
 				if (event.message?.role === "assistant") {
 					turns++;
+					// Capture stopReason and errorMessage from the assistant message
+					const assistantMsg = event.message as any;
+					lastStopReason = assistantMsg.stopReason;
+					lastErrorMessage = assistantMsg.errorMessage;
 					const text = renderActivityFeed(specialist.name, feed);
 					onUpdate?.({
 						content: [{ type: "text", text }],
@@ -489,7 +522,9 @@ export async function runSubagent(
 				const substepLabel = toolCallToSubstep(event.toolName, event.args);
 				// Auto-create substep if feed is empty (model skipped text output)
 				feed = addSubstep(feed, substepLabel);
-				feed = setToolDetail(feed, substepLabel);
+				// Show multi-item detail (queries[], urls[]) in tool_detail instead of repeating substep label
+				const extraDetail = substepToolDetail(event.toolName, event.args);
+				feed = setToolDetail(feed, extraDetail ?? substepLabel);
 				recordTimelineFrame("tool_start", inspectFeedState(feed), snapshotFeedRender(feed));
 				_lastFeedSnapshot = null;
 				updatePeekFeed(feed);
@@ -567,7 +602,22 @@ export async function runSubagent(
 					}
 				}
 				feed = clearToolDetail(feed);
-				feed = completeLastSubstep(feed, outputPreview, isError);
+				// For web_search, enrich substep label with results count from tool result
+				let completedWithLabel = false;
+				if (event.toolName === "web_search" && !isError) {
+					const totalResults = (event.result as any)?.details?.totalResults;
+					if (typeof totalResults === "number") {
+						const step = feed.steps[feed.currentStep];
+						const sub = step?.substeps?.find(s => !s.completed);
+						if (sub?.label) {
+							feed = completeActiveSubstepWithLabel(feed, appendWebSearchResults(sub.label, totalResults), outputPreview, isError);
+							completedWithLabel = true;
+						}
+					}
+				}
+				if (!completedWithLabel) {
+					feed = completeLastSubstep(feed, outputPreview, isError);
+				}
 				// After edit/write tool completion, add lint indicator substep
 				if (!isError && (event.toolName === "edit" || event.toolName === "write")) {
 					feed = addSubstep(feed, `lint: checking ${(event as any).arguments?.filePath ?? (event as any).arguments?.path ?? "files"}...`);
@@ -630,10 +680,26 @@ export async function runSubagent(
 
 		try {
 			await session.prompt(task);
-			finalStatus = "completed";
+
+			// Model-level error (stopReason="error" doesn't throw, but we must surface it)
+			if (lastStopReason === "error") {
+				const errorMsg = lastErrorMessage || "Unknown model error";
+				finalStatus = "error";
+				output = `[error] ${errorMsg}`;
+				feed = markFeedError(feed, errorMsg);
+				updatePeekFeed(feed);
+				const errorText = renderActivityFeed(specialist.name, feed) ?? errorMsg;
+				onUpdate?.({content: [{ type: "text", text: errorText }],
+					details: { specialist: specialist.name, status: "error", error: errorMsg },
+				});
+			} else {
+				finalStatus = "completed";
+			}
 		} catch (error) {
 			const isAborted = signal?.aborted || (error instanceof Error && error.name === "AbortError");
-			const errorMsg = error instanceof Error ? error.message : String(error);
+			const errorMsg = lastErrorMessage && typeof lastErrorMessage === 'string' && lastErrorMessage.length > 0
+				? lastErrorMessage
+				: error instanceof Error ? error.message : String(error);
 			finalStatus = isAborted ? "aborted" : "error";
 			// Surface error in activity feed before cleanup
 			feed = markFeedError(feed, errorMsg);
@@ -685,7 +751,7 @@ export async function runSubagent(
 			}
 		}
 
-		return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime, toolCallTrail };
+		return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime, toolCallTrail, stopReason: lastStopReason, errorMessage: lastErrorMessage, model: (model as any)?.id ?? (model as any)?.model ?? undefined };
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error);
 		const stack = error instanceof Error ? error.stack : "";

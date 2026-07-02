@@ -363,15 +363,78 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 			return `Linting ${normalizePath(input?.path || "files")}`;
 		case "typecheck":
 			return `Type checking...`;
-		case "web_search":
-			const query = input?.query || "...";
-			return `Search web: "${(typeof query === "string" ? query : "...").slice(0, 200)}"`;
-		case "fetch_content":
-			const url = input?.url || "";
-			return `Fetch URL: ${(typeof url === "string" ? url : "").slice(0, 200)}`;
+		case "web_search": {
+			const queries = Array.isArray(input?.queries) && input.queries.length > 0
+				? input.queries.filter((q: unknown) => typeof q === "string")
+				: typeof input?.query === "string" ? [input.query] : [];
+			if (queries.length === 0) return "Search web: (no query)";
+			const first = queries[0].slice(0, 200);
+			const label = `Search web: "${first}"`;
+			return queries.length > 1 ? `${label} (${queries.length} queries)` : label;
+		}
+		case "fetch_content": {
+			const urls = Array.isArray(input?.urls) && input.urls.length > 0
+				? input.urls.filter((u: unknown) => typeof u === "string")
+				: typeof input?.url === "string" ? [input.url] : [];
+			if (urls.length === 0) return "Fetch URL: (no URL)";
+			const first = urls[0].replace(/^https?:\/\//, "").slice(0, 200);
+			const label = `Fetch URL: ${first}`;
+			return urls.length > 1 ? `${label} (+${urls.length - 1} more)` : label;
+		}
 		default:
 			return `Calling ${toolName}...`;
 	}
+}
+
+/**
+ * Returns multi-line tool_detail for multi-item tool calls (queries[], urls[]).
+ * Returns undefined for single-item calls (default: reuse substep label as tool_detail).
+ * Each line is separated by \n for multi-line rendering in the activity feed.
+ */
+export function substepToolDetail(toolName: string, input: unknown): string | undefined {
+	const MAX_DETAIL = 3;
+	switch (toolName) {
+		case "web_search": {
+			const queries = Array.isArray((input as any)?.queries)
+				? (input as any).queries.filter((q: unknown) => typeof q === "string")
+				: [];
+			if (queries.length <= 1) return undefined;
+			const extra = queries.slice(1, MAX_DETAIL + 1);
+			const lines = extra.map((q: string, i: number) => `Query ${i + 2}: "${q}"`);
+			if (queries.length > MAX_DETAIL + 1) {
+				lines.push(`+${queries.length - MAX_DETAIL - 1} more queries`);
+			}
+			return lines.join("\n");
+		}
+		case "fetch_content": {
+			const urls = Array.isArray((input as any)?.urls)
+				? (input as any).urls.filter((u: unknown) => typeof u === "string")
+				: [];
+			if (urls.length <= 1) return undefined;
+			const extra = urls.slice(1, MAX_DETAIL + 1);
+			const lines = extra.map((u: string, i: number) => `URL ${i + 2}: ${u.replace(/^https?:\/\//, "")}`);
+			if (urls.length > MAX_DETAIL + 1) {
+				lines.push(`+${urls.length - MAX_DETAIL - 1} more URLs`);
+			}
+			return lines.join("\n");
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Enriches a web_search substep label with results count on completion.
+ * Input:  "Search web: \"query\" (3 queries)"
+ * Output: "Search web: \"query\" (3 queries, 15 results)"
+ * Input:  "Search web: \"query\""
+ * Output: "Search web: \"query\" (5 results)"
+ */
+export function appendWebSearchResults(label: string, totalResults: number): string {
+	const match = label.match(/\((\d+) queries\)$/);
+	if (match) {
+		return label.replace(/\(\d+ queries\)$/, `(${match[1]} queries, ${totalResults} results)`);
+	}
+	return `${label} (${totalResults} results)`;
 }
 
 /**
@@ -574,8 +637,14 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 					// Active substep
 					lines.push(`    ${spinner} ${sub.label}`);
 					// Tool detail (ephemeral, only for active substep)
+					// Supports multi-line (\n-separated) for multi-item tool calls
 					if (sub.toolDetail) {
-						lines.push(`        ${spinner} Running: ${sub.toolDetail}`);
+						const detailLines = sub.toolDetail.split("\n");
+						for (let di = 0; di < detailLines.length; di++) {
+							// Single-line keeps "Running:" prefix; multi-line renders without prefix
+							const prefix = detailLines.length === 1 ? "Running: " : "";
+							lines.push(`        ${spinner} ${prefix}${detailLines[di]}`);
+						}
 					}
 				} else {
 					// Pending substep
