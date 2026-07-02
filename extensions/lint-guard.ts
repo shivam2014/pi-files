@@ -41,7 +41,7 @@ async function runTool(tool: LintTool, filePath: string): Promise<LintResult> {
 	try {
 		let output = '';
 		const { exitCode } = await local.exec(
-			`bash ${tool.tool} ${tool.args.join(' ')}`,
+			`${tool.tool} ${tool.args.join(' ')}`,
 			tool.cwd || process.cwd(),
 			{
 				onData: (data: string | Buffer) => { output += data.toString(); },
@@ -258,7 +258,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				let output = '';
 				const { exitCode } = await local.exec(
-					'bash npx tsc --noEmit --pretty false',
+					'npx tsc --noEmit --pretty false',
 					ctx.cwd,
 					{
 						onData: (data: string | Buffer) => { output += data.toString(); },
