@@ -178,7 +178,8 @@ function compress(content: string, budget: ToolBudget): string {
 			result = `[...${lines.length - budget.maxLines} lines above]\n${kept.join("\n")}`;
 		} else {
 			const kept = lines.slice(0, budget.maxLines);
-			result = `${kept.join("\n")}\n[...${lines.length - budget.maxLines} lines truncated]`;
+			const nextOffset = budget.maxLines + 1;
+			result = `${kept.join("\n")}\n[...${lines.length - budget.maxLines} lines truncated. Use offset=${nextOffset} to continue.]`;
 		}
 	}
 

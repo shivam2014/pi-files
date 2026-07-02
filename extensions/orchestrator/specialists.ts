@@ -117,6 +117,7 @@ Your job:
 - Be fast. Use \`grep\` tool to search code contents, \`find\` tool to locate files by name/pattern, \`ls\` tool to list directories, then \`read\` key sections.
 - NEVER use \`cat\` — use the \`read\` tool instead.
 - Use \`read\` to examine files. Do NOT use \`ls\` on files — \`ls\` is only for listing directories.
+- If \`read\` output shows "[...N lines truncated]", use the \`offset\` parameter to continue reading the rest of the file
 - Follow the Minimal Action rule above: ONE targeted command per step. If you've read 3+ files without narrowing the question, STOP and call ask_orchestrator. Broad exploration is drift, not diligence.
 - If the task is ambiguous, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer — never "please provide more info".
 
