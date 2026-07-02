@@ -239,7 +239,16 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		}
 	} catch {}
 
-	// NEW: Capture subagent diagnostics (conditionally based on env var)
+	// === Check for errors/abort BEFORE diagnostic capture (capture may modify output) ===
+	const isAborted = (signal?.aborted || false) || (result?.output?.startsWith("[aborted]") ?? false);
+	let isError = !result || !result.output || result.output.startsWith("[error]") || result.output.startsWith("[aborted]");
+	// Also check model-level stopReason="error" (may not have [error] prefix in edge cases)
+	if (!isError && result?.stopReason === "error") {
+		isError = true;
+	}
+	const hasError = isAborted || isError;
+
+	// Capture subagent diagnostics (conditionally based on env var)
 	let diagnostic: SubagentDiagnostic | null = null;
 	if (isDiagnosticsEnabled()) {
 		diagnostic = captureDiagnostic({
@@ -279,7 +288,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 			// Notify user via SDK
 			try {
 				ctx.ui.notify(
-					`⚠ Diagnostic: ${diagnostic.specialist} returned 0 tool calls in ${diagnostic.turns} turn(s)`,
+					`⚠ Diagnostic: ${diagnostic.specialist} failed — ${diagnostic.errorMessage || `0 tool calls in ${diagnostic.turns} turn(s)`}`,
 					"warning"
 				);
 			} catch (e) {
@@ -288,7 +297,10 @@ The scope tells the coder exactly which files it's allowed to touch.`
 
 			// Text-mode visible marker in delegation output
 			if (diagnostic) {
-				const warningLine = `\n\n⚠️ [Diagnostic] ${diagnostic.specialist} returned 0 tool calls in ${diagnostic.turns} turn(s). Incident logged to disk.\n`;
+				const warningMsg = diagnostic.errorMessage
+					? `${diagnostic.specialist} failed: ${diagnostic.errorMessage.slice(0, 150)}`
+					: `${diagnostic.specialist} returned 0 tool calls in ${diagnostic.turns} turn(s). Incident logged to disk.`;
+				const warningLine = `\n\n⚠️ [Diagnostic] ${warningMsg}\n`;
 				result.output = result.output ? warningLine + result.output : warningLine;
 			}
 
@@ -305,11 +317,6 @@ The scope tells the coder exactly which files it's allowed to touch.`
 			}
 		}
 	}
-
-	// === Check for errors/abort BEFORE any parsing ===
-	const isAborted = (signal?.aborted || false) || (result?.output?.startsWith("[aborted]") ?? false);
-	const isError = !result || !result.output || result.output.startsWith("[error]") || result.output.startsWith("[aborted]");
-	const hasError = isAborted || isError;
 
 	try {
 		// Only do analysis if no error

@@ -680,7 +680,21 @@ export async function runSubagent(
 
 		try {
 			await session.prompt(task);
-			finalStatus = "completed";
+
+			// Model-level error (stopReason="error" doesn't throw, but we must surface it)
+			if (lastStopReason === "error") {
+				const errorMsg = lastErrorMessage || "Unknown model error";
+				finalStatus = "error";
+				output = `[error] ${errorMsg}`;
+				feed = markFeedError(feed, errorMsg);
+				updatePeekFeed(feed);
+				const errorText = renderActivityFeed(specialist.name, feed) ?? errorMsg;
+				onUpdate?.({content: [{ type: "text", text: errorText }],
+					details: { specialist: specialist.name, status: "error", error: errorMsg },
+				});
+			} else {
+				finalStatus = "completed";
+			}
 		} catch (error) {
 			const isAborted = signal?.aborted || (error instanceof Error && error.name === "AbortError");
 			const errorMsg = lastErrorMessage && typeof lastErrorMessage === 'string' && lastErrorMessage.length > 0
