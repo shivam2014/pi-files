@@ -11,8 +11,7 @@
 
 import { existsSync } from "node:fs";
 import { join, resolve, delimiter } from "node:path";
-import { spawn } from "node:child_process";
-import { getAgentDir, getShellConfig, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, createLocalBashOperations, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
 	buildLintTool,
@@ -20,6 +19,8 @@ import {
 	type LintTool,
 	type LintResult,
 } from "./lint-guard-core";
+
+const local = createLocalBashOperations();
 
 /** Build shell environment with SDK bin dir prepended to PATH */
 function getShellEnv(): NodeJS.ProcessEnv {
@@ -33,57 +34,45 @@ function getShellEnv(): NodeJS.ProcessEnv {
 }
 
 // ── runTool ───────────────────────────────────────────────────────────
-// Spawns the detected tool and returns a LintResult.
+// Runs the detected tool via local.exec() and returns a LintResult.
 // Timeouts after 10s, caps error output at 2000 chars.
 
-function runTool(tool: LintTool, filePath: string): Promise<LintResult> {
-	return new Promise((resolve) => {
-		const shellConfig = getShellConfig();
-		const child = spawn(shellConfig.shell, [...shellConfig.args, 'exec "$@"', "bash", tool.tool, ...tool.args], {
-			cwd: tool.cwd || process.cwd(),
-			env: getShellEnv(),
-			stdio: ["ignore", "pipe", "pipe"],
-			timeout: 10_000,
-		});
-
-		let stdout = "";
-		let stderr = "";
-
-		child.stdout.on("data", (data) => {
-			stdout += data.toString();
-		});
-		child.stderr.on("data", (data) => {
-			stderr += data.toString();
-		});
-
-		child.on("close", (code) => {
-			let output = (stdout + stderr).trim();
-			let success = code === 0;
-
-			if (tool.name === "gofmt") {
-				success = code === 0 && output.length === 0;
-				if (!success && output.length === 0) {
-					output = "gofmt would reformat this file";
-				}
+async function runTool(tool: LintTool, filePath: string): Promise<LintResult> {
+	try {
+		let output = '';
+		const { exitCode } = await local.exec(
+			`bash ${tool.tool} ${tool.args.join(' ')}`,
+			tool.cwd || process.cwd(),
+			{
+				onData: (data: string | Buffer) => { output += data.toString(); },
+				timeout: 10,
+				env: getShellEnv(),
 			}
+		);
+		output = output.trim();
+		let success = exitCode === 0;
 
-			resolve({
-				success,
-				errors: success ? "" : output.slice(0, 2000),
-				tool: tool.name,
-				file: filePath,
-			});
-		});
+		if (tool.name === "gofmt") {
+			success = exitCode === 0 && output.length === 0;
+			if (!success && output.length === 0) {
+				output = "gofmt would reformat this file";
+			}
+		}
 
-		child.on("error", (err) => {
-			resolve({
-				success: false,
-				errors: `Tool not available: ${err.message}`,
-				tool: tool.name,
-				file: filePath,
-			});
-		});
-	});
+		return {
+			success,
+			errors: success ? "" : output.slice(0, 2000),
+			tool: tool.name,
+			file: filePath,
+		};
+	} catch (err: any) {
+		return {
+			success: false,
+			errors: `Tool not available: ${err.message}`,
+			tool: tool.name,
+			file: filePath,
+		};
+	}
 }
 
 // ── emitLintResult ────────────────────────────────────────────────────
@@ -171,7 +160,7 @@ export default function (pi: ExtensionAPI) {
 			return {
 				block: true,
 				reason:
-					"Use `edit` or `write` tool to modify files, not `bash` with `sed`/`awk`. This triggers automatic lint checks.",
+					"Use `edit` or `write` tool to modify files, not `bash` with `sed`/awk`. This triggers automatic lint checks.",
 			};
 		}
 	});
@@ -266,70 +255,44 @@ export default function (pi: ExtensionAPI) {
 				details: { status: "running" },
 			});
 
-			return new Promise((resolve) => {
-				const shellConfig = getShellConfig();
-				const proc = spawn(
-					shellConfig.shell,
-					[...shellConfig.args, 'exec "$@"', "bash", "npx", "tsc", "--noEmit", "--pretty", "false"],
+			try {
+				let output = '';
+				const { exitCode } = await local.exec(
+					'bash npx tsc --noEmit --pretty false',
+					ctx.cwd,
 					{
-						cwd: ctx.cwd,
+						onData: (data: string | Buffer) => { output += data.toString(); },
+						timeout: 120,
 						env: getShellEnv(),
-						stdio: ["ignore", "pipe", "pipe"],
-					},
+					}
 				);
-
-				let stdout = "";
-				let stderr = "";
-
-				proc.stdout.on("data", (data: Buffer) => {
-					stdout += data.toString();
-				});
-				proc.stderr.on("data", (data: Buffer) => {
-					stderr += data.toString();
-				});
-
-				proc.on("close", (code: number | null) => {
-					const output = (stdout + stderr).trim();
-					const capped =
-						output.length > 5000
-							? output.slice(0, 5000) +
-								"\n\n[output truncated]"
-							: output;
-					const success = code === 0;
-					resolve({
-						content: [
-							{
-								type: "text",
-								text: `${success ? "✓ Types clean" : "✗ Type errors"}\n\n${capped || "(no output)"}`,
-							},
-						],
-						details: { success, errors: capped },
-					});
-				});
-
-				proc.on("error", (err: Error) => {
-					resolve({
-						content: [
-							{
-								type: "text",
-								text: `Failed to run tsc: ${err.message}`,
-							},
-						],
-						details: { success: false },
-					});
-				});
-
-				if (signal) {
-					const kill = () => {
-						proc.kill("SIGTERM");
-						setTimeout(() => {
-							if (!proc.killed) proc.kill("SIGKILL");
-						}, 3000);
-					};
-					if (signal.aborted) kill();
-					signal.addEventListener("abort", kill, { once: true });
-				}
-			});
+				const trimmed = output.trim();
+				const capped =
+					trimmed.length > 5000
+						? trimmed.slice(0, 5000) +
+							"\n\n[output truncated]"
+						: trimmed;
+				const success = exitCode === 0;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `${success ? "✓ Types clean" : "✗ Type errors"}\n\n${capped || "(no output)"}`,
+						},
+					],
+					details: { success, errors: capped },
+				};
+			} catch (err: any) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Failed to run tsc: ${err.message}`,
+						},
+					],
+					details: { success: false },
+				};
+			}
 		},
 	});
 
