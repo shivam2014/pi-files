@@ -18,9 +18,12 @@ import {
 	defineTool,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { existsSync } from "fs";
+import { join } from "path";
 
 import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Scope, Substep } from "./types.ts";
+import { buildSkillSection } from "./specialists.ts";
 import {
 	addSubstep,
 	createActivityFeed,
@@ -51,6 +54,16 @@ export interface OrchestratorUi {
 }
 
 export const SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
+
+/**
+ * Resolve skill names to existing SKILL.md paths under agentDir.
+ * Filters out skills whose SKILL.md doesn't exist on disk.
+ */
+export function resolveSkillPaths(skills: string[], agentDir: string): string[] {
+	return skills
+		.map(s => join(agentDir, 'skills', s, 'SKILL.md'))
+		.filter(existsSync);
+}
 
 /** Module-level guards for orchestrator registration skipping. */
 export let _batchLoadSubagent = 0;
@@ -226,7 +239,7 @@ export async function runSubagent(
 	onUpdate?: (update: any) => void,
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
-	skills?: string[],
+	suggestedSkills?: string[],
 ): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[] }> {
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();
@@ -266,6 +279,11 @@ export async function runSubagent(
 		envSnapshot = snapshotSubagentEnv();
 		installSubagentEnv(cleanSubagentEnv(envSnapshot));
 
+		// Resolve skill names to paths for DefaultResourceLoader, filtering to existing files
+		const resolvedSkillPaths = (suggestedSkills ?? [])
+			.map(s => join(getAgentDir(), 'skills', s, 'SKILL.md'))
+			.filter(existsSync);
+
 		// Load extensions for subagent, flag context so orchestrator skips re-registration
 		_batchLoadSubagent++;
 		process.env[SUBAGENT_ENV_KEY] = "1";
@@ -274,6 +292,7 @@ export async function runSubagent(
 			loader = new DefaultResourceLoader({
 				cwd,
 				agentDir: getAgentDir(),
+				additionalSkillPaths: resolvedSkillPaths,
 				systemPromptOverride: () => {
 				let prompt = specialist.systemPrompt;
 				if (scope) {
@@ -293,9 +312,9 @@ export async function runSubagent(
 						prompt += `- Boundaries: ${scope.boundaries}\n`;
 					}
 				}
-				// Inject skill references for SDK skill discovery (issue #41)
-				if (skills && skills.length > 0) {
-					prompt += `\n\n## Available Skills\nLoad these skills on demand via /<skill-name> when relevant to your task:\n${skills.map(s => `- /${s}`).join('\n')}`;
+				// Skill section: task-driven skill selection
+				if (suggestedSkills && suggestedSkills.length > 0) {
+					prompt += buildSkillSection(specialist.name, suggestedSkills);
 				}
 				return prompt;
 			},

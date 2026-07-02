@@ -5,6 +5,8 @@ const mockSpecialists = vi.hoisted(() => ({
   test: { name: "test", tools: ["read", "write"], systemPrompt: "test" },
   coder: { name: "coder", tools: ["edit", "write", "read", "bash"], systemPrompt: "coder" },
   researcher: { name: "researcher", tools: ["read", "grep", "bash"], systemPrompt: "researcher" },
+  scout: { name: "scout", tools: ["read", "grep", "bash"], systemPrompt: "scout" },
+  reviewer: { name: "reviewer", tools: ["read", "bash", "grep"], systemPrompt: "reviewer" },
   writer: { name: "writer", tools: ["read", "write"], systemPrompt: "writer" },
 }));
 
@@ -177,6 +179,98 @@ describe("executeDelegate", () => {
       await executeDelegate({ specialist: "test", task: "x" }, createMockCtx(), vi.fn());
       expect(mockClearScope).toHaveBeenCalledOnce();
       expect(mockDecrementDelegationCount).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("read-only specialists", () => {
+    it("Scout with empty scope is allowed (no vague-scope warning)", async () => {
+      const r = await executeDelegate(
+        { specialist: "scout", task: "find auth code" },
+        createMockCtx(),
+        vi.fn(),
+      );
+      expect(r.content[0].text).not.toContain("clarify");
+      expect(r.content[0].text).not.toContain("vague");
+      expect(r.details.status).toBe("done");
+    });
+
+    it("Reviewer with empty scope is allowed", async () => {
+      const r = await executeDelegate(
+        { specialist: "reviewer", task: "review PR" },
+        createMockCtx(),
+        vi.fn(),
+      );
+      expect(r.content[0].text).not.toContain("clarify");
+      expect(r.content[0].text).not.toContain("vague");
+      expect(r.details.status).toBe("done");
+    });
+
+    it("Researcher with empty scope is allowed", async () => {
+      const r = await executeDelegate(
+        { specialist: "researcher", task: "research topic" },
+        createMockCtx(),
+        vi.fn(),
+      );
+      expect(r.content[0].text).not.toContain("clarify");
+      expect(r.content[0].text).not.toContain("vague");
+      expect(r.details.status).toBe("done");
+    });
+
+    it("Coder with empty scope still gets vague-scope warning (unchanged)", async () => {
+      mockResolve.mockReturnValueOnce("ask");
+      const r = await executeDelegate(
+        {
+          specialist: "coder",
+          task: "fix bug",
+          scope: {
+            filesToModify: [],
+            filesToCreate: [],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: "multi-file",
+            maxLinesPerFile: 400,
+            gateMode: "strict" as const,
+          },
+        },
+        createMockCtx(),
+        vi.fn(),
+      );
+      expect(r.content[0].text).toContain("clarify");
+    });
+
+    it("Writer with empty scope still gets vague-scope warning (unchanged)", async () => {
+      mockResolve.mockReturnValueOnce("ask");
+      const r = await executeDelegate(
+        {
+          specialist: "writer",
+          task: "write doc",
+          scope: {
+            filesToModify: [],
+            filesToCreate: [],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: "multi-file",
+            maxLinesPerFile: 400,
+            gateMode: "strict" as const,
+          },
+        },
+        createMockCtx(),
+        vi.fn(),
+      );
+      expect(r.content[0].text).toContain("clarify");
+    });
+
+    it("read-only specialist does not get vague-scope warning even when resolve returns 'ask'", async () => {
+      mockResolve.mockReturnValueOnce("ask");
+      const result = await executeDelegate(
+        { specialist: "scout", task: "some read task" },
+        createMockCtx(),
+        vi.fn(),
+      );
+      expect(result.content[0].text).not.toContain("clarify");
+      expect(result.content[0].text).not.toContain("vague");
     });
   });
 

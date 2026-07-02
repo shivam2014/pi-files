@@ -3,39 +3,38 @@ import { SPECIALISTS, getSpecialistSkills, listSpecialists } from "./specialists
 
 describe("specialist default skills (#42)", () => {
 	it("scout has diagnosing-bugs as default skill", () => {
-		expect(SPECIALISTS.scout.skills).toContain("diagnosing-bugs");
+		expect(SPECIALISTS.scout.suggestedSkills).toContain("diagnosing-bugs");
 	});
 
 	it("coder has implement and tdd as default skills", () => {
-		expect(SPECIALISTS.coder.skills).toContain("implement");
-		expect(SPECIALISTS.coder.skills).toContain("tdd");
+		expect(SPECIALISTS.coder.suggestedSkills).toContain("implement");
+		expect(SPECIALISTS.coder.suggestedSkills).toContain("tdd");
 	});
 
 	it("reviewer has review as default skill", () => {
-		expect(SPECIALISTS.reviewer.skills).toContain("review");
+		expect(SPECIALISTS.reviewer.suggestedSkills).toContain("review");
 	});
 
 	it("researcher has domain-modeling as default skill", () => {
-		expect(SPECIALISTS.researcher.skills).toContain("domain-modeling");
+		expect(SPECIALISTS.researcher.suggestedSkills).toContain("domain-modeling");
 	});
 
 	it("writer has agents-md-writer as default skill", () => {
-		expect(SPECIALISTS.writer.skills).toContain("agents-md-writer");
+		expect(SPECIALISTS.writer.suggestedSkills).toContain("agents-md-writer");
 	});
 
-	it("all specialists have a skills array", () => {
+	it("all specialists have suggestedSkills array", () => {
 		for (const name of listSpecialists()) {
-			expect(Array.isArray(SPECIALISTS[name].skills)).toBe(true);
-			expect(SPECIALISTS[name].skills!.length).toBeGreaterThan(0);
+			expect(Array.isArray(SPECIALISTS[name].suggestedSkills)).toBe(true);
+			expect(SPECIALISTS[name].suggestedSkills!.length).toBeGreaterThan(0);
 		}
 	});
 });
 
 describe("getSpecialistSkills (#42)", () => {
-	it("returns override when provided (replaces defaults)", () => {
+	it("returns merge of defaults and override when override provided", () => {
 		const result = getSpecialistSkills("coder", ["review"]);
-		expect(result).toEqual(["review"]);
-		expect(result).not.toContain("implement");
+		expect(result).toEqual(["implement", "tdd", "review"]);
 	});
 
 	it("returns defaults when no override given", () => {
@@ -54,8 +53,8 @@ describe("getSpecialistSkills (#42)", () => {
 		expect(result).toEqual(["tdd"]);
 	});
 
-	it("empty override array replaces defaults (not appends)", () => {
+	it("empty override array returns defaults unchanged", () => {
 		const result = getSpecialistSkills("coder", []);
-		expect(result).toEqual([]);
+		expect(result).toEqual(["implement", "tdd"]);
 	});
 });

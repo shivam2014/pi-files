@@ -121,3 +121,45 @@ _Avoid:_ prompt factory, system prompt generator, prompt assembler
 Module that wires tools, commands, and event handlers into the extension API.
 
 _Avoid:_ plugin registry, extension registrar, tool registrar
+
+## ReadSkillTool
+
+Tool that reads SKILL.md files from the skills directory by name. It resolves `~/.pi/agent/skills/{name}/SKILL.md`, reads the file synchronously, and returns the content. Path-sandboxed to the skills directory: directory traversal via `../` is blocked. Returns an error for unknown or non-existent skills. Registered in the orchestrator's active tools alongside plan, delegate, and fusion. Only accessible in orchestrator context, not during subagent runs.
+
+_Avoid:_ skill reader, skill file opener, skill fetcher
+
+## SkillRegistration
+
+Process of loading skill files into the subagent's resource loader. After resolving skill names from a specialist's skills array to their SKILL.md file paths, those paths are passed as additionalSkillPaths to DefaultResourceLoader. This enables the SDK to generate the available_skills XML block in the subagent's system prompt and makes skill content accessible via the read tool. It does not modify the skills themselves or change their content; it only makes them visible and accessible to the subagent.
+
+_Avoid:_ skill loading, skill injection, skill mounting
+
+## SkillEnforcement
+
+System prompt section that directs a subagent to read and follow its assigned skills. Generated dynamically from the specialist's skills array, the section lists each skill by path and instructs the subagent to read them before starting work. This is NOT hardcoded per specialist — it is generated from the skills[] array so it stays in sync when skills change. The enforcement is textual (a prompt instruction), not a tool-level gate; the subagent can choose to ignore the instruction, though it violates the delegation contract.
+
+_Avoid:_ skill mandate, forced skill reading, skill compliance
+
+## SkillMerge
+
+Behavior of getSpecialistSkills() when an override skills array is provided. By default, the override is merged with the specialist's default skills, deduplicated, preserving the union of both sets. A disableDefaults flag switches to replacement mode where the override replaces defaults entirely. This ensures that passing skills: ["review"] to a coder adds review alongside implement and tdd rather than silently dropping them. Empty or undefined override returns defaults unchanged.
+
+_Avoid:_ skill override, skill replacement, skill append
+
+## SubagentDiagnostic
+
+Structured record produced when captureDiagnostic() detects a silent subagent failure or crash. A silent failure is defined as 0 tool calls across 1+ turns with output under 50 characters. A crash is defined as 0 tool calls with no output at all. Q&A tasks (short descriptions without file references) are suppressed to avoid false positives. The diagnostic includes a metrics snapshot (tool call counts, turns, elapsed time), a redacted output preview (capped at 200 chars), and a crashed boolean. Written to disk at diagnostics/YYYY-MM-DD/{sessionId}/incident-{timestamp}-{specialist}-{shortHash}.json with schema version 1.
+
+_Avoid:_ failure record, incident report, crash log
+
+## PlanLifecycle
+
+Lifecycle rules for the orchestrator's plan panel. After all declared steps complete, the plan remains active (hasActivePlan returns true) so the orchestrator can continue delegating without re-declaring the plan. Steps can be added dynamically via the plan_add_steps tool, which accepts an array of step labels and appends them to the current plan, skipping duplicates. The plan is only fully cleared on explicit agent_end or session start, not on step completion. This prevents the common pattern where the orchestrator must re-plan after every delegation batch.
+
+_Avoid:_ plan panel lifecycle, plan auto-clear, step management
+
+## IntrospectionTools
+
+Tools that let the orchestrator query its own capabilities at runtime. list_skills scans ~/.pi/agent/skills/, reads SKILL.md frontmatter, and returns a formatted list of all installed skills with descriptions. list_tools calls pi.getActiveTools() and returns the orchestrator's currently active tool set. These complement the passive available_skills XML block by providing dynamic query ability — the orchestrator can discover what's available without relying on its system prompt.
+
+_Avoid:_ skill discovery, tool discovery, capability query

@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { setupPlanPanel, summarizeGoal } from "./plan-panel.ts";
+import { setupPlanPanel, summarizeGoal, addSteps } from "./plan-panel.ts";
 
 function deriveGoal(goal: string | undefined, steps: string[] | undefined): string {
     if (goal?.trim()) return goal.trim();
@@ -42,6 +42,25 @@ export function registerPlanTool(pi: ExtensionAPI) {
             const first = result.content?.[0];
             const text = first && first.type === "text" ? first.text : "Plan set";
             return new Text(`✓ ${text}`, 0, 0);
+        },
+    });
+    registerPlanAddStepsTool(pi);
+}
+
+export function registerPlanAddStepsTool(pi: ExtensionAPI) {
+    pi.registerTool({
+        name: "plan_add_steps",
+        label: "Add Plan Steps",
+        description: "Add new steps to the current active plan. Duplicate step labels are skipped.",
+        parameters: Type.Object({
+            steps: Type.Array(Type.String()),
+        }),
+        async execute(toolCallId, params, signal, onUpdate, ctx) {
+            addSteps(params.steps);
+            return {
+                content: [{ type: "text", text: `Added ${params.steps.length} step(s) to plan.` }],
+                details: {},
+            };
         },
     });
 }

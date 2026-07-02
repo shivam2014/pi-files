@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { registerDelegateTool } from "./delegate-tool";
-import { runSubagent } from "./subagent-runner";
-import type { Scope } from "./types";
+import { registerDelegateTool } from "./delegate-tool.ts";
+import { runSubagent } from "./subagent-runner.ts";
+import type { Scope } from "./types.ts";
 
 const mockHasActivePlan = vi.hoisted(() => vi.fn());
 const mockSetupPlanPanel = vi.hoisted(() => vi.fn());
@@ -227,11 +227,11 @@ describe("delegate scope resolution", () => {
 
 		const calls = vi.mocked(runSubagent).mock.calls;
 		const last = calls[calls.length - 1];
-		// skills is the 9th argument (index 8)
-		expect(last[8]).toEqual(["tdd", "review"]);
+		// suggestedSkills is the 9th argument (index 8)
+		expect(last[8]).toEqual(["implement", "tdd", "review"]);
 	});
 
-	it("passes undefined skills when no override given", async () => {
+	it("passes undefined suggestedSkills when no override given", async () => {
 		vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
 
 		await execute({
@@ -241,7 +241,7 @@ describe("delegate scope resolution", () => {
 
 		const calls = vi.mocked(runSubagent).mock.calls;
 		const last = calls[calls.length - 1];
-		// skills arg should be resolved (mock returns [] for no override)
+		// suggestedSkills arg should be resolved (mock returns [] for no override)
 		expect(last[8]).toBeDefined();
 	});
 });

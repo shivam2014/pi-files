@@ -3,7 +3,7 @@
   "steps": [
     {
       "label": "Step A",
-      "completed": true,
+      "completed": false,
       "errored": false
     },
     {
@@ -12,5 +12,5 @@
       "errored": false
     }
   ],
-  "startTime": 1782809042359
+  "startTime": 1782999029936
 }

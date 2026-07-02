@@ -129,8 +129,8 @@ export class PeekComponent implements Component {
     }
 
     handleInput(data: string): void {
-        // Escape → close overlay
-        if (data === "escape" || data === "esc") {
+        const keyCode = data.charCodeAt(0) || 0;
+        if (data === 'escape' || data === 'esc' || data === '27' || keyCode === 27 || data === '\\x1b' || data === 'ctrl+q' || data === 'C-q') {
             hidePeek();
             return;
         }

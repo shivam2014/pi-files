@@ -3,16 +3,18 @@
  * Provides a standalone executeDelegate() function.
  */
 
-import type { Specialist, DelegationMetrics, SubagentContext, Scope } from "./types.ts";
+import type { Specialist, DelegationMetrics, SubagentContext, Scope, SubagentDiagnostic } from "./types.ts";
 import { SPECIALISTS, getSpecialistSkills } from "./specialists.ts";
 import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
 import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
-import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete } from "./plan-panel.ts";
+import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { ScopeManager } from "./scope-manager.ts";
 import { extractFindingsFromOutput, extractAuditFromOutput } from "./delegate-output-formatter.ts";
 import { hidePeek, unregisterPeekFeed } from "./peek-overlay.ts";
 import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
+import { captureDiagnostic, isDiagnosticsEnabled, persistDiagnostic, cleanupOldDiagnostics } from "./subagent-diagnostics.ts";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 // Verb mapping for working loader messages during delegation lifecycle
 const PRESENT_PARTICIPLE: Record<string, string> = {
@@ -68,11 +70,14 @@ export async function executeDelegate(
 		const result1: ExecuteDelegateResult = { content: [{ type: "text" as const, text: `Unknown specialist: "${params.specialist}". Available: ${available}` }], details: {} }; return result1;
 	}
 
+	// Read-only specialists (no edit/write tools) don't need strict scope validation
+	const isReadOnly = !specialist.tools.includes('edit') && !specialist.tools.includes('write');
+
 	// Normalize specialist name for case-insensitive comparison downstream
 	params = { ...params, specialist: specialist.name };
 
 	// Resolve skills: override replaces defaults (issue #42)
-	const resolvedSkills = getSpecialistSkills(specialist.name, params.skills);
+	const resolvedSuggestedSkills = getSpecialistSkills(specialist.name, params.skills);
 
 	const { signal } = params;
 
@@ -125,6 +130,10 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		scopeToUse = explicitScope ?? getDefaultWriterScope(ctx.cwd);
 	} else {
 		scopeToUse = explicitScope ?? null;
+		// Read-only specialists (scout, reviewer, researcher) can work without explicit file scope
+		if (isReadOnly && (!explicitScope || (explicitScope.filesToModify.length === 0 && explicitScope.filesToCreate.length === 0))) {
+			scopeToUse = { filesToModify: [], filesToCreate: [], directories: [], maxFiles: 10, requiresApprovalBeyondScope: false, changeType: 'multi-file', maxLinesPerFile: 400, gateMode: 'relaxed' };
+		}
 	}
 
 
@@ -132,7 +141,8 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	// If "ask", return structured result for orchestrator self-correction (not throw)
 	if (scopeToUse !== undefined && scopeToUse !== null) {
 		const gateResult = resolve(params.task, scopeToUse);
-		if (gateResult === "ask") {
+		// Read-only specialists can't write files — vague scope isn't a problem
+		if (gateResult === "ask" && !isReadOnly) {
 			const result: ExecuteDelegateResult = {
 				content: [{ type: "text", text: `⚠️ Scope is vague. Orchestrator must clarify scope before delegating to ${specialist.name}.\n\nTask: ${params.task}\n\nPlease provide a clearer task description or explicit scope, then retry.` }],
 				details: { specialist: specialist.name, task: params.task, status: "scope_vague", turns: 0 },
@@ -218,7 +228,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	const result = await runSubagent(
 		specialist, params.task, ctx.cwd,
 		parentCtx,
-		signal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSkills,
+		signal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
 	);
 	const elapsedMs = Date.now() - startTime;
 
@@ -228,6 +238,70 @@ The scope tells the coder exactly which files it's allowed to touch.`
 			orchestratorUi.setWorkingMessage('Sending to orchestrator...');
 		}
 	} catch {}
+
+	// NEW: Capture subagent diagnostics (conditionally based on env var)
+	let diagnostic: SubagentDiagnostic | null = null;
+	if (isDiagnosticsEnabled()) {
+		diagnostic = captureDiagnostic({
+			output: result?.output || '',
+			turns: result?.turns || 0,
+			toolCallTrail: result?.toolCallTrail || [],
+			elapsedMs: Date.now() - startTime,
+			specialist: specialist.name,
+			task: params.task,
+			sessionId: ctx.sessionId || 'unknown',
+			metrics,
+			agentDir: getAgentDir(),
+		});
+		if (diagnostic) {
+			debugLog('[diagnostic]', diagnostic.specialist, diagnostic.turns, diagnostic.toolCalls);
+
+			// Persist to disk
+			let filePath: string | undefined;
+			try {
+				filePath = persistDiagnostic(getAgentDir(), diagnostic);
+				debugLog('[diagnostic] persisted to', filePath);
+			} catch (e) {
+				debugLog('[diagnostic] persist failed', e);
+			}
+
+			// Cleanup old diagnostics (non-blocking best-effort)
+			try {
+				const cleaned = cleanupOldDiagnostics(getAgentDir(), 30);
+				if (cleaned > 0) debugLog('[diagnostic] cleaned', cleaned, 'old directories');
+			} catch (e) {
+				debugLog('[diagnostic] cleanup failed', e);
+			}
+
+			// Notify user via SDK
+			try {
+				ctx.ui.notify(
+					`⚠ Diagnostic: ${diagnostic.specialist} returned 0 tool calls in ${diagnostic.turns} turn(s)`,
+					"warning"
+				);
+			} catch (e) {
+				debugLog('[diagnostic] ui.notify failed', e);
+			}
+
+			// Text-mode visible marker in delegation output
+			if (diagnostic) {
+				const warningLine = `\n\n⚠️ [Diagnostic] ${diagnostic.specialist} returned 0 tool calls in ${diagnostic.turns} turn(s). Incident logged to disk.\n`;
+				result.output = result.output ? warningLine + result.output : warningLine;
+			}
+
+			// Inline display — add substep to current plan step
+			try {
+				const label = `⚠ Diagnostic: ${diagnostic.specialist} ${diagnostic.turns}t ${diagnostic.toolCalls}tc`;
+				updatePlanStepDetail([label]);
+				recordTimelineFrame('subagent_diagnostic_captured', {
+					diagnosticId: `${diagnostic.timestamp}-${diagnostic.specialist}-${diagnostic.task.length.toString()}`,
+					filePath,
+				});
+			} catch (e) {
+				debugLog('[diagnostic] display failed', e);
+			}
+		}
+	}
 
 	// === Check for errors/abort BEFORE any parsing ===
 	const isAborted = (signal?.aborted || false) || (result?.output?.startsWith("[aborted]") ?? false);
@@ -333,7 +407,7 @@ ${trail}
 		}
 	} finally {
 		decrementDelegationCount();
-		clearPlanIfComplete(ctx);  // Clear widget if all steps done (count is now 0)
+		clearPlanIfComplete(ctx);  // Re-render widget if all steps done — keeps plan alive
 		hidePeek();
 		unregisterPeekFeed();
 		// Clear scope after delegation completes

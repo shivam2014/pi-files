@@ -62,7 +62,7 @@ export interface Specialist {
 	/** Tool names granted to this specialist */
 	tools: string[];
 	/** Default skill pack names loaded for this specialist (issue #42) */
-	skills?: string[];
+	suggestedSkills?: string[];
 	/** Optional model override (e.g. "anthropic/claude-sonnet-4") */
 	model?: string;
 	/** Full system prompt used when creating the subagent session */
@@ -89,7 +89,7 @@ export interface PlanStep {
 	endTime?: number;
 }
 
-export { Scope, ScopeGateMode } from './scope-manager';
+export { Scope, ScopeGateMode } from './scope-manager.ts';
 /** Per-delegation tool usage metrics */
 export interface DelegationMetrics {
 	readCalls: number;
@@ -130,3 +130,36 @@ export interface FusionResult {
 	judgeModel?: string;
 	responses?: Array<{ model: string; content?: string; error?: string }>;
 }
+
+/** Parameters for read_skill tool */
+export interface ReadSkillParams {
+	name: string;
+}
+
+/** Diagnostic metrics for a subagent session (issue #68) */
+export interface SubagentDiagnostic {
+	schemaVersion: number;
+	sessionId: string;
+	timestamp: string;
+	specialist: string;
+	task: string;
+	turns: number;
+	toolCalls: number;
+	elapsedMs: number;
+	crashed: boolean;
+	outputPreview: string;
+	metrics: {
+		readCalls: number;
+		grepCalls: number;
+		findCalls: number;
+		bashCalls: number;
+		editCalls: number;
+		writeCalls: number;
+		lsCalls: number;
+		scopeViolations: number;
+	};
+	kind: 'silent_failure' | 'crash';
+	diagnosticId: string;
+	agentDir?: string;
+}
+

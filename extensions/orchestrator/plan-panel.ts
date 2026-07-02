@@ -151,6 +151,7 @@ export class PlanPanel {
 			index: i, label: s.label,
 			state: s.completed ? "completed" : s.errored ? "errored" : s.active ? "active" : "pending",
 			substepCount: (s as any).detailLines?.length ?? 0, detail: s.detail ?? null,
+			startTime: s.startTime ?? null,
 		}));
 		return { goal: this.planState.goal, steps, completedCount: this.planState.steps.filter(s => s.completed).length, totalCount: this.planState.steps.length, activeDelegations: this._activeDelegations, elapsedMs: Date.now() - this.planState.startTime };
 	}
@@ -274,8 +275,11 @@ export class PlanPanel {
 	}
 
 	clearPlanIfComplete(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
-		if (!this.planState || !this.planState.steps.every(s => s.completed)) return;
-		this.clearPlanPanel(ctx);
+		if (!this.planState || this.planState.sessionId !== this._sessionId || !this.planState.steps.every(s => s.completed)) return;
+		// Keep plan alive — do NOT call clearPlanPanel(). Just stop timer and re-render.
+		this.stopPlanTimer();
+		this.dumpTimelineToDisk();
+		this._renderWidget();
 	}
 
 	errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, aborted?: boolean): void {
@@ -288,6 +292,23 @@ export class PlanPanel {
 			this.planState.steps[idx].endTime = Date.now();
 		}
 		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame(aborted ? "step_aborted" : "step_error");
+	}
+
+	addSteps(newSteps: string[]): void {
+		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
+		for (const label of newSteps) {
+			if (!this.planState.steps.some(s => s.label === label)) {
+				this.planState.steps.push({
+					label,
+					completed: false,
+					errored: false,
+					active: false,
+					startTime: Date.now(),
+				});
+			}
+		}
+		this._renderWidget();
+		this.savePlanState();
 	}
 
 	retryPlanStep(): void {
@@ -344,6 +365,7 @@ export const updatePlanStepDetail = (d: string | string[]) => _instance.updatePl
 export const setupPlanPanel = (g: string, s: string[], c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.setupPlanPanel(g, s, c);
 export const completePlanStep = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.completePlanStep(c);
 export const finalizePlanStep = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.finalizePlanStep(c);
+export const addSteps = (s: string[]) => _instance.addSteps(s);
 export const clearPlanIfComplete = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }) => _instance.clearPlanIfComplete(c);
 export const errorPlanStep = (c: { ui: { setWidget: (k: string, v: string[] | undefined) => void } }, a?: boolean) => _instance.errorPlanStep(c, a);
 export const retryPlanStep = () => _instance.retryPlanStep();
