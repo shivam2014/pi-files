@@ -8,6 +8,7 @@ export default defineConfig({
       // ── @earendil-works/* packages ──────────────────────────────────
       "@earendil-works/pi-coding-agent": `${PI_ROOT}/dist/index.js`,
       "@earendil-works/pi-ai": `${PI_ROOT}/node_modules/@earendil-works/pi-ai/dist/index.js`,
+      "@earendil-works/pi-ai/compat": `${PI_ROOT}/node_modules/@earendil-works/pi-ai/dist/compat.js`,
       "@earendil-works/pi-tui": `${PI_ROOT}/node_modules/@earendil-works/pi-tui/dist/index.js`,
       "@earendil-works/pi-agent-core": `${PI_ROOT}/node_modules/@earendil-works/pi-agent-core/dist/index.js`,
 

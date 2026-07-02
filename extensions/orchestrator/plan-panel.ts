@@ -173,9 +173,13 @@ export class PlanPanel {
 		}, 1000);
 	}
 
-	stopPlanTimer(): void {
+	private stopPlanTimer(): void {
 		if (this._planTimer !== null) { clearInterval(this._planTimer); this._planTimer = null; }
 		if (this._spinnerTimer !== null) { clearInterval(this._spinnerTimer); this._spinnerTimer = null; }
+	}
+
+	public reset(): void {
+		this.stopPlanTimer();
 	}
 
 	inspectPlanState(): Record<string, unknown> | null {
@@ -390,7 +394,7 @@ let _currentInstance: PlanPanel | null = null;
 function _removeSession(sessionId: string): void {
 	const panel = _instances.get(sessionId);
 	if (panel) {
-		panel.stopPlanTimer();
+		panel.reset();
 		_instances.delete(sessionId);
 	}
 	if (_currentInstance === panel) {
@@ -412,7 +416,7 @@ function _resolveOrCreate(ctx: any): PlanPanel {
 	if (sessionId && _instances.has(sessionId)) {
 		panel = _instances.get(sessionId)!;
 		// Guard: ensure old timers are stopped when reusing a session
-		panel.stopPlanTimer();
+		panel.reset();
 	} else if (sessionId) {
 		panel = new PlanPanel(ctx);
 		_instances.set(sessionId, panel);

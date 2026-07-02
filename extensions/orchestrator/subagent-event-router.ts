@@ -19,10 +19,9 @@ export class SubagentEventRouter {
 	private handlers: Map<SubagentEventType, Set<SubagentEventHandler>> = new Map();
 
 	on(type: SubagentEventType, handler: SubagentEventHandler): () => void {
-		if (!this.handlers.has(type)) {
-			this.handlers.set(type, new Set());
-		}
-		this.handlers.get(type)!.add(handler);
+		const set = this.handlers.get(type) ?? new Set<SubagentEventHandler>();
+		this.handlers.set(type, set);
+		set.add(handler);
 		return () => this.off(type, handler);
 	}
 
