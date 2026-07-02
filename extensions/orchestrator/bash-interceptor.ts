@@ -3,6 +3,8 @@
  * Pure functions, zero external dependencies.
  */
 
+import { basename } from "node:path";
+
 export function firstCommandName(command: string): { name: string; rest: string } | null {
 	const segment = command.split(/[&|;]+/)[0]?.trim() ?? "";
 	if (!segment) return null;
@@ -11,7 +13,7 @@ export function firstCommandName(command: string): { name: string; rest: string 
 	while (i < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]) || tokens[i] === "export")) i++;
 	const raw = tokens[i];
 	if (!raw) return null;
-	const name = raw.replace(/.*\//, "").toLowerCase();
+	const name = basename(raw).toLowerCase();
 	return { name, rest: tokens.slice(i + 1).join(" ") };
 }
 

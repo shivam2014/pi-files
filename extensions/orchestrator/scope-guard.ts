@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join, relative, isAbsolute, resolve } from 'path';
+import { join, relative, isAbsolute, resolve, posix } from 'path';
 import type { ResolvedScope } from './scope-manager';
 
 export interface ScopeExpansionRequest {
@@ -14,7 +14,7 @@ function normalizePath(filePath: string, cwd: string): string {
   const rel = relative(cwd, absolute);
   // If relative starts with '..', the path escapes cwd — return absolute
   if (rel.startsWith('..') || isAbsolute(rel)) return absolute;
-  return rel.replace(/\\/g, '/');
+  return posix.normalize(rel);
 }
 
 export class ScopeGuard {

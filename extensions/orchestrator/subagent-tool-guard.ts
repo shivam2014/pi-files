@@ -32,8 +32,57 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 			if (input.file) filePaths.push(input.file);
 
 			if (event.toolName === 'bash' && input.command) {
-				const pathMatches = input.command.match(/(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g);
-				if (pathMatches) filePaths.push(...pathMatches);
+				const cmd = input.command.trim();
+
+				// Git commands that are safe (read-only or no file impact)
+				const GIT_SAFE_COMMANDS = new Set([
+					'status', 'log', 'diff', 'show', 'branch', 'remote',
+					'fetch', 'pull', 'stash', 'tag', 'blame', 'describe',
+					'rev-parse', 'rev-list', 'shortlog'
+				]);
+
+				// Git commands that write files
+				const GIT_WRITE_COMMANDS = new Set([
+					'add', 'rm', 'mv', 'checkout', 'restore', 'reset',
+					'clean', 'merge', 'rebase', 'cherry-pick'
+				]);
+
+				// Git commands to skip entirely (no path extraction needed)
+				const GIT_SKIP_PATH_CHECK = new Set([
+					'commit', 'push', 'fetch', 'pull', 'remote',
+					'branch', 'tag', 'stash', 'init', 'clone'
+				]);
+
+				// Check if this is a git command
+				const gitMatch = cmd.match(/^git\s+(\w+)/);
+				if (gitMatch) {
+					const subcmd = gitMatch[1];
+
+					// Skip path check for commands that don't take file args
+					if (GIT_SKIP_PATH_CHECK.has(subcmd)) {
+						// Allow without path check
+					} else if (GIT_SAFE_COMMANDS.has(subcmd)) {
+						// Safe read-only commands - allow without path check
+					} else if (GIT_WRITE_COMMANDS.has(subcmd)) {
+						// Write commands - extract paths from positional args only
+						const args = cmd.split(/\s+/).slice(2);
+						const paths = args.filter((arg: string) => !arg.startsWith('-'));
+
+						for (const rawPath of paths) {
+							const absolutePath = resolve(cwd, rawPath);
+							const pathAllowed = guard.isPathAllowed(absolutePath, 'write');
+							if (!pathAllowed.allowed) {
+								return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope` };
+							}
+						}
+					} else {
+						// Unknown git subcommand - fail-open for git
+					}
+				} else {
+					// Non-git bash command - use file extension regex
+					const pathMatches = input.command.match(/(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g);
+					if (pathMatches) filePaths.push(...pathMatches);
+				}
 			}
 
 			// Derive operation from tool name — reads always safe, writes require scope approval

@@ -7,21 +7,9 @@
 
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-
-/**
- * Parse frontmatter from a YAML block (content between --- markers).
- * Extracts name and description fields.
- */
-function parseSkillFrontmatter(frontmatter: string): { name: string; description: string } {
-	const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
-	const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
-	const name = nameMatch?.[1]?.trim().replace(/^"(.*)"$/, "$1") ?? "";
-	const description = descMatch?.[1]?.trim().replace(/^"(.*)"$/, "$1") ?? "";
-	return { name, description };
-}
 
 /**
  * Register the list_skills tool on the pi extension API.
@@ -59,10 +47,9 @@ export function registerListSkillsTool(pi: ExtensionAPI): void {
 					const skillPath = join(skillsDir, dir, "SKILL.md");
 					if (!existsSync(skillPath)) continue;
 					const content = readFileSync(skillPath, "utf-8");
-					const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-					const { name, description } = frontmatterMatch
-						? parseSkillFrontmatter(frontmatterMatch[1])
-						: { name: dir, description: "" };
+					const { frontmatter } = parseFrontmatter(content);
+					const name = (frontmatter.name as string) || dir;
+					const description = (frontmatter.description as string) || "";
 					const displayName = name || dir;
 					const displayDesc = description || "(no description)";
 					results.push(`\u2022 ${displayName}: ${displayDesc}`);
