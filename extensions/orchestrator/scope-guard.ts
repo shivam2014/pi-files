@@ -1,17 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, isAbsolute, resolve } from 'path';
-
-interface ResolvedScope {
-  filesToModify: string[];
-  filesToCreate: string[];
-  directories: string[];
-  maxFiles: number;
-  requiresApprovalBeyondScope: boolean;
-  changeType: 'single-file' | 'multi-file';
-  maxLinesPerFile: number;
-  gateMode: 'strict' | 'relaxed';
-  boundaries?: string;
-}
+import type { ResolvedScope } from './scope-manager';
 
 export interface ScopeExpansionRequest {
   path: string;

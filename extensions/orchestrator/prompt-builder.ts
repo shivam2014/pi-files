@@ -51,7 +51,8 @@ You CANNOT access files or run commands directly.
 NOTE: You MUST call plan() before delegate(). delegate() will reject if no active plan exists.
 
 {{FUSION}}### Scope requirement:
-When calling delegate(coder|writer|reviewer|researcher|scout, ...), you MUST include a \`scope\` parameter with the files the specialist is allowed to modify/create and any boundaries.
+When calling delegate(coder|writer|reviewer, ...), you MUST include a \`scope\` parameter with the files the specialist is allowed to modify/create and any boundaries.
+// Scout and researcher are read-only — scope optional
 
 - Get scope from scout's or researcher's \`## Scope\` output when available.
 - Prefer reusing cached scope across delegations for the same task instead of re-deriving it.
@@ -64,6 +65,7 @@ delegate("coder", "fix the token expiry", {
         filesToModify: ["src/auth.ts"],
         filesToCreate: [],
         directories: ["src"],
+        boundaries: "do not modify files under src/legacy/",
         maxFiles: 15,
         maxLinesPerFile: 400,
         changeType: "single-file",

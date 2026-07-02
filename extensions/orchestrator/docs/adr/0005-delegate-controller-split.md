@@ -48,6 +48,12 @@ export interface DelegateControllerContext {
 - `onUpdate` callback contract unchanged
 - `delegate-tool.ts` imports unchanged
 
+### Vocabulary (codebase-design terms)
+- **seam**: Each extraction point is a clean seam — a boundary where one concern ends and another begins.
+- **adapter**: `apply-scope.ts` acts as an adapter between pure scope resolution and the side-effectful AskResolver/ScopeManager.
+- **leverage**: Each extracted module has 1-2 exports, giving callers maximum leverage — import only what you need.
+- **locality**: Related logic lives in one file. Changing scope normalization doesn't require reading diagnostics code.
+
 ### Not touched
 - `plan-panel.ts`, `subagent-runner.ts`, `peek-overlay.ts`, and all other modules
 - UI notifications and plan step updates stay in controller (orchestrator concern)

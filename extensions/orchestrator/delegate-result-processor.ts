@@ -44,7 +44,7 @@ function formatSuccess(
 	}
 
 	// Extract and prepend audit trail
-	const audit = extractAuditFromOutput(result);
+	const audit = extractAuditFromOutput(output);
 	if (audit) {
 		const auditParts: string[] = [];
 		if (audit.problems.length > 0 && audit.problems[0] !== 'none') {

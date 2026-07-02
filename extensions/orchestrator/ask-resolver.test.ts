@@ -385,8 +385,8 @@ describe("resolve", () => {
 		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [], directories: ["src/"] })).toBe("proceed");
 	});
 
-	it("returns proceed for scope with allowedDirectories", () => {
-		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [], allowedDirectories: ["src/"] })).toBe("proceed");
+	it("returns proceed for scope with directories via allowedDirectories compat", () => {
+		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [], directories: ["src/"] })).toBe("proceed");
 	});
 
 	it("returns proceed for empty request with concrete scope", () => {
