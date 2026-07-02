@@ -279,7 +279,7 @@ ${TERSE_INSTRUCTION}`,
 	researcher: {
 		name: "researcher",
 		description: "Read-only research specialist with web search capabilities. Searches the web, reads docs, configs, and code to answer questions with evidence-based answers and source references.",
-		tools: ["read", "web_search", "fetch_content", "ls", "grep", "find"],
+		tools: ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "find"],
 		suggestedSkills: ["domain-modeling"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
@@ -345,7 +345,7 @@ ${TERSE_INSTRUCTION}`,
 	writer: {
 		name: "writer",
 		description: "Documentation specialist with read/write access. Creates and edits markdown docs, uses ls/find to browse directories. Ideal for READMEs, API docs, and project documentation.",
-		tools: ["read", "write", "edit", "ls", "find"],
+		tools: ["read", "write", "edit", "ls", "find", "git-read"],
 		suggestedSkills: ["agents-md-writer"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
