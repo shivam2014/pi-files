@@ -8,9 +8,10 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { setDebugEnabled, isDebugEnabled } from "./debug.ts";
+import { setDebugEnabled, isDebugEnabled, debugLog } from "./debug.ts";
 import { getRegisteredFeed } from "./peek-overlay.ts";
 import { SPECIALISTS, listSpecialists } from "./specialists.ts";
+import type { SessionContext } from "./types.ts";
 
 /**
  * Register slash commands on the pi extension API.
@@ -48,14 +49,14 @@ export function registerCommands(pi: ExtensionAPI): void {
 			const { inspectFeedState } = await import("./activity-feed.ts");
 
 			const state = {
-				plan: inspectPlanState(),
+				plan: inspectPlanState(ctx as SessionContext),
 				timestamp: Date.now(),
 			};
 			const json = JSON.stringify(state, null, 2);
 			try {
 				const { writeFileSync } = await import("node:fs");
 				writeFileSync("/tmp/orchestrator-inspect.json", json, "utf-8");
-			} catch (e) { console.error("[commands] write failed:", e); }
+			} catch (e) { debugLog("[commands] write failed:", e); }
 			ctx.ui.notify(`Inspect: ${json.slice(0, 200)}...`, "info");
 		},
 	});
@@ -64,11 +65,11 @@ export function registerCommands(pi: ExtensionAPI): void {
 		description: "Capture current TUI render output to /tmp/orchestrator-render.txt",
 		handler: async (_args, ctx) => {
 			const { snapshotPlanRender } = await import("./plan-panel.ts");
-			const text = snapshotPlanRender();
+			const text = snapshotPlanRender(ctx as SessionContext);
 			try {
 				const { writeFileSync } = await import("node:fs");
 				writeFileSync("/tmp/orchestrator-render.txt", text ?? "", "utf-8");
-			} catch (e) { console.error("[commands] write failed:", e); }
+			} catch (e) { debugLog("[commands] write failed:", e); }
 			ctx.ui.notify(`Render captured → /tmp/orchestrator-render.txt (${text?.length ?? 0} chars)`, "info");
 		},
 	});
@@ -77,12 +78,12 @@ export function registerCommands(pi: ExtensionAPI): void {
 		description: "Write render timeline to /tmp/orchestrator-timeline.json",
 		handler: async (_args, ctx) => {
 			const { getTimeline } = await import("./plan-panel.ts");
-			const tl = getTimeline();
+			const tl = getTimeline(ctx as SessionContext);
 			const json = JSON.stringify(tl, null, 2);
 			try {
 				const { writeFileSync } = await import("node:fs");
 				writeFileSync("/tmp/orchestrator-timeline.json", json, "utf-8");
-			} catch (e) { console.error("[commands] write failed:", e); }
+			} catch (e) { debugLog("[commands] write failed:", e); }
 			ctx.ui.notify(`Timeline: ${tl?.length ?? 0} frames → /tmp/orchestrator-timeline.json`, "info");
 		},
 	});
@@ -91,12 +92,12 @@ export function registerCommands(pi: ExtensionAPI): void {
 		description: "Write timeline diff to /tmp/orchestrator-timeline-diff.json",
 		handler: async (_args, ctx) => {
 			const { getTimelineDiff } = await import("./plan-panel.ts");
-			const diff = getTimelineDiff();
+			const diff = getTimelineDiff(ctx as SessionContext);
 			const json = JSON.stringify(diff, null, 2);
 			try {
 				const { writeFileSync } = await import("node:fs");
 				writeFileSync("/tmp/orchestrator-timeline-diff.json", json, "utf-8");
-			} catch (e) { console.error("[commands] write failed:", e); }
+			} catch (e) { debugLog("[commands] write failed:", e); }
 			ctx.ui.notify(`Timeline diff: ${diff?.count ?? 0} transitions → /tmp/orchestrator-timeline-diff.json`, "info");
 		},
 	});
@@ -122,7 +123,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 				const { writeFileSync } = await import("node:fs");
 				writeFileSync("/tmp/orchestrator-snapshot.json", json, "utf-8");
 			} catch (e) {
-				console.error("[commands] snapshot write failed:", e);
+				debugLog("[commands] snapshot write failed:", e);
 			}
 			ctx.ui.notify(`Orchestrator snapshot → /tmp/orchestrator-snapshot.json\n${json.slice(0, 200)}...`, "info");
 		},
@@ -140,7 +141,7 @@ export async function snapshotOrchestratorState(ctx?: { cwd?: string }): Promise
 	const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
 
 	const cwd = ctx?.cwd ?? process.cwd();
-	const plan = inspectPlanState();
+	const plan = inspectPlanState(ctx as SessionContext);
 	const feed = getRegisteredFeed();
 	const fusionConfig = loadFusionConfig(cwd);
 

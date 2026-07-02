@@ -2,8 +2,10 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { setupPlanPanel, summarizeGoal, addSteps } from "./plan-panel.ts";
+import { debugLog } from "./debug.ts";
+import type { SessionContext } from "./types.ts";
 
-function deriveGoal(goal: string | undefined, steps: string[] | undefined): string {
+function deriveGoal(goal: string | undefined, steps: string[] | undefined, ctx?: SessionContext): string {
     if (goal?.trim()) return goal.trim();
     const stepsText = steps?.filter(Boolean).join(" ").trim();
     if (stepsText) return summarizeGoal(stepsText) ?? "Untitled plan";
@@ -24,7 +26,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
             }),
         }),
         async execute(toolCallId, params, signal, onUpdate, ctx) {
-            const effectiveGoal = deriveGoal(params.goal, params.steps);
+            const effectiveGoal = deriveGoal(params.goal, params.steps, ctx as SessionContext);
             if (!params.steps || params.steps.length === 0) {
                 setupPlanPanel(effectiveGoal, ["Planning..."], ctx);
                 return { content: [{ type: "text", text: `Plan set (no steps provided): ${effectiveGoal}` }], details: {} };
@@ -56,7 +58,7 @@ export function registerPlanAddStepsTool(pi: ExtensionAPI) {
             steps: Type.Array(Type.String()),
         }),
         async execute(toolCallId, params, signal, onUpdate, ctx) {
-            addSteps(params.steps);
+            addSteps(params.steps, ctx as SessionContext);
             return {
                 content: [{ type: "text", text: `Added ${params.steps.length} step(s) to plan.` }],
                 details: {},

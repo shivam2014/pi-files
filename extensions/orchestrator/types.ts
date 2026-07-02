@@ -3,6 +3,7 @@
  * Extracted from orchestrator.ts during refactoring.
  * Design spec: ORCHESTRATION-UI-DESIGN.md
  */
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 /** A step in the orchestration plan (Layer 1 header) */
 export interface OrchestratorStep {
@@ -185,5 +186,21 @@ export interface SubagentDiagnostic {
 	stopReason?: string;
 	errorMessage?: string;
 	httpStatus?: number;
+}
+
+/**
+ * Session context required for plan-panel instance resolution.
+ * Typed to match ExtensionContext shape with sessionManager from pi-coding-agent.
+ * Callers should ensure sessionManager.getSessionId() returns a non-empty string.
+ */
+/** Readonly subset of SessionManager used for instance resolution. */
+export type ReadonlySessionManager = Pick<SessionManager, "getCwd" | "getSessionDir" | "getSessionId" | "getSessionFile" | "getLeafId" | "getLeafEntry" | "getEntry" | "getLabel" | "getBranch" | "getHeader" | "getEntries" | "getTree" | "getSessionName">;
+
+export interface SessionContext {
+	sessionManager?: ReadonlySessionManager;
+	/** Alternative sessionId location (DelegateControllerContext shape) */
+	sessionId?: string;
+	/** Allow additional properties from ExtensionContext, DelegateControllerContext, etc. */
+	[key: string]: any;
 }
 

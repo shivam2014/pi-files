@@ -1,0 +1,11 @@
+{
+  "goal": "G2",
+  "steps": [
+    {
+      "label": "s2",
+      "completed": false,
+      "errored": false
+    }
+  ],
+  "startTime": 1783036652982
+}

@@ -181,6 +181,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		specialist, params.task, ctx.cwd,
 		parentCtx,
 		signal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
+		ctx, // orchestratorCtx: thread session context to plan-panel calls
 	);
 	const elapsedMs = Date.now() - startTime;
 

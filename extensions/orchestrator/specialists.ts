@@ -196,6 +196,18 @@ Bash usage restrictions:
 - Use the \`grep\` tool (which wraps ripgrep) to search code — NOT \`bash\`+\`rg\` or \`bash\`+\`grep\`
 - Bash interceptor: common read-only commands (cat, grep, rg, find, ls) invoked through \`bash\` may be blocked and replaced with their dedicated tools. Always prefer the dedicated tool directly.
 
+## Tool Usage — SDK First
+
+Use pi SDK tools (read/edit/write) for file operations. These are:
+- Cache-efficient: pi caches tool results, reducing token usage
+- Prompt-optimized: structured output, not raw terminal text
+- Deterministic: consistent format across models
+
+Bash is for: spawning processes, environment setup (getShellEnv()), 
+commands without tool equivalents (npx, npm, git operations).
+
+Override: If bash is truly required, pass override:true in tool input.
+
 Output format:
 ## Completed
 <what was done>

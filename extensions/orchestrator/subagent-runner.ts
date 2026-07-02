@@ -43,6 +43,8 @@ import {
 import { compressOutput, inspectFeedState, snapshotFeedRender } from "./activity-feed.ts";
 import { _spinnerIndex, resetSpinner } from "./spinner-state.ts";
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
+import type { SessionContext } from "./types.ts";
+import { debugLog } from "./debug.ts";
 import { registerPeekFeed, updatePeek, updatePeekFeed } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
 
@@ -240,6 +242,7 @@ export async function runSubagent(
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
 	suggestedSkills?: string[],
+	orchestratorCtx?: SessionContext,
 ): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[]; stopReason?: string; errorMessage?: string; model?: string }> {
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();
@@ -466,8 +469,8 @@ export async function runSubagent(
 				if (snapshot !== _lastFeedSnapshot) {
 					_lastFeedSnapshot = snapshot;
 					resetSpinner();
-					updatePlanStepDetail(feed.goal || "");
-					recordTimelineFrame("step_started", inspectFeedState(feed), snapshotFeedRender(feed));
+					updatePlanStepDetail(feed.goal || "", orchestratorCtx);
+					recordTimelineFrame("step_started", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
 				}
 				updatePeekFeed(feed);
 				updatePeek(event.assistantMessageEvent.delta);
@@ -525,16 +528,16 @@ export async function runSubagent(
 				// Show multi-item detail (queries[], urls[]) in tool_detail instead of repeating substep label
 				const extraDetail = substepToolDetail(event.toolName, event.args);
 				feed = setToolDetail(feed, extraDetail ?? substepLabel);
-				recordTimelineFrame("tool_start", inspectFeedState(feed), snapshotFeedRender(feed));
+				recordTimelineFrame("tool_start", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
 				_lastFeedSnapshot = null;
 				updatePeekFeed(feed);
 				updatePeek(`\u2192 ${event.toolName}\n`);
 				// Pass substep history lines to plan panel immediately
 				const activeStep = feed.steps[feed.currentStep];
 				if (activeStep) {
-					updatePlanStepDetail(renderSubstepLines(activeStep.substeps));
+					updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
 				} else {
-					updatePlanStepDetail(substepLabel);
+					updatePlanStepDetail(substepLabel, orchestratorCtx);
 				}
 				const text = renderActivityFeed(specialist.name, feed);
 				onUpdate?.({
@@ -560,7 +563,7 @@ export async function runSubagent(
 								// Update plan panel from new feed state
 								const newActiveStep = feed.steps[feed.currentStep];
 								if (newActiveStep) {
-									updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps));
+									updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps), orchestratorCtx);
 								}
 
 								// Emit onUpdate so UI stays responsive during tool execution
@@ -569,7 +572,7 @@ export async function runSubagent(
 							}
 						}
 					}
-				} catch (e) { console.error("[subagent] update failed:", e); }
+				} catch (e) { debugLog("[subagent] update failed:", e); }
 			}
 
 			// Tool execution completed
@@ -622,14 +625,14 @@ export async function runSubagent(
 				if (!isError && (event.toolName === "edit" || event.toolName === "write")) {
 					feed = addSubstep(feed, `lint: checking ${(event as any).arguments?.filePath ?? (event as any).arguments?.path ?? "files"}...`);
 				}
-				recordTimelineFrame("tool_end", inspectFeedState(feed), snapshotFeedRender(feed));
+				recordTimelineFrame("tool_end", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
 				_lastFeedSnapshot = null;
 				updatePeekFeed(feed);
 				updatePeek(`\u2713 ${event.toolName}\n`);
 				// Update plan panel with substep history lines
 				const activeStep = feed.steps[feed.currentStep];
 				if (activeStep && activeStep.substeps.length > 0) {
-					updatePlanStepDetail(renderSubstepLines(activeStep.substeps));
+					updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
 				}
 				const text = renderActivityFeed(specialist.name, feed);
 				onUpdate?.({
@@ -734,7 +737,7 @@ export async function runSubagent(
 		// Emit final render so TUI shows clean final state
 		const finalText = renderActivityFeed(specialist.name, feed);
 		onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus } });
-		recordTimelineFrame("step_finalized", inspectFeedState(feed), snapshotFeedRender(feed));
+		recordTimelineFrame("step_finalized", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
 
 		// Compress + cap output before returning to parent
 		const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);

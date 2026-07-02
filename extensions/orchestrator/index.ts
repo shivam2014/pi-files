@@ -131,6 +131,16 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// ── Session shutdown: clear plan panel instances for this session ──
+	pi.on("session_shutdown", async (_event, ctx) => {
+		try {
+			const { clearPlanPanel } = await import("./plan-panel.ts");
+			clearPlanPanel(ctx);
+		} catch (err) {
+			debugLog("session_shutdown: failed to clear plan panel", err);
+		}
+	});
+
 	// Lint-guard dependency check
 	debugLog("lint-guard: expected to be loaded as required dependency. If lint/typecheck tools missing, check extension loading.");
 

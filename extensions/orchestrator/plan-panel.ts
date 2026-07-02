@@ -6,6 +6,7 @@ import type { PlanStep } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
 import { advanceSpinner, resetSpinner } from "./spinner-state.ts";
+import { debugLog } from "./debug.ts";
 
 export interface TimelineEntry {
 	t: number;
@@ -383,12 +384,12 @@ export class PlanPanel {
 		const path = "/tmp/orchestrator-timeline-" + id + ".json";
 		try {
 			writeFileSync(path, JSON.stringify({ sessionId: id, recordedAt: Date.now(), totalFrames: this._timeline.length, events: this.getTimeline(), diff: this.getTimelineDiff() }, null, 2), "utf-8");
-			console.error("[timeline] " + this._timeline.length + " frames -> " + path);
-		} catch (e) { console.error("[timeline] failed to write: " + e); }
+			debugLog("[timeline] " + this._timeline.length + " frames -> " + path);
+		} catch (e) { debugLog("[timeline] failed to write: " + e); }
 	}
 }
 
-const _instances = new Map<string, PlanPanel>();
+export const _instances = new Map<string, PlanPanel>();
 let _currentInstance: PlanPanel | null = null;
 
 function _removeSession(sessionId: string): void {
@@ -402,7 +403,7 @@ function _removeSession(sessionId: string): void {
 	}
 }
 
-function _resolveCtx(ctx: any): PlanPanel | null {
+export function _resolveCtx(ctx: any): PlanPanel | null {
 	const sessionId = ctx?.sessionManager?.sessionId;
 	if (sessionId) {
 		return _instances.get(sessionId) ?? null;
