@@ -45,6 +45,7 @@ const WIDGET_KEY = "orchestrator-status";
 const BUDGET = 9;
 
 export class PlanPanel {
+	private _cwd: string;
 	private _timeline: TimelineEntry[] = [];
 	private _timelineStart: number = Date.now();
 	private _sessionId: string | null = null;
@@ -55,13 +56,17 @@ export class PlanPanel {
 	private _planTimer: ReturnType<typeof setInterval> | null = null;
 	private _spinnerTimer: ReturnType<typeof setInterval> | null = null;
 
+	constructor(ctx?: { cwd?: string }) {
+		this._cwd = ctx?.cwd ?? process.cwd();
+	}
+
 	incrementDelegationCount(): void { this._activeDelegations++; }
 	decrementDelegationCount(): void { this._activeDelegations = Math.max(0, this._activeDelegations - 1); }
 
 	private savePlanState(): void {
 		if (!this.planState) return;
 		try {
-			const dir = join(process.cwd(), '.pi');
+			const dir = join(this._cwd, '.pi');
 			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 			writeFileSync(join(dir, 'orchestrator-plan.json'), JSON.stringify({
 				goal: this.planState.goal,
@@ -73,7 +78,7 @@ export class PlanPanel {
 
 	private loadPlanState(): typeof this.planState {
 		try {
-			const statePath = join(process.cwd(), '.pi', 'orchestrator-plan.json');
+			const statePath = join(this._cwd, '.pi', 'orchestrator-plan.json');
 			if (!existsSync(statePath)) return null;
 			const saved = JSON.parse(readFileSync(statePath, 'utf8'));
 			if (!saved?.goal || !saved?.steps) return null;
@@ -409,11 +414,11 @@ function _resolveOrCreate(ctx: any): PlanPanel {
 		// Guard: ensure old timers are stopped when reusing a session
 		panel.stopPlanTimer();
 	} else if (sessionId) {
-		panel = new PlanPanel();
+		panel = new PlanPanel(ctx);
 		_instances.set(sessionId, panel);
 	} else {
 		// No sessionId — use or create a default instance
-		panel = _currentInstance ?? new PlanPanel();
+		panel = _currentInstance ?? new PlanPanel(ctx);
 	}
 	_currentInstance = panel;
 	return panel;

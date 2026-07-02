@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { debugLog } from "./debug.ts";
 import { resolve } from "node:path";
 
-export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true) {
+export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true, ctx?: { cwd?: string }) {
 	if (!fusionEnabled && event.toolName === 'fusion') {
 		return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 	}
@@ -21,7 +21,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 		}
 	}
 	if (_batchLoadSubagent > 0) {
-		const cwd = process.cwd();
+		const cwd = ctx?.cwd ?? process.cwd();
 		const guard = new ScopeGuard(cwd);
 		if (guard.isScopeValid()) {
 			const input = event.input || {};

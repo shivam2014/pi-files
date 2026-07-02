@@ -12,8 +12,8 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { resolve, join } from "node:path";
 
 // ── Part 1: Mock specialists (traditional, matches prompt-builder.test.ts) ──
 vi.mock("./specialists", () => ({
@@ -34,6 +34,36 @@ vi.mock("./specialists", () => ({
 }));
 
 import { buildOrchestratorPrompt } from "./prompt-builder.ts";
+
+// =====================================================================
+// Part 0: CWD resolution — no bare process.cwd() in production code
+// =====================================================================
+describe("CWD resolution — no bare process.cwd() in production code", () => {
+	it("All non-test .ts files avoid bare process.cwd() without ctx.cwd fallback", () => {
+		const sourceDir = resolve(__dirname);
+		const files = readdirSync(sourceDir).filter(f => f.endsWith('.ts') && !f.endsWith('.test.ts'));
+
+		const results: string[] = [];
+
+		for (const file of files) {
+			const content = readFileSync(join(sourceDir, file), 'utf-8');
+			const lines = content.split('\n');
+
+			// Find lines with process.cwd() that are NOT in the "ctx?.cwd ?? process.cwd()" pattern
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].includes('process.cwd()')) {
+					// Allow the safe pattern: ctx?.cwd ?? process.cwd()
+					// Allow test files (already filtered)
+					if (!lines[i].includes('ctx?.cwd') && !lines[i].includes('ctx.cwd')) {
+						results.push(`${file}:${i + 1}: ${lines[i].trim()}`);
+					}
+				}
+			}
+		}
+
+		expect(results).toEqual([]);
+	});
+});
 
 // =====================================================================
 // Part 1: DELEGATION_INSTRUCTIONS_TEMPLATE vs executeDelegate behavior

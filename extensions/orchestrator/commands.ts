@@ -116,7 +116,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const snapshot = await snapshotOrchestratorState();
+			const snapshot = await snapshotOrchestratorState(ctx);
 			const json = JSON.stringify(snapshot, null, 2);
 			try {
 				const { writeFileSync } = await import("node:fs");
@@ -132,14 +132,14 @@ export function registerCommands(pi: ExtensionAPI): void {
 /**
  * Build a snapshot of orchestrator runtime state for /debug-orchestrator status.
  */
-export async function snapshotOrchestratorState(): Promise<object> {
+export async function snapshotOrchestratorState(ctx?: { cwd?: string }): Promise<object> {
 	const { inspectPlanState } = await import("./plan-panel.ts");
 	const { loadFusionConfig } = await import("./fusion-tool.ts");
 	const { existsSync } = await import("node:fs");
 	const { join } = await import("node:path");
 	const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
 
-	const cwd = process.cwd();
+	const cwd = ctx?.cwd ?? process.cwd();
 	const plan = inspectPlanState();
 	const feed = getRegisteredFeed();
 	const fusionConfig = loadFusionConfig(cwd);

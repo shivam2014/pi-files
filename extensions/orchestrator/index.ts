@@ -31,6 +31,10 @@ import { join } from "node:path";
 
 export { getBashToolReplacement } from "./bash-interceptor.ts";
 
+function resolveCwd(ctx?: { cwd?: string }): string {
+	return ctx?.cwd ?? process.cwd();
+}
+
 export default function (pi: ExtensionAPI) {
 	// ── Guard: Skip full orchestrator registration when loading for a subagent session ──
 	if (_batchLoadSubagent > 0 || isSubagentContext()) {
@@ -38,8 +42,11 @@ export default function (pi: ExtensionAPI) {
 			batchLoad: _batchLoadSubagent,
 			envGuard: process.env[SUBAGENT_ENV_KEY],
 		});
-		const fusionConfig = loadFusionConfig(process.cwd());
-		pi.on("tool_call", (event) => handleSubagentToolCall(event, fusionConfig.enabled));
+		pi.on("tool_call", (event, ctx) => {
+			const cwd = resolveCwd(ctx);
+			const fusionConfig = loadFusionConfig(cwd);
+			return handleSubagentToolCall(event, fusionConfig.enabled, ctx);
+		});
 		return;
 	}
 
@@ -71,7 +78,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
-		new ScopeManager(process.cwd()).clearScope();
+		new ScopeManager(resolveCwd(ctx)).clearScope();
 		clearPlanPanel(ctx);
 
 		const fusionConfig = loadFusionConfig(ctx.cwd);
@@ -128,7 +135,7 @@ export default function (pi: ExtensionAPI) {
 	debugLog("lint-guard: expected to be loaded as required dependency. If lint/typecheck tools missing, check extension loading.");
 
 	// ── Register tools, commands, and shortcuts ──
-	registerAllTools(pi, process.cwd());
+	registerAllTools(pi, resolveCwd());
 	pi.registerTool(createReadSkillTool());
 
 	// ── Ctrl+Q: Peek overlay (Layer 3, mnemonic "quick peek") ──
