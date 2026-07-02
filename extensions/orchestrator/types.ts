@@ -137,14 +137,23 @@ export interface ReadSkillParams {
 	name: string;
 }
 
+/** Minimal model registry interface — avoids coupling to full pi-coding-agent types */
+export interface MinimalModelRegistry {
+	getModels?: () => any[];
+}
+
 /** Context for delegate-controller — thin typed wrapper over raw ExtensionContext */
 export interface DelegateControllerContext {
 	cwd: string;
 	sessionId?: string;
-	modelRegistry?: any;
-	model?: any;
-	ui?: any;  // ExtensionContext.ui
-	notify?: (msg: string, level: string) => void;
+	modelRegistry?: MinimalModelRegistry;
+	model?: string;
+	ui?: {
+		notify?: (msg: string, level: string) => void;
+		setWorkingMessage?: (msg?: string) => void;
+		setStatus?: (key: string, value: any) => void;
+		theme?: any;
+	};
 }
 
 /** Diagnostic metrics for a subagent session (issue #68) */

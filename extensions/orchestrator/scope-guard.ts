@@ -62,6 +62,9 @@ export class ScopeGuard {
   }
 
   isPathAllowed(filePath: string, operation: 'write' | 'edit' | 'read'): { allowed: boolean; reason?: string } {
+    // Reads are always safe — only enforce scope for mutations
+    if (operation === 'read') return { allowed: true };
+
     const scope = this._readScope();
     if (!scope) return { allowed: false, reason: 'No scope file' };
 

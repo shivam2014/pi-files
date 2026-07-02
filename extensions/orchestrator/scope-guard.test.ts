@@ -250,6 +250,80 @@ describe('ScopeGuard', () => {
       expect(() => guard.isPathAllowed('src/test.ts', 'write')).not.toThrow();
       expect(() => guard.isPathAllowed('other.ts', 'write')).not.toThrow();
     });
+
+    describe('read operations bypass scope', () => {
+      it('allows read when no scope file exists', () => {
+        const result = guard.isPathAllowed('src/any.ts', 'read');
+        expect(result).toEqual({ allowed: true });
+      });
+
+      it('allows read when scope has empty allowlists', () => {
+        mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+        writeFileSync(
+          join(tmpDir, '.pi', 'scope.json'),
+          JSON.stringify({
+            version: 1,
+            schema: 'scope-file-contract-v1',
+            scope: { filesToModify: [], filesToCreate: [], directories: [] },
+          })
+        );
+        const result = guard.isPathAllowed('src/anything.ts', 'read');
+        expect(result).toEqual({ allowed: true });
+      });
+
+      it('allows read when path is outside allowed directories', () => {
+        mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+        writeFileSync(
+          join(tmpDir, '.pi', 'scope.json'),
+          JSON.stringify({
+            version: 1,
+            schema: 'scope-file-contract-v1',
+            scope: {
+              filesToModify: [],
+              filesToCreate: [],
+              directories: ['src/allowed'],
+              maxFiles: 10,
+              requiresApprovalBeyondScope: true,
+              changeType: 'multi-file',
+              maxLinesPerFile: 400,
+              gateMode: 'strict',
+            },
+          })
+        );
+        const result = guard.isPathAllowed('etc/passwd', 'read');
+        expect(result).toEqual({ allowed: true });
+      });
+
+      it('blocks write when scope has empty allowlists (regression check)', () => {
+        mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+        writeFileSync(
+          join(tmpDir, '.pi', 'scope.json'),
+          JSON.stringify({
+            version: 1,
+            schema: 'scope-file-contract-v1',
+            scope: { filesToModify: [], filesToCreate: [], directories: [] },
+          })
+        );
+        const result = guard.isPathAllowed('src/test.ts', 'write');
+        expect(result.allowed).toBe(false);
+        expect(result.reason).toBeDefined();
+      });
+
+      it('blocks edit when scope has empty allowlists (regression check)', () => {
+        mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+        writeFileSync(
+          join(tmpDir, '.pi', 'scope.json'),
+          JSON.stringify({
+            version: 1,
+            schema: 'scope-file-contract-v1',
+            scope: { filesToModify: [], filesToCreate: [], directories: [] },
+          })
+        );
+        const result = guard.isPathAllowed('src/test.ts', 'edit');
+        expect(result.allowed).toBe(false);
+        expect(result.reason).toBeDefined();
+      });
+    });
   });
 
   describe('checkFileSize', () => {

@@ -13,7 +13,6 @@ import { debugLog } from "./debug.ts";
 import { hidePeek, unregisterPeekFeed } from "./peek-overlay.ts";
 import { ScopeManager } from "./scope-manager.ts";
 import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { resolveScope } from "./resolve-delegation-scope.ts";
 import { applyScope } from "./apply-scope.ts";
 import { handleDiagnostics } from "./handle-diagnostics.ts";
@@ -44,7 +43,7 @@ export interface ExecuteDelegateResult {
  */
 export async function executeDelegate(
 	params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal },
-	ctx: any,
+	ctx: DelegateControllerContext,
 	onUpdate: (update: any) => void,
 ): Promise<ExecuteDelegateResult> {
 	if (!params.specialist || !params.task) {
