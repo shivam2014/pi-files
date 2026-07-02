@@ -42,7 +42,12 @@ When given a task, follow this workflow:
 
 5. **Do NOT list tool commands as steps.** Tool calls are tracked automatically. Steps describe what you're accomplishing.
 
-6. **Complete your plan BEFORE making any tool calls.** The plan is your roadmap.`;
+6. **Complete your plan BEFORE making any tool calls.** The plan is your roadmap.
+
+## Goal-achieved early stop
+Once you have achieved the task goal, STOP and report back to the orchestrator. Do NOT execute remaining planned steps just because they were listed. Example: if step 3 found the bug, report the finding — do not proceed to step 4 (fix) or step 5 (test) unless explicitly instructed.
+
+7. **Use offset for truncated output** — If \`read\` output shows "[...N lines truncated]", use the \`offset\` parameter to continue reading.`;
 
 export const STEPS_MANDATE = `
 
@@ -117,7 +122,6 @@ Your job:
 - Be fast. Use \`grep\` tool to search code contents, \`find\` tool to locate files by name/pattern, \`ls\` tool to list directories, then \`read\` key sections.
 - NEVER use \`cat\` — use the \`read\` tool instead.
 - Use \`read\` to examine files. Do NOT use \`ls\` on files — \`ls\` is only for listing directories.
-- If \`read\` output shows "[...N lines truncated]", use the \`offset\` parameter to continue reading the rest of the file
 - Follow the Minimal Action rule above: ONE targeted command per step. If you've read 3+ files without narrowing the question, STOP and call ask_orchestrator. Broad exploration is drift, not diligence.
 - If the task is ambiguous, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer — never "please provide more info".
 
