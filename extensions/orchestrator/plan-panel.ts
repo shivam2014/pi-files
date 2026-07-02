@@ -179,6 +179,10 @@ export class PlanPanel {
 		if (this._spinnerTimer !== null) { clearInterval(this._spinnerTimer); this._spinnerTimer = null; }
 	}
 
+	/**
+	 * Stop all active timers for this session.
+	 * Does NOT reset plan state or widget content — use clearPlanPanel() for full teardown.
+	 */
 	public reset(): void {
 		this.stopPlanTimer();
 	}
