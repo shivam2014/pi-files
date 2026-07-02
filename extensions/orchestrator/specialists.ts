@@ -44,9 +44,6 @@ When given a task, follow this workflow:
 
 6. **Complete your plan BEFORE making any tool calls.** The plan is your roadmap.
 
-## Goal-achieved early stop
-Once you have achieved the task goal, STOP and report back to the orchestrator. Do NOT execute remaining planned steps just because they were listed. Example: if step 3 found the bug, report the finding — do not proceed to step 4 (fix) or step 5 (test) unless explicitly instructed.
-
 7. **Use offset for truncated output** — If \`read\` output shows "[...N lines truncated]", use the \`offset\` parameter to continue reading.`;
 
 export const STEPS_MANDATE = `

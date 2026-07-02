@@ -456,9 +456,9 @@ export async function runSubagent(
 		peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
 
 		let lastStopReason: string | undefined;
-let lastErrorMessage: string | undefined;
+		let lastErrorMessage: string | undefined;
 
-const unsubscribe = session.subscribe((event) => {
+		const unsubscribe = session.subscribe((event) => {
 			// Standard assistant message delta
 			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 				output += event.assistantMessageEvent.delta;
