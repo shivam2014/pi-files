@@ -173,7 +173,7 @@ ${TERSE_INSTRUCTION}`,
 	coder: {
 		name: "coder",
 		description: "Implementation specialist with full read/write access. Uses edit/write for file changes, bash for verification. Ideal for implementing features and fixing bugs.",
-		tools: ["read", "bash", "edit", "write", "lint"],
+		tools: ["read", "bash", "edit", "write", "grep", "lint"],
 		suggestedSkills: ["implement", "tdd"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 

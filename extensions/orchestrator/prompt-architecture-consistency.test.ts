@@ -6,6 +6,9 @@
  *
  * Part 1: DELEGATION_INSTRUCTIONS_TEMPLATE vs executeDelegate behavior
  * Part 2: Specialist prompt consistency (tools mentioned in prompts)
+ * Part 3: ROUTING_TABLE covers all specialists
+ * Part 4: changeType/maxLinesPerFile consistency across prompt, delegate schema, and ResolvedScope
+ * Part 5: Subagent tool injection consistency
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -23,7 +26,7 @@ vi.mock("./specialists", () => ({
 		},
 		coder: {
 			name: "coder",
-			tools: ["read", "bash", "edit", "write", "lint"],
+			tools: ["read", "bash", "edit", "write", "grep", "lint"],
 			description: "Implementation specialist",
 		},
 	},
@@ -54,14 +57,14 @@ describe("DELEGATION_INSTRUCTIONS_TEMPLATE vs executeDelegate", () => {
 		const sourcePath = resolve(__dirname, "delegate-controller.ts");
 		const source = readFileSync(sourcePath, "utf-8");
 
-		// The guard must check hasActivePlan() before delegating
-		expect(source).toContain("hasActivePlan()");
+		// The guard must check hasActivePlan(ctx) before delegating
+		expect(source).toContain("hasActivePlan(");
 
 		// The error message when no active plan exists
 		expect(source).toContain("No active plan");
 
-		// The comment guard — must remain to prevent auto-creation drift
-		expect(source).toContain("don't auto-create");
+		// Scope validation - coder without scope must be rejected
+		expect(source).toContain("Scope required for coder");
 	});
 });
 
@@ -124,6 +127,78 @@ describe("Specialist prompt consistency", () => {
 			if (tools.includes("grep")) {
 				expect(prompt).toContain("grep");
 			}
+		}
+	});
+});
+
+// =====================================================================
+// Part 3: ROUTING_TABLE covers all specialists
+// =====================================================================
+describe("ROUTING_TABLE covers all specialists", () => {
+	it("all 5 specialist names appear in ROUTING_TABLE", () => {
+		const sourcePath = resolve(__dirname, "prompt-builder.ts");
+		const source = readFileSync(sourcePath, "utf-8");
+
+		for (const name of ["scout", "coder", "reviewer", "researcher", "writer"]) {
+			expect(source).toContain(name);
+		}
+	});
+});
+
+// =====================================================================
+// Part 4: changeType/maxLinesPerFile consistency across prompt, delegate
+// schema, and ResolvedScope
+// =====================================================================
+describe("changeType/maxLinesPerFile consistency", () => {
+	it("prompt mentions both changeType and maxLinesPerFile", () => {
+		const sourcePath = resolve(__dirname, "prompt-builder.ts");
+		const source = readFileSync(sourcePath, "utf-8");
+
+		expect(source).toContain("changeType");
+		expect(source).toContain("maxLinesPerFile");
+	});
+
+	it("delegate-tool schema accepts changeType and maxLinesPerFile", () => {
+		const sourcePath = resolve(__dirname, "delegate-tool.ts");
+		const source = readFileSync(sourcePath, "utf-8");
+
+		expect(source).toContain("changeType");
+		expect(source).toContain("maxLinesPerFile");
+	});
+
+	it("ResolvedScope has changeType and maxLinesPerFile", () => {
+		const sourcePath = resolve(__dirname, "scope-manager.ts");
+		const source = readFileSync(sourcePath, "utf-8");
+
+		expect(source).toContain("changeType");
+		expect(source).toContain("maxLinesPerFile");
+	});
+});
+
+// =====================================================================
+// Part 5: Subagent tool injection consistency
+// =====================================================================
+describe("Subagent tool injection consistency", () => {
+	it("subagent-runner.ts injects all 4 custom tools", () => {
+		const sourcePath = resolve(__dirname, "subagent-runner.ts");
+		const source = readFileSync(sourcePath, "utf-8");
+
+		expect(source).toContain('"planSteps"');
+		expect(source).toContain('"advanceStep"');
+		expect(source).toContain('"reportFinding"');
+		expect(source).toContain('"ask_orchestrator"');
+	});
+
+	it("every specialist prompt mentions all 4 subagent tool names", async () => {
+		const { SPECIALISTS } = await vi.importActual<any>("./specialists");
+
+		for (const [name, spec] of Object.entries(SPECIALISTS)) {
+			const prompt = (spec as any).systemPrompt as string;
+
+			expect(prompt, `${name} must mention planSteps`).toContain("planSteps");
+			expect(prompt, `${name} must mention advanceStep`).toContain("advanceStep");
+			expect(prompt, `${name} must mention reportFinding`).toContain("reportFinding");
+			expect(prompt, `${name} must mention ask_orchestrator`).toContain("ask_orchestrator");
 		}
 	});
 });

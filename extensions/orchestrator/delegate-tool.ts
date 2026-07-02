@@ -51,6 +51,12 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				requiresApprovalBeyondScope: Type.Optional(Type.Boolean({
 					description: "If true, user must approve scope deviations",
 				})),
+				changeType: Type.Optional(Type.String({
+					description: "Type of change: single-file or multi-file",
+				})),
+				maxLinesPerFile: Type.Optional(Type.Number({
+					description: "Max lines per file the specialist may create/modify",
+				})),
 				boundaries: Type.Optional(Type.String({
 					description: "Free-text scope boundaries the specialist must respect",
 				})),

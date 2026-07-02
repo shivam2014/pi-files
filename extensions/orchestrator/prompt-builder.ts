@@ -63,11 +63,11 @@ delegate("coder", "fix the token expiry", {
     scope: {
         filesToModify: ["src/auth.ts"],
         filesToCreate: [],
-        allowedDirectories: ["src"],
+        directories: ["src"],
         maxFiles: 15,
         maxLinesPerFile: 400,
         changeType: "single-file",
-        requiresApproval: false
+        requiresApprovalBeyondScope: false
     }
 })
 \`\`\`
