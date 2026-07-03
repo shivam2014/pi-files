@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-03T18:04:46.084Z",
+  "specialist": "scout",
+  "task": "Read ~/.pi/agent/extensions/orchestrator/docs/VISION.md completely. Output the full content word-for-word. I need to understand the original vision document before adding audit findings to it.",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 1681,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-03T18:04:46.084Z-scout-33546cd3",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "mimo-v2.5-vision",
+  "stopReason": "aborted",
+  "errorMessage": "Request was aborted"
+}

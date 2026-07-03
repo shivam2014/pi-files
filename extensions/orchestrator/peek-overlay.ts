@@ -353,6 +353,8 @@ export function setViewerSession(session: any, task: string): void {
     _viewerSession = session;
     _viewerTask = task;
     _viewerStatus = "running";
+    _peekComponent?.invalidate();
+    _peekTui?.requestRender();
 }
 
 /**
@@ -383,6 +385,8 @@ export function clearViewerState(): void {
     _viewerTask = "";
     _viewerOutput = "";
     _viewerStatus = "idle";
+    _peekComponent?.invalidate();
+    _peekTui?.requestRender();
 }
 
 // ============================================================================

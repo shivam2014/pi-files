@@ -289,8 +289,8 @@ When documenting tools, explain three things: what it does, when to use it, and 
 
 These principles govern how the orchestrator extension is built and maintained.
 
-### 14. Reuse before building
-Check existing APIs and patterns before implementing new features. The pi SDK provides `pi.getAllTools()` (full tool metadata), `pi.getActiveTools()` (names), `pi.registerTool()` (registration). Don't build what already exists.
+### 14. Reuse what exists — SDK, modules, patterns
+Before building anything, check if it already exists. The pi SDK provides APIs for tool metadata, skill lists, active tools — use them. The codebase has modules for scope management, ask resolution, UI utilities — reuse them. Don't hardcode what the system can derive. Don't reinvent what's already built. The prompt should be a template that fills itself from the system's actual state. Dynamic content stays in sync; static content drifts.
 
 ### 15. Modular, single-responsibility
 Each file handles one concern. Tool registration in separate files. Pure logic (scope-guard, ask-resolver) separated from pi API coupling. Shared utilities in ui-utils.ts. Registration-hub.ts is the central wiring point.
@@ -301,8 +301,5 @@ Business logic lives in pure functions or classes that don't import pi. Pi API c
 ### 17. Registration pattern
 New tools follow the pattern: `registerXTool(pi: ExtensionAPI)` function → export from module → wire in registration-hub.ts → add to active tools in index.ts. Don't skip steps.
 
-### 18. Dynamic over static
-Prefer dynamic tool metadata over static lists. `pi.getAllTools()` provides descriptions automatically. Don't manually list tool descriptions in prompts when the SDK can provide them.
-
-### 19. Token-neutral changes
+### 18. Token-neutral changes
 When adding new prompt text, identify what can be removed. Every line costs tokens per session. New features should be token-neutral or token-negative. Measure before committing.

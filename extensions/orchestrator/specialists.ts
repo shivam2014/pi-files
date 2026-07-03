@@ -9,7 +9,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-function generateToolPrompt(tools: string[]): string {
+export function generateToolPrompt(tools: string[]): string {
 	const toolList = tools.join(", ");
 	return `\n\nYour available tools: ${toolList}.\nYou do NOT have bash. You do NOT have edit or write.`;
 }

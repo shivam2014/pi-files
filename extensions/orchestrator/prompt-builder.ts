@@ -7,6 +7,7 @@
  */
 
 import { listSpecialists, SPECIALISTS } from "./specialists.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const ROUTING_TABLE = `
 ### Task Routing
@@ -20,6 +21,63 @@ const ROUTING_TABLE = `
 | Triage issues | — (inline) | triage |
 | Plan refactor / design | — (inline) | grill-with-docs |
 `;
+
+/**
+ * Generate tool documentation table dynamically from pi SDK tool registry.
+ * Filters to orchestrator-level tools only (plan, delegate, read_skill, fusion).
+ */
+function generateToolDocumentation(pi: ExtensionAPI): string {
+	const allTools = pi.getAllTools();
+	const orchestratorToolNames = ["plan", "delegate", "read_skill", "fusion"];
+	const tools = allTools.filter((t: any) => orchestratorToolNames.includes(t.name));
+
+	const toolRows = tools.map((t: any) => {
+		const params = t.parameters?.properties
+			? Object.keys(t.parameters.properties).join(", ")
+			: "";
+		return `| \`${t.name}\` | \`${t.name}(${params})\` | ${t.description} |`;
+	}).join("\n");
+
+	return `
+### Tools
+
+| Tool | Syntax | Output |
+|------|--------|--------|
+${toolRows}
+
+**ScopeObject shape:**
+\`\`\`
+{
+    filesToModify: ["src/auth.ts"],
+    filesToCreate: ["tests/**/*.test.ts"],
+    directories: ["src"],
+    boundaries?: "do not modify src/legacy"
+}
+\`\`\`
+`;
+}
+
+/**
+ * Generate routing table dynamically from SPECIALISTS dict.
+ * Falls back to ROUTING_TABLE constant when SPECIALISTS is unavailable.
+ */
+function generateRoutingFromSpecialists(): string {
+	const specialists = listSpecialists();
+	const rows = specialists.map(name => {
+		const spec = SPECIALISTS[name];
+		const skills = spec.suggestedSkills?.length
+			? spec.suggestedSkills.join(", ")
+			: "—";
+		return `| ${spec.description} | ${name} | ${skills} |`;
+	}).join("\n");
+
+	return `
+### Task Routing
+| Task type | Specialist | Default skills |
+|-----------|------------|----------------|
+${rows}
+`;
+}
 
 const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error (destructive operations, broad file changes)\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n`;
 
@@ -126,8 +184,10 @@ export function buildOrchestratorPrompt(options: {
 	basePrompt: string;
 	skills?: Array<{ name: string; description?: string }>;
 	fusionEnabled?: boolean;
+	/** SDK reference for dynamic tool documentation generation */
+	pi?: ExtensionAPI;
 }): { systemPrompt: string } {
-	const { basePrompt, skills, fusionEnabled } = options;
+	const { basePrompt, skills, fusionEnabled, pi } = options;
 
 	// Dedup check
 	if (basePrompt.includes("## Orchestrator Mode")) {
@@ -149,14 +209,24 @@ export function buildOrchestratorPrompt(options: {
 
 	const fusionSection = fusionEnabled ? FUSION_INSTRUCTION : "";
 
+	// Dynamic tool documentation from SDK (with fallback for tests)
+	const toolsSection = options.pi
+		? generateToolDocumentation(options.pi)
+		: "";
+
+	// Dynamic routing: use SPECIALISTS dict when available, ROUTING_TABLE as fallback for tests
+	const routingSection = options.pi
+		? generateRoutingFromSpecialists()
+		: ROUTING_TABLE;
+
 	// Assemble instructions
 	const instructions = DELEGATION_INSTRUCTIONS_TEMPLATE
 		.replace("{{ROSTER}}", rosterLines)
-		.replace("{{ROUTING}}", ROUTING_TABLE)
+		.replace("{{ROUTING}}", routingSection)
 		.replace("{{SKILLS}}", skillsSection)
 		.replace("{{FUSION}}", fusionSection);
 
 	return {
-		systemPrompt: basePrompt + "\n\n" + instructions,
+		systemPrompt: basePrompt + "\n\n" + instructions + toolsSection,
 	};
 }
