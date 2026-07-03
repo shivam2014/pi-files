@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, isAbsolute, resolve, posix } from 'path';
+import picomatch from 'picomatch';
 import type { ResolvedScope } from './scope-manager';
 
 export interface ScopeExpansionRequest {
@@ -15,6 +16,11 @@ function normalizePath(filePath: string, cwd: string): string {
   // If relative starts with '..', the path escapes cwd — return absolute
   if (rel.startsWith('..') || isAbsolute(rel)) return absolute;
   return posix.normalize(rel);
+}
+
+/** True if string contains glob metacharacters */
+function hasGlobChars(s: string): boolean {
+  return /[*?[!{]/.test(s);
 }
 
 export class ScopeGuard {
@@ -70,6 +76,18 @@ export class ScopeGuard {
       const approvedRel = isAbsolute(approved) ? normalizePath(approved, this.cwd) : approved;
       if (!approvedRel) continue;
       if (approvedRel === normalized) return { allowed: true };
+    }
+
+    // 2. Glob pattern match — check operation-appropriate list
+    const relevantPatterns = operation === 'write' ? filesToCreate : filesToModify;
+    for (const pattern of relevantPatterns) {
+      if (hasGlobChars(pattern)) {
+        // Block .. traversal in glob patterns
+        if (pattern.split('/').includes('..')) continue;
+        if (picomatch(pattern)(normalized)) {
+          return { allowed: true };
+        }
+      }
     }
 
     // Check directory-level allowlist

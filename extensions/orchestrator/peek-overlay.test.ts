@@ -53,9 +53,8 @@ describe("PeekComponent.render — minimum height", () => {
 		// With no feed state and no peek lines, content is just header + footer
 		// which is less than 9 lines — should be padded to MIN_HEIGHT
 		expect(lines.length).toBe(MIN_HEIGHT);
-		// Last few lines should be empty (padding)
-		const emptyLines = lines.filter((l) => l === "");
-		expect(emptyLines.length).toBeGreaterThan(0);
+		// Box-drawn lines always have │ borders. Empty interior = │<spaces>│
+		expect(lines.some((l) => /^│\s+│$/.test(l))).toBe(true);
 	});
 });
 

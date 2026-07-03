@@ -12,7 +12,7 @@ import {
 	buildRecentContext,
 	tryAnswerFromContext,
 	createAskOrchestratorResolver,
-	resolve,
+	resolve, hasLiteralSegment,
 } from "./ask-resolver.ts";
 
 // ─── extractReferencedPaths ──────────────────────────────────────────────────
@@ -349,6 +349,51 @@ describe("createAskOrchestratorResolver", () => {
 	});
 });
 
+
+
+// ─── hasLiteralSegment ─────────────────────────────────────────────────────
+
+describe("hasLiteralSegment", () => {
+  it("returns true for exact path with no glob chars", () => {
+    expect(hasLiteralSegment("src/auth.ts")).toBe(true);
+  });
+
+  it("returns true for pattern with literal segment prefix", () => {
+    expect(hasLiteralSegment("tests/**")).toBe(true);
+  });
+
+  it("returns true for pattern with literal segment in middle", () => {
+    expect(hasLiteralSegment("src/**/*.test.ts")).toBe(true);
+  });
+
+  it("returns false for bare wildcard *", () => {
+    expect(hasLiteralSegment("*")).toBe(false);
+  });
+
+  it("returns false for bare globstar **", () => {
+    expect(hasLiteralSegment("**")).toBe(false);
+  });
+
+  it("returns false for pattern with only glob segments", () => {
+    expect(hasLiteralSegment("*.test.ts")).toBe(false);
+  });
+
+  it("returns false for multi-segment all-glob pattern", () => {
+    expect(hasLiteralSegment("**/*.ts")).toBe(false);
+  });
+
+  it("returns true for pattern with mixed glob and literal segments", () => {
+    expect(hasLiteralSegment("src/*")).toBe(true);
+  });
+
+  it("returns true for pattern with literal after glob segment", () => {
+    expect(hasLiteralSegment("*/src/*.test.ts")).toBe(true);
+  });
+
+  it("returns false for empty string", () => {
+    expect(hasLiteralSegment("")).toBe(false);
+  });
+});
 
 // ─── resolve ─────────────────────────────────────────────────────────────────────
 

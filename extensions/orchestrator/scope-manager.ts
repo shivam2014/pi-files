@@ -9,6 +9,12 @@ export interface ScopeFileContract {
   scope: ResolvedScope;
 }
 
+/** Input/authoring view of a Scope, before normalization.
+ * filesToModify and filesToCreate support both exact paths and
+ * glob patterns (picomatch syntax: *, **, ?, [...], {...}).
+ * Glob patterns are compiled at enforcement time by ScopeGuard.
+ * At least one entry must have a literal segment (non-glob path
+ * component) to pass the ask-resolver specificity gate. */
 export interface ScopeManifest {
   filesToModify: string[];
   filesToCreate: string[];
@@ -21,6 +27,10 @@ export interface ScopeManifest {
   boundaries?: string;
 }
 
+/** Enforcement view produced by ScopeManager.normalize().
+ * filesToModify and filesToCreate support both exact paths and
+ * glob patterns (picomatch syntax). The guard checks in order:
+ * 1) exact path match, 2) glob pattern match, 3) directory prefix. */
 export interface ResolvedScope {
   filesToModify: string[];
   filesToCreate: string[];

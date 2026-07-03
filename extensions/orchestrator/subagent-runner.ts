@@ -22,7 +22,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 
 import { shortenLabel } from "../token-saver.ts";
-import type { Specialist, SubagentContext, Scope, Substep } from "./types.ts";
+import type { Specialist, SubagentContext, Scope, Substep, DelegateControllerContext } from "./types.ts";
 import { buildSkillSection } from "./specialists.ts";
 import {
 	addSubstep,
@@ -43,7 +43,7 @@ import {
 import { compressOutput, inspectFeedState, snapshotFeedRender } from "./activity-feed.ts";
 import { _spinnerIndex, resetSpinner } from "./spinner-state.ts";
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
-import type { SessionContext } from "./types.ts";
+
 import { debugLog } from "./debug.ts";
 import { registerPeekFeed, updatePeek, updatePeekFeed } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
@@ -242,7 +242,7 @@ export async function runSubagent(
 	scope?: Scope | null,
 	orchestratorUi?: OrchestratorUi,
 	suggestedSkills?: string[],
-	orchestratorCtx?: SessionContext,
+	orchestratorCtx?: DelegateControllerContext,
 ): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[]; stopReason?: string; errorMessage?: string; model?: string }> {
 	const startTime = Date.now();
 	let envSnapshot = snapshotSubagentEnv();

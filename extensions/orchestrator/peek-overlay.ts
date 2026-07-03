@@ -13,6 +13,7 @@
 
 import type { ActivityFeedState } from "./types.ts";
 import { SPINNER_FRAMES, getSpinnerIndex, advanceSpinner, resetSpinner } from "./spinner-state.ts";
+import { formatDuration } from "./ui-utils.ts";
 
 // Local interface subset — avoids module resolution issues with pi-tui imports.
 // At runtime these are the same types from @earendil-works/pi-tui.
@@ -65,63 +66,181 @@ let _registeredGoal: string = "";
 // ============================================================================
 
 export class PeekComponent implements Component {
+    _theme: any = null;
     private _cachedLines: string[] | null = null;
 
     render(width: number): string[] {
         const lines: string[] = [];
         const innerWidth = Math.max(width - 4, 20);
+        const t = this._theme;
 
-        // ── Header ──
+        // visible length (strip ANSI codes)
+        const vLen = (s: string): number => visibleLen(s).length;
+
+        // Theme helpers — fallback to raw text if theme not yet set
+        const mute = (s: string): string => t ? t.fg("muted", s) : s;
+        const accent = (s: string): string => t ? t.fg("accent", s) : s;
+        const success = (s: string): string => t ? t.fg("success", s) : s;
+        const errCol = (s: string): string => t ? t.fg("error", s) : s;
+        const bld = (s: string): string => t ? t.bold(s) : s;
+
+        // Build a content line with box borders
+        const box = (content: string): string =>
+            `│ ${content}${' '.repeat(Math.max(0, innerWidth - vLen(content)))} │`;
+
+        // ── Empty state ──
+        if (!_peekFeedState && _peekLines.length === 0) {
+            const topPad = Math.max(0, width - 4);
+            lines.push(mute("┌ ") + mute("─".repeat(topPad)) + mute(" ┐"));
+            lines.push(box(mute("○ Waiting for subagent...")));
+            while (lines.length < MIN_HEIGHT - 1) {
+                lines.push(box(""));
+            }
+            lines.push(mute("└─") + mute("─".repeat(Math.max(0, width - 4))) + mute("─┘"));
+            this._cachedLines = lines;
+            return lines;
+        }
+
+        // ── Line 0: Top border with header ──
         const goalLabel = _peekGoal || "Subagent";
-        lines.push(`\x1b[1m◆ Peek: ${goalLabel}\x1b[0m`);
-        lines.push("─".repeat(innerWidth));
+        const topInnerText = ` ◆ Peek: ${goalLabel} `;
+        const topInner = ` ${accent(`◆ Peek: ${bld(goalLabel)}`)} `;
+        const topPad = Math.max(0, (width - 2) - vLen(topInnerText));
+        lines.push(mute("┌") + topInner + mute("─".repeat(topPad)) + mute("┐"));
 
-        // ── Current step from feed ──
+        // ── Line 1: Progress dots row ──
         if (_peekFeedState) {
             const feed = _peekFeedState;
-            if (feed.steps.length > 0 && feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
-                const step = feed.steps[feed.currentStep];
-                const icon = step.completed ? "✓" : SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length];
-                lines.push(`${icon} Step: ${truncate(step.label, innerWidth - 8)}`);
+            const dots = feed.steps.map((s, i) => {
+                if (s.errored) return errCol("✗");
+                if (s.completed) return success("●");
+                if (i === feed.currentStep) {
+                    const blink = Math.floor(Date.now() / 1000) % 2 === 0;
+                    return blink ? accent("●") : mute("○");
+                }
+                return mute("○");
+            }).join("");
+            const doneCount = feed.steps.filter((s) => s.completed || s.errored).length;
+            const countStr = ` ${doneCount}/${feed.steps.length}`;
+            lines.push(box(dots + countStr));
+        } else {
+            // No feed — still show progress area as empty
+            lines.push(box(""));
+        }
 
-                // Show recent substeps (last 3)
-                const recentSubs = step.substeps.slice(-3);
-                for (const sub of recentSubs) {
-                    const subIcon = sub.completed ? "✓" : SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length];
-                    const subLabel = truncate(sub.label, innerWidth - 6);
-                    lines.push(`  ${subIcon} ${subLabel}`);
+        // ── Step tree (lines 2+) ──
+        const MAX_VISIBLE_SUBSTEPS = 3;
+        if (_peekFeedState && _peekFeedState.steps.length > 0) {
+            const feed = _peekFeedState;
+            for (let i = 0; i < feed.steps.length; i++) {
+                const step = feed.steps[i];
+                const isCompleted = !!step.completed;
+                const isErrored = !!step.errored;
+                const isActive = i === feed.currentStep && !isCompleted && !isErrored;
+                const isPending = i > feed.currentStep || (i === feed.currentStep && !isActive && !isCompleted && !isErrored);
+
+                // Step icon
+                let stepIcon: string;
+                if (isErrored) stepIcon = errCol("✗");
+                else if (isCompleted) stepIcon = success("✓");
+                else if (isActive) stepIcon = accent(SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]);
+                else stepIcon = mute("○");
+
+                // Step duration
+                let durationStr = "";
+                if (step.startTime) {
+                    if (isCompleted && step.endTime) {
+                        durationStr = ` (${formatDuration(step.endTime - step.startTime)})`;
+                    } else if (step.startTime) {
+                        durationStr = ` (${formatDuration(Date.now() - step.startTime)})`;
+                    }
+                }
+
+                // Build step line
+                let stepLine: string;
+                if (isErrored) {
+                    stepLine = errCol(`${stepIcon} Step ${i + 1}: ${step.label}${durationStr}`);
+                } else if (isCompleted) {
+                    stepLine = success(`${stepIcon} Step ${i + 1}: ${step.label}${durationStr}`);
+                } else if (isActive) {
+                    stepLine = stepIcon + ` Step ${i + 1}: ${step.label}`;
+                } else {
+                    stepLine = mute(`○ Step ${i + 1}: ${step.label}`);
+                }
+                lines.push(box(stepLine));
+
+                // Substeps
+                if (isPending) continue; // no substeps for pending
+
+                const subs = step.substeps;
+                const showSubs = subs.slice(0, MAX_VISIBLE_SUBSTEPS);
+                const extraCount = subs.length - MAX_VISIBLE_SUBSTEPS;
+
+                for (let si = 0; si < showSubs.length; si++) {
+                    const sub = showSubs[si];
+                    const subCompleted = !!sub.completed;
+                    const subErrored = !!sub.errored;
+                    const subActive = !subCompleted && !subErrored;
+
+                    let subIcon: string;
+                    if (subErrored) subIcon = errCol("✗");
+                    else if (subCompleted) subIcon = success("✓");
+                    else if (subActive) subIcon = accent(SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]);
+                    else subIcon = mute("○");
+
+                    const subLine = `  ${subIcon} ${sub.label}`;
+                    lines.push(box(subLine));
+
+                    // Tool detail (only for active substep with toolDetail)
+                    if (subActive && sub.toolDetail) {
+                        const toolIcon = accent(SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]);
+                        const toolLine = `    ${toolIcon} Running: ${sub.toolDetail}`;
+                        lines.push(box(toolLine));
+                    }
+                }
+
+                if (extraCount > 0) {
+                    lines.push(box(mute(`  …+${extraCount} more`)));
                 }
             }
+        }
 
-            // Show completed step count
-            const completed = feed.steps.filter((s) => s.completed).length;
-            if (feed.steps.length > 1) {
-                lines.push(`  [${completed}/${feed.steps.length} steps]`);
+        // ── Separator & streaming lines ──
+        const hasStreaming = _peekLines.length > 0;
+
+        if (hasStreaming) {
+            // ├─ Output ──...──┤ separator
+            const sepText = "─ Output ";
+            const sepPad = Math.max(0, (width - 2) - vLen(sepText));
+            lines.push(mute("├") + mute(sepText) + mute("─".repeat(sepPad)) + mute("┤"));
+
+            // Streaming content lines
+            const usedSoFar = lines.length;
+            // Reserve 1 line for bottom border, aim for at least 3 streaming lines
+            const maxStreamLines = Math.max(3, MIN_HEIGHT - usedSoFar - 2);
+            const streamLines = _peekLines.slice(-maxStreamLines);
+            for (const rawLine of streamLines) {
+                const visLen = vLen(rawLine);
+                const truncated = visLen > innerWidth
+                    ? truncate(rawLine, Math.max(innerWidth - 1, 1)) + "…"
+                    : rawLine;
+                lines.push(box(truncated));
             }
+
+            // Bottom border with footer
+            const bottomText = "─ Esc: close  xx′: abort ";
+            const bottomPad = Math.max(0, (width - 2) - vLen(bottomText));
+            lines.push(mute("└") + mute(bottomText) + mute("─".repeat(bottomPad)) + mute("┘"));
+        } else {
+            // No streaming text — bottom border directly after step tree
+            const bottomText = "─ Esc: close  xx′: abort ";
+            const bottomPad = Math.max(0, (width - 2) - vLen(bottomText));
+            lines.push(mute("└") + mute(bottomText) + mute("─".repeat(bottomPad)) + mute("┘"));
         }
 
-        // ── Separator ──
-        if (_peekLines.length > 0 || _peekFeedState) {
-            lines.push("─".repeat(innerWidth));
-        }
-
-        // ── Streaming content lines (capped) ──
-        if (_peekLines.length > 0) {
-            // Show most recent lines that fit within budget
-            const budget = MAX_PEEK_LINES - lines.length - 2; // reserve for footer
-            const visibleLines = _peekLines.slice(-Math.max(budget, 10));
-            for (const line of visibleLines) {
-                lines.push(truncate(line, innerWidth));
-            }
-        }
-
-        // ── Footer ──
-        lines.push("─".repeat(innerWidth));
-        const footer = "Esc: close  xx\u2032: abort";
-        lines.push(footer);
-
+        // Pad to MIN_HEIGHT
         while (lines.length < MIN_HEIGHT) {
-            lines.push('');
+            lines.push(box(""));
         }
 
         this._cachedLines = lines;
@@ -159,6 +278,10 @@ export class PeekComponent implements Component {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+function visibleLen(s: string): string {
+    return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
 
 function truncate(text: string, maxLen: number): string {
     if (text.length <= maxLen) return text;
@@ -264,8 +387,9 @@ export function showPeek(
     _peekComponent = component;
 
     ctx.ui.custom(
-        (tui: TUI, _theme: any, _keybindings: any, done: () => void) => {
+        (tui: TUI, theme: any, _keybindings: any, done: () => void) => {
             _peekTui = tui;
+            component._theme = theme;
             _peekDone = done;
             startSpinnerTimer();
             return component;

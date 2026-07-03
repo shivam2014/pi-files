@@ -124,7 +124,6 @@ export default function (pi: ExtensionAPI) {
 	// ── Agent end: flush timeline recording to disk ──
 	pi.on("agent_end", async (event, ctx) => {
 		try {
-			const { clearPlanPanel } = await import("./plan-panel.ts");
 			clearPlanPanel(ctx);
 		} catch (err) {
 			debugLog("agent_end: failed to dump timeline", err);
@@ -134,7 +133,6 @@ export default function (pi: ExtensionAPI) {
 	// ── Session shutdown: clear plan panel instances for this session ──
 	pi.on("session_shutdown", async (_event, ctx) => {
 		try {
-			const { clearPlanPanel } = await import("./plan-panel.ts");
 			clearPlanPanel(ctx);
 		} catch (err) {
 			debugLog("session_shutdown: failed to clear plan panel", err);

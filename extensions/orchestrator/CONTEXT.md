@@ -70,6 +70,14 @@ The enforcement policy derived from `changeType` that tells ScopeGuard how stric
 
 _Avoid:_ enforcement level, scope mode, permission mode
 
+**GlobPattern**
+
+A filesToModify or filesToCreate entry containing wildcard metacharacters. Uses minimatch/glob syntax alongside exact paths. The guard checks exact paths first, then glob patterns, then directory prefix. Each entry is independent — no negative/deny patterns.
+
+**LiteralSegment**
+
+A path component without glob metacharacters (`*`, `?`, `[`, `{`, `!`). The ask-resolver specificity gate requires at least one literal segment for a pattern to count as "concrete." E.g., `tests/**` has literal segment `tests`; `*.test.ts` has none.
+
 ## ScopeManager
 
 The module that owns the Scope concept — its extraction from subagent output, normalization of a ScopeManifest to a ResolvedScope, typed API, scope construction helpers, and `changeType`-to-`gateMode` derivation. It reads and writes `.pi/scope.json` on demand and is the sole writer of that file, and it exposes a clear operation to remove `.pi/scope.json`. After orchestrator approval, it can rewrite `.pi/scope.json` with an expanded allowed set. Scope-related types live with it (in `scope-manager.ts` or a sibling `scope-types.ts`), keeping the seam self-contained and avoiding a shared orchestrator `types.ts` dependency. It does not keep an in-process cache; the orchestrator passes scope explicitly. It does not decide per-specialist defaults; callers choose which policy to apply.
@@ -101,6 +109,10 @@ _Avoid:_ scope validator, scope enforcer, permission guard
 The per-specialist decision about what default scope to apply, such as which specialist receives a doc-friendly default. It decides defaults when the orchestrator does not pass an explicit scope.
 
 _Avoid:_ scope rules, scope defaults, specialist config
+
+**SpecificityGate**
+
+The rule in ask-resolver.resolve() that treats a scope as "concrete enough" only if filesToModify/filesToCreate entries collectively have at least one literal segment. Prevents overly broad scopes (bare `*`, `**`) from bypassing the user-ask gate.
 
 ## BashInterceptor
 

@@ -61,6 +61,144 @@ describe('ScopeGuard', () => {
   });
 
   describe('isPathAllowed', () => {
+    it('allows files matching glob pattern in filesToModify', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['**/*.test.ts'],
+            filesToCreate: [],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('src/utils.test.ts', 'edit');
+      expect(result.allowed).toBe(true);
+    });
+
+    it('allows files matching glob pattern in filesToCreate for write', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: [],
+            filesToCreate: ['**/*.new.ts'],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('src/utils.new.ts', 'write');
+      expect(result.allowed).toBe(true);
+    });
+
+    it('blocks files not matching glob pattern', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['**/*.test.ts'],
+            filesToCreate: [],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('src/utils.ts', 'edit');
+      expect(result.allowed).toBe(false);
+    });
+
+    it('blocks .. traversal in glob pattern', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['../etc/**'],
+            filesToCreate: [],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('etc/passwd', 'edit');
+      expect(result.allowed).toBe(false);
+    });
+
+    it('blocks path with .. traversal even with glob patterns', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['**/*.ts'],
+            filesToCreate: [],
+            directories: ['src'],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('../etc/passwd', 'edit');
+      expect(result.allowed).toBe(false);
+    });
+
+    it('allows read even with glob patterns present (regression)', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['**/*.ts'],
+            filesToCreate: [],
+            directories: ['src'],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      const result = guard.isPathAllowed('/etc/passwd', 'read');
+      expect(result).toEqual({ allowed: true });
+    });
+
     it('allows files listed in filesToModify', () => {
       mkdirSync(join(tmpDir, '.pi'), { recursive: true });
       writeFileSync(

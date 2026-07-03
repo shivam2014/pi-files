@@ -196,11 +196,11 @@ export interface SubagentDiagnostic {
 /** Readonly subset of SessionManager used for instance resolution. */
 export type ReadonlySessionManager = Pick<SessionManager, "getCwd" | "getSessionDir" | "getSessionId" | "getSessionFile" | "getLeafId" | "getLeafEntry" | "getEntry" | "getLabel" | "getBranch" | "getHeader" | "getEntries" | "getTree" | "getSessionName">;
 
+/** Context for plan-panel instance resolution.
+ * Typed to match ExtensionContext shape with sessionManager from pi-coding-agent.
+ * Callers should ensure sessionManager.getSessionId() returns a non-empty string.
+ */
 export interface SessionContext {
 	sessionManager?: ReadonlySessionManager;
-	/** Alternative sessionId location (DelegateControllerContext shape) */
-	sessionId?: string;
-	/** Allow additional properties from ExtensionContext, DelegateControllerContext, etc. */
-	[key: string]: any;
 }
 

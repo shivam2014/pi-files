@@ -296,17 +296,24 @@ export type Scope = {
 /** Result of the AskResolver boolean gate */
 export type ResolveResult = "ask" | "proceed";
 
+/** True if pattern has at least one path segment without glob metacharacters */
+export function hasLiteralSegment(pattern: string): boolean {
+  if (!pattern) return false;
+  const segments = pattern.split("/");
+  return segments.some((seg) => /^[^*?[!{]+$/.test(seg) && seg.length > 0);
+}
+
 /**
  * Boolean gate: should the orchestrator ask the user before delegating?
  *
  * Returns "ask" when scope is too vague:
  * - scope is null
  * - filesToModify empty AND filesToCreate empty (no file specs)
- * - filesToModify contains only wildcards ("*", "ALL")
+ * - filesToModify/filesToCreate entries have no literal segment
  * - only boundaries set, no file/dir specs
  *
  * Returns "proceed" when scope is concrete enough:
- * - concrete file paths in filesToModify or filesToCreate
+ * - filesToModify or filesToCreate entries with at least one literal segment
  * - directories/allowedDirectories set with specific dirs
  */
 export function resolve(request: string, scope: Scope | null): ResolveResult {
@@ -318,8 +325,9 @@ export function resolve(request: string, scope: Scope | null): ResolveResult {
 	const fMod = s.filesToModify;
 	const fCre = s.filesToCreate;
 	const hasConcreteModify = Array.isArray(fMod) && fMod.length > 0 &&
-		fMod.some((f) => f !== "*" && f.toUpperCase() !== "ALL" && f.trim().length > 0);
-	const hasConcreteCreate = Array.isArray(fCre) && fCre.length > 0;
+		fMod.some((f) => hasLiteralSegment(f) && f.toUpperCase() !== "ALL");
+	const hasConcreteCreate = Array.isArray(fCre) && fCre.length > 0 &&
+		fCre.some((f) => hasLiteralSegment(f) && f.toUpperCase() !== "ALL");
 
 	if (hasConcreteModify || hasConcreteCreate) return "proceed";
 
@@ -329,7 +337,7 @@ export function resolve(request: string, scope: Scope | null): ResolveResult {
 	// No file specs — check directories / allowedDirectories as fallback
 	const dirs = s.directories ?? s.allowedDirectories ?? [];
 	if (Array.isArray(dirs) && dirs.length > 0) {
-		const hasConcreteDirs = dirs.some((d) => d !== "*" && d.toUpperCase() !== "ALL" && d.trim().length > 0);
+		const hasConcreteDirs = dirs.some((d) => hasLiteralSegment(d) && d.toUpperCase() !== "ALL");
 		if (hasConcreteDirs) return "proceed";
 		return "ask";
 	}
