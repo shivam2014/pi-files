@@ -25,6 +25,10 @@ export function registerListSkillsTool(pi: ExtensionAPI): void {
 			"List all installed skills with names and descriptions. " +
 			"Useful for discovering what skills are available.",
 		parameters: Type.Object({}),
+		promptGuidelines: [
+			"List skills: list_skills() — returns all installed skills with descriptions",
+			"Use to discover available skills before delegating",
+		],
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
 			const agentDir = getAgentDir();
 			const skillsDir = join(agentDir, "skills");
@@ -86,6 +90,10 @@ export function registerListToolsTool(pi: ExtensionAPI, cwd: string): void {
 			"List all available orchestration tools. " +
 			"Returns the actively registered tool set.",
 		parameters: Type.Object({}),
+		promptGuidelines: [
+			"List tools: list_tools() — returns all available orchestration tools",
+			"Use to discover what tools are available",
+		],
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
 			const activeTools = pi.getActiveTools() as string[] || [];
 			const details = activeTools.length > 0 

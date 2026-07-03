@@ -65,6 +65,13 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			})),
 		}),
 
+		promptGuidelines: [
+			"Delegate: delegate({ specialist: 'coder', task: 'fix auth', scope: { filesToModify: ['src/auth.ts'] } })",
+			"Spawns a subagent specialist to do the work",
+			"Scope required for coder, writer, reviewer — optional for scout, researcher",
+			"Optional skills: delegate({ specialist: 'coder', task: '...', skills: ['tdd'] })",
+		],
+
 		// ── Render: what shows when tool is invoked ──
 		renderCall(args: any, theme: any, context: any) {
 			// Store args so renderResult can show the delegate header exactly once.

@@ -25,6 +25,11 @@ export function registerPlanTool(pi: ExtensionAPI) {
                 description: "Ordered list of steps to accomplish the goal",
             }),
         }),
+        promptGuidelines: [
+            "Create plan: plan({ goal: 'Fix auth bug', steps: ['Read auth middleware', 'Fix token validation', 'Write tests'] })",
+            "One-line goal, array of step labels describing what you'll delegate",
+            "Must be called before delegate() — delegate rejects if no active plan",
+        ],
         async execute(toolCallId, params, signal, onUpdate, ctx) {
             const effectiveGoal = deriveGoal(params.goal, params.steps, ctx as SessionContext);
             if (!params.steps || params.steps.length === 0) {
@@ -57,6 +62,11 @@ export function registerPlanAddStepsTool(pi: ExtensionAPI) {
         parameters: Type.Object({
             steps: Type.Array(Type.String()),
         }),
+        promptGuidelines: [
+            "Add steps: plan_add_steps({ steps: ['New step 1', 'New step 2'] })",
+            "Appends to existing plan — duplicate labels are automatically skipped",
+            "Use when delegation findings reveal new work needed",
+        ],
         async execute(toolCallId, params, signal, onUpdate, ctx) {
             addSteps(params.steps, ctx as SessionContext);
             return {

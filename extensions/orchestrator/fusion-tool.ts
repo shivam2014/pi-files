@@ -244,9 +244,10 @@ export function registerFusionTool(pi: ExtensionAPI, cwd: string): void {
 
 		promptSnippet: "Get multi-model advice by running a prompt against a panel of models, then a judge provides structured analysis",
 		promptGuidelines: [
-			"Use fusion when you need multi-perspective analysis before making planning decisions",
-			"Provide research findings as context, optionally include a draft plan for critique",
-			"fusion returns structured analysis with consensus, contradictions, unique insights, and blind spots",
+			"Get multi-model advice: fusion({ context: 'research findings', task: 'create execution plan', draft_plan: 'your draft' })",
+			"Panel (2-3 models) critiques your plan, judge identifies contradictions",
+			"Use before high-cost delegations (destructive ops, broad changes)",
+			"Skip for simple tactical tasks",
 		],
 
 		async execute(toolCallId: string, params: FusionParams, signal: AbortSignal | undefined, onUpdate: any, ctx: ExtensionContext) {
