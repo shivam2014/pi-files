@@ -237,3 +237,45 @@ Without the peek, the user sees only orchestration-level steps. With the peek, t
 - [BASH-TOKEN-SAVER-SPEC.md](./BASH-TOKEN-SAVER-SPEC.md) — RTK integration, token-saver compression, per-specialist bash restriction approach
 - [SPEC-UI.md](./SPEC-UI.md) — 3-layer UI/UX rendering specification
 - [LINT-SPEC.md](./LINT-SPEC.md) — Deterministic lint guard specification
+
+---
+
+## Prompt Design Principles
+
+These principles govern all prompt text in the orchestrator extension. They are permanent; implementations change, principles don't.
+
+### 1. Token economy
+Every line in a prompt costs tokens per session. A prompt that runs 100 times/day wastes 100x the tokens of a one-time cost. Prompts must earn their place. If a line doesn't change agent behavior, cut it.
+
+### 2. Cache protection
+System prompts are cached. Frequent changes to prompt text invalidate the cache. Keep prompts stable. Behavior changes should come from code (guard logic, tool schemas), not prompt text churn.
+
+### 3. Error prevention through information
+Every agent must receive enough context to do its job without triggering guard errors. If a guard blocks an action, the prompt should have explained how to avoid it. Don't make agents guess what files to include, what tools to use, or what format to follow. Show them.
+
+### 4. Plain language
+Agents don't know pi internals. They have general knowledge only. Instructions must use plain language. Say "scan the task text for file names" not "leverage task-text analysis for scope derivation." No domain jargon without context.
+
+### 5. Examples over essays
+Short, concrete examples beat long explanations. Show the syntax. One example is worth 200 words of theory. But the example must be correct and complete — a partial example teaches wrong patterns.
+
+### 6. Completeness without verbosity
+Every tool the agent can use must be mentioned with its constraints. If a tool exists but the agent doesn't know about it, the agent will either not use it or trigger errors. But don't explain what the agent already knows from general training. Focus on what's specific to this system.
+
+### 7. Consistency across agents
+Shared instructions (activity feed, terse mode, step mandate) must apply uniformly to all specialists. Specialized instructions (minimal action, scope output format) should only go to the agents that need them. Don't duplicate; use shared blocks.
+
+### 8. Error messages as teaching
+Error messages should tell the agent exactly what to do next, not just what went wrong. "Scope required" is not enough. Show the syntax. "File not in scope" is not enough. Show which files are approved. Every error is a teaching moment — use it.
+
+### 9. Plan panel integration
+The orchestrator must know how the plan panel works: it shows the current step, completed steps, and streaming activity. The plan is set via plan(goal, steps) and steps advance via the subagent's planSteps/advanceStep tools. The orchestrator doesn't directly control the panel — it declares the plan, subagents fill it.
+
+### 10. Skill chaining
+Skills can reference other skills internally. When a skill says "load X skill" or "follow Y methodology", the agent must read those skills too. Don't assume a single skill read is enough. Skills form a graph, not a list.
+
+### 11. Routing accuracy
+The routing table must match the actual specialist capabilities. If a specialist can do something the table doesn't mention, the table is wrong. If the table suggests a specialist for a task it can't handle, the table is wrong. Audit the table against real specialist prompts regularly.
+
+### 12. Scope is a contract
+Scope declares what the subagent may touch. The orchestrator must scan the task text for every file name, component name, and implied dependency before declaring scope. Glob patterns (e.g., `*.test.ts`) are supported for bulk inclusion. Bare wildcards (`*`, `**`) without a literal directory are rejected. The scope example in the prompt must show both exact paths and glob patterns.
