@@ -2,6 +2,9 @@
   "name": "orchestrator-extension",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "picomatch": "^4.0.4"
+  },
   "scripts": {
     "test": "node node_modules/vitest/vitest.mjs run",
     "typecheck": "npx tsc --noEmit"

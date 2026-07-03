@@ -72,7 +72,7 @@ _Avoid:_ enforcement level, scope mode, permission mode
 
 **GlobPattern**
 
-A filesToModify or filesToCreate entry containing wildcard metacharacters. Uses minimatch/glob syntax alongside exact paths. The guard checks exact paths first, then glob patterns, then directory prefix. Each entry is independent — no negative/deny patterns.
+A filesToModify or filesToCreate entry containing wildcard metacharacters. Uses picomatch syntax alongside exact paths. The guard checks exact paths first, then glob patterns, then directory prefix. Each entry is independent — no negative/deny patterns.
 
 **LiteralSegment**
 

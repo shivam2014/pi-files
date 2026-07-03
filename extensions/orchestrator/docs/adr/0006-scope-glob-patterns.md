@@ -23,7 +23,7 @@ filesToCreate fields. No new fields. The guard checks in order:
 3. Directory prefix match → ALLOW
 4. BLOCK
 
-Minimatch is the glob library (check if already in deps; add if not).
+Picomatch v4.0.4 is the glob library.
 
 The ask-resolver resolve() gate is updated: a scope is "concrete" if its
 filesToModify/filesToCreate entries collectively contain at least one

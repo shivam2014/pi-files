@@ -222,6 +222,32 @@ describe('ScopeGuard', () => {
       expect(result.allowed).toBe(true);
     });
 
+    it('allows literal filenames containing glob metacharacters via exact match precedence', () => {
+      mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+      writeFileSync(
+        join(tmpDir, '.pi', 'scope.json'),
+        JSON.stringify({
+          version: 1,
+          schema: 'scope-file-contract-v1',
+          scope: {
+            filesToModify: ['src/file[1].ts', 'src/file{2,3}.ts'],
+            filesToCreate: [],
+            directories: [],
+            maxFiles: 10,
+            requiresApprovalBeyondScope: true,
+            changeType: 'multi-file',
+            maxLinesPerFile: 400,
+            gateMode: 'strict',
+          },
+        })
+      );
+      // Exact path with glob chars matches literally before glob evaluation
+      const result1 = guard.isPathAllowed('src/file[1].ts', 'edit');
+      expect(result1.allowed).toBe(true);
+      const result2 = guard.isPathAllowed('src/file{2,3}.ts', 'edit');
+      expect(result2.allowed).toBe(true);
+    });
+
     it('blocks files outside scope', () => {
       mkdirSync(join(tmpDir, '.pi'), { recursive: true });
       writeFileSync(
