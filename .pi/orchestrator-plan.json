@@ -1,16 +1,11 @@
 {
-  "goal": "Goal",
+  "goal": "G2",
   "steps": [
     {
-      "label": "Step A",
-      "completed": false,
-      "errored": false
-    },
-    {
-      "label": "Step B",
+      "label": "s2",
       "completed": false,
       "errored": false
     }
   ],
-  "startTime": 1783036305623
+  "startTime": 1783037313481
 }
