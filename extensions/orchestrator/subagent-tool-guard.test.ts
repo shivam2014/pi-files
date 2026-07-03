@@ -203,6 +203,7 @@ describe("handleSubagentToolCall", () => {
 			mockState.planParsed = true;
 		});
 
+		// edit tool uses filePath in its input
 		it("passes 'edit' operation for edit tool", () => {
 			const mockIsPathAllowed = vi.fn().mockReturnValue({ allowed: true });
 			ScopeGuardMock.mockImplementationOnce(function (this: any) {
@@ -222,6 +223,7 @@ describe("handleSubagentToolCall", () => {
 			);
 		});
 
+		// write tool uses path in its input
 		it("passes 'write' operation for write tool", () => {
 			const mockIsPathAllowed = vi.fn().mockReturnValue({ allowed: true });
 			ScopeGuardMock.mockImplementationOnce(function (this: any) {
@@ -241,6 +243,7 @@ describe("handleSubagentToolCall", () => {
 			);
 		});
 
+		// read tool uses path in its input
 		it("passes 'read' operation for read tool", () => {
 			const mockIsPathAllowed = vi.fn().mockReturnValue({ allowed: true });
 			ScopeGuardMock.mockImplementationOnce(function (this: any) {

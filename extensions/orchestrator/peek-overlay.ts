@@ -12,6 +12,8 @@
 
 import { SPINNER_FRAMES, getSpinnerIndex, advanceSpinner, resetSpinner } from "./spinner-state.ts";
 import { formatDuration } from "./ui-utils.ts";
+import { matchesKey, Key } from "@earendil-works/pi-tui";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 
 // Local interface subset — avoids module resolution issues with pi-tui imports.
 // At runtime these are the same types from @earendil-works/pi-tui.
@@ -65,8 +67,7 @@ let _viewerStatus: "idle" | "running" | "completed" | "error" = "idle";
 // ============================================================================
 
 export class PeekComponent implements Component {
-    _theme: any = null;
-    private _cachedLines: string[] | null = null;
+    _theme: Theme | null = null;
 
     render(width: number): string[] {
         const lines: string[] = [];
@@ -93,7 +94,6 @@ export class PeekComponent implements Component {
                 lines.push(box(""));
             }
             lines.push(mute("└─") + mute("─".repeat(Math.max(0, width - 4))) + mute("─┘"));
-            this._cachedLines = lines;
             return lines;
         }
 
@@ -216,13 +216,11 @@ export class PeekComponent implements Component {
             lines.push(box(""));
         }
 
-        this._cachedLines = lines;
         return lines;
     }
 
     handleInput(data: string): void {
-        const keyCode = data.charCodeAt(0) || 0;
-        if (data === 'escape' || data === 'esc' || data === '27' || keyCode === 27 || data === '\\x1b' || data === 'ctrl+q' || data === 'C-q') {
+        if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("q"))) {
             hidePeek();
             return;
         }
@@ -244,7 +242,7 @@ export class PeekComponent implements Component {
     }
 
     invalidate(): void {
-        this._cachedLines = null;
+        // Cache invalidation handled by callers before requestRender
     }
 }
 
@@ -313,6 +311,7 @@ export function startSpinnerTimer(): void {
     _spinnerTimer = setInterval(() => {
         advanceSpinner();
         if (_peekHandle && !_peekHandle.isHidden()) {
+            _peekComponent?.invalidate();
             _peekTui?.requestRender();
         }
     }, 250);
@@ -362,6 +361,7 @@ export function setViewerSession(session: any, task: string): void {
 export function setViewerOutput(output: string): void {
     _viewerOutput = output;
     _viewerStatus = "completed";
+    _peekComponent?.invalidate();
     _peekTui?.requestRender();
 }
 
@@ -371,6 +371,7 @@ export function setViewerOutput(output: string): void {
 export function setViewerError(error: string): void {
     _viewerOutput = error;
     _viewerStatus = "error";
+    _peekComponent?.invalidate();
     _peekTui?.requestRender();
 }
 
@@ -406,6 +407,7 @@ export function showPeek(
     if (_peekHandle && !_peekHandle.isHidden()) {
         if (goal) _peekGoal = goal;
         if (abortController) _peekAbort = abortController;
+        _peekComponent?.invalidate();
         _peekTui?.requestRender();
         return;
     }
@@ -464,6 +466,7 @@ export function updatePeek(text: string): void {
     }
 
     // Trigger TUI re-render
+    _peekComponent?.invalidate();
     _peekTui?.requestRender();
 }
 
@@ -475,6 +478,7 @@ export function updatePeek(text: string): void {
 export function pushStreamingText(text: string): void {
     if (!_peekHandle || _peekHandle.isHidden()) return;
     _streamingBuffer += text;
+    _peekComponent?.invalidate();
     _peekTui?.requestRender();
 }
 
@@ -483,6 +487,7 @@ export function pushStreamingText(text: string): void {
  */
 export function setPeekGoal(goal: string): void {
     _peekGoal = goal;
+    _peekComponent?.invalidate();
     _peekTui?.requestRender();
 }
 
