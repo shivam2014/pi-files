@@ -45,7 +45,7 @@ import { _spinnerIndex, resetSpinner } from "./spinner-state.ts";
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 
 import { debugLog } from "./debug.ts";
-import { registerPeekFeed, updatePeek, updatePeekFeed } from "./peek-overlay.ts";
+import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearViewerState, pushStreamingText } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
 
 /** Optional orchestrator UI for dynamic status messages */
@@ -330,7 +330,7 @@ export async function runSubagent(
 			delete process.env[SUBAGENT_ENV_KEY];
 		}
 
-		const excludeTools = (specialist.name === "writer" || specialist.name === "researcher")
+		const excludeTools = (specialist.name === "writer" || specialist.name === "researcher" || specialist.name === "scout")
 			? ["bash"]
 			: undefined;
 
@@ -454,7 +454,7 @@ export async function runSubagent(
 
 		// Register feed for peek overlay (Layer 3)
 		const peekAbort = new AbortController();
-		registerPeekFeed(feed, peekAbort, shortenLabel(task));
+		setViewerSession(session, task.length > 60 ? task.slice(0, 57) + "..." : task);
 		signal?.addEventListener("abort", () => peekAbort.abort(), { once: true });
 		peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
 
@@ -472,8 +472,7 @@ export async function runSubagent(
 					updatePlanStepDetail(feed.goal || "", orchestratorCtx);
 					recordTimelineFrame("step_started", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
 				}
-				updatePeekFeed(feed);
-				updatePeek(event.assistantMessageEvent.delta);
+				pushStreamingText(event.assistantMessageEvent.delta);
 				const textDelta = renderActivityFeed(specialist.name, feed);
 				onUpdate?.({
 					content: [{ type: "text", text: textDelta }],
@@ -506,7 +505,6 @@ export async function runSubagent(
 					// Add lint result as a substep in the feed (visible in delegation step/substep view)
 					feed = addSubstep(feed, lintContent.slice(0, 80));
 					feed = completeLastSubstep(feed);
-					updatePeekFeed(feed);
 
 					// Forward lint content to the delegation output blob
 					output += "\n" + lintContent + "\n";
@@ -530,7 +528,6 @@ export async function runSubagent(
 				feed = setToolDetail(feed, extraDetail ?? substepLabel);
 				recordTimelineFrame("tool_start", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
 				_lastFeedSnapshot = null;
-				updatePeekFeed(feed);
 				updatePeek(`\u2192 ${event.toolName}\n`);
 				// Pass substep history lines to plan panel immediately
 				const activeStep = feed.steps[feed.currentStep];
@@ -627,7 +624,6 @@ export async function runSubagent(
 				}
 				recordTimelineFrame("tool_end", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
 				_lastFeedSnapshot = null;
-				updatePeekFeed(feed);
 				updatePeek(`\u2713 ${event.toolName}\n`);
 				// Update plan panel with substep history lines
 				const activeStep = feed.steps[feed.currentStep];
@@ -690,7 +686,7 @@ export async function runSubagent(
 				finalStatus = "error";
 				output = `[error] ${errorMsg}`;
 				feed = markFeedError(feed, errorMsg);
-				updatePeekFeed(feed);
+				setViewerError(errorMsg);
 				const errorText = renderActivityFeed(specialist.name, feed) ?? errorMsg;
 				onUpdate?.({content: [{ type: "text", text: errorText }],
 					details: { specialist: specialist.name, status: "error", error: errorMsg },
@@ -706,7 +702,7 @@ export async function runSubagent(
 			finalStatus = isAborted ? "aborted" : "error";
 			// Surface error in activity feed before cleanup
 			feed = markFeedError(feed, errorMsg);
-			updatePeekFeed(feed);
+			setViewerError(errorMsg);
 			const errorText = renderActivityFeed(specialist.name, feed) ?? errorMsg;
 			onUpdate?.({content: [{ type: "text", text: errorText }],
 				details: { specialist: specialist.name, status: isAborted ? "aborted" : "error", error: errorMsg },
@@ -723,6 +719,7 @@ export async function runSubagent(
 			_lastRenderText = null;
 			if (signal) signal.removeEventListener("abort", abortHandler);
 			session.dispose();
+			clearViewerState();
 		}
 
 		// Finalize feed state — complete any remaining steps on success only.
@@ -741,6 +738,8 @@ export async function runSubagent(
 
 		// Compress + cap output before returning to parent
 		const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);
+
+		setViewerOutput(output);
 
 		// Build tool call trail from feed state
 		const toolCallTrail: { tool: string; outputPreview?: string; completed: boolean }[] = [];

@@ -9,7 +9,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setDebugEnabled, isDebugEnabled, debugLog } from "./debug.ts";
-import { getRegisteredFeed } from "./peek-overlay.ts";
+import { isPeekOpen } from "./peek-overlay.ts";
 import { SPECIALISTS, listSpecialists } from "./specialists.ts";
 import type { SessionContext } from "./types.ts";
 
@@ -142,20 +142,12 @@ export async function snapshotOrchestratorState(ctx?: { cwd?: string }): Promise
 
 	const cwd = ctx?.cwd ?? process.cwd();
 	const plan = inspectPlanState(ctx as SessionContext);
-	const feed = getRegisteredFeed();
 	const fusionConfig = loadFusionConfig(cwd);
 
 	return {
 		debugEnabled: isDebugEnabled(),
 		plan,
-		feed: feed
-			? {
-					goal: feed.goal,
-					stepCount: feed.steps.length,
-					currentStep: feed.currentStep,
-					planParsed: feed.planParsed,
-				}
-			: null,
+		feed: { peekOpen: isPeekOpen() },
 		activeDelegations: plan?.activeDelegations ?? 0,
 		fusion: {
 			enabled: fusionConfig.enabled,

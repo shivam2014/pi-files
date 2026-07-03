@@ -4,14 +4,12 @@
  *
  * When user presses Ctrl+Q, opens a right-aligned overlay showing:
  * - Subagent goal
- * - Current step from activity feed
- * - Recent tool calls (with status)
+ * - Conversation messages from session
  * - Streaming text output
  *
  * Auto-scrolls, caps at ~50 lines, Escape to close, double-press x to abort.
  */
 
-import type { ActivityFeedState } from "./types.ts";
 import { SPINNER_FRAMES, getSpinnerIndex, advanceSpinner, resetSpinner } from "./spinner-state.ts";
 import { formatDuration } from "./ui-utils.ts";
 
@@ -36,7 +34,7 @@ interface TUI {
 // ============================================================================
 
 const MAX_PEEK_LINES = 50;
-export const MIN_HEIGHT = 9;
+export const MIN_HEIGHT = 15;
 const X_PRESS_WINDOW_MS = 600;
 
 // ============================================================================
@@ -48,18 +46,19 @@ let _peekGoal: string = "";
 let _peekAbort: AbortController | null = null;
 let _lastXPress: number = 0;
 let _spinnerTimer: ReturnType<typeof setInterval> | null = null;
+let _streamingBuffer: string = "";
 
 /** Stored refs for controlling the live overlay */
 let _peekHandle: OverlayHandle | null = null;
 let _peekComponent: PeekComponent | null = null;
 let _peekTui: TUI | null = null;
 let _peekDone: (() => void) | null = null;
-let _peekFeedState: ActivityFeedState | null = null;
 
-/** Feed registered by subagent-runner — used by shortcut handler */
-let _registeredFeed: ActivityFeedState | null = null;
-let _registeredAbort: AbortController | null = null;
-let _registeredGoal: string = "";
+/** Viewer state — conversation from session messages */
+let _viewerSession: any | null = null;
+let _viewerTask: string = "";
+let _viewerOutput: string = "";
+let _viewerStatus: "idle" | "running" | "completed" | "error" = "idle";
 
 // ============================================================================
 // PeekComponent — renders live subagent content inside the overlay
@@ -74,22 +73,19 @@ export class PeekComponent implements Component {
         const innerWidth = Math.max(width - 4, 20);
         const t = this._theme;
 
-        // visible length (strip ANSI codes)
         const vLen = (s: string): number => visibleLen(s).length;
-
-        // Theme helpers — fallback to raw text if theme not yet set
         const mute = (s: string): string => t ? t.fg("muted", s) : s;
         const accent = (s: string): string => t ? t.fg("accent", s) : s;
         const success = (s: string): string => t ? t.fg("success", s) : s;
         const errCol = (s: string): string => t ? t.fg("error", s) : s;
         const bld = (s: string): string => t ? t.bold(s) : s;
+        const dim = (s: string): string => t ? t.fg("dim", s) : s;
 
-        // Build a content line with box borders
         const box = (content: string): string =>
             `│ ${content}${' '.repeat(Math.max(0, innerWidth - vLen(content)))} │`;
 
         // ── Empty state ──
-        if (!_peekFeedState && _peekLines.length === 0) {
+        if (!_viewerSession && _peekLines.length === 0 && !_viewerOutput) {
             const topPad = Math.max(0, width - 4);
             lines.push(mute("┌ ") + mute("─".repeat(topPad)) + mute(" ┐"));
             lines.push(box(mute("○ Waiting for subagent...")));
@@ -101,142 +97,119 @@ export class PeekComponent implements Component {
             return lines;
         }
 
-        // ── Line 0: Top border with header ──
-        const goalLabel = _peekGoal || "Subagent";
-        const topInnerText = ` ◆ Peek: ${goalLabel} `;
-        const topInner = ` ${accent(`◆ Peek: ${bld(goalLabel)}`)} `;
+        // ── Header ──
+        const goalLabel = _viewerTask || _peekGoal || "Subagent";
+        const topInnerText = ` ◆ ${goalLabel} `;
         const topPad = Math.max(0, (width - 2) - vLen(topInnerText));
-        lines.push(mute("┌") + topInner + mute("─".repeat(topPad)) + mute("┐"));
+        lines.push(mute("┌") + accent("◆") + ` ${bld(goalLabel)} ` + mute("─".repeat(topPad)) + mute("┐"));
 
-        // ── Line 1: Progress dots row ──
-        if (_peekFeedState) {
-            const feed = _peekFeedState;
-            const dots = feed.steps.map((s, i) => {
-                if (s.errored) return errCol("✗");
-                if (s.completed) return success("●");
-                if (i === feed.currentStep) {
-                    const blink = Math.floor(Date.now() / 1000) % 2 === 0;
-                    return blink ? accent("●") : mute("○");
-                }
-                return mute("○");
-            }).join("");
-            const doneCount = feed.steps.filter((s) => s.completed || s.errored).length;
-            const countStr = ` ${doneCount}/${feed.steps.length}`;
-            lines.push(box(dots + countStr));
-        } else {
-            // No feed — still show progress area as empty
-            lines.push(box(""));
-        }
+        // Status line
+        let statusText = "";
+        if (_viewerStatus === "running") statusText = accent("● Running");
+        else if (_viewerStatus === "completed") statusText = success("✓ Completed");
+        else if (_viewerStatus === "error") statusText = errCol("✗ Error");
+        if (statusText) lines.push(box(statusText));
 
-        // ── Step tree (lines 2+) ──
-        const MAX_VISIBLE_SUBSTEPS = 3;
-        if (_peekFeedState && _peekFeedState.steps.length > 0) {
-            const feed = _peekFeedState;
-            for (let i = 0; i < feed.steps.length; i++) {
-                const step = feed.steps[i];
-                const isCompleted = !!step.completed;
-                const isErrored = !!step.errored;
-                const isActive = i === feed.currentStep && !isCompleted && !isErrored;
-                const isPending = i > feed.currentStep || (i === feed.currentStep && !isActive && !isCompleted && !isErrored);
+        // ── Build content lines from session messages ──
+        const contentLines: string[] = [];
 
-                // Step icon
-                let stepIcon: string;
-                if (isErrored) stepIcon = errCol("✗");
-                else if (isCompleted) stepIcon = success("✓");
-                else if (isActive) stepIcon = accent(SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]);
-                else stepIcon = mute("○");
+        // Part 1: Session messages (committed history)
+        if (_viewerSession) {
+            const session = _viewerSession as any;
+            const messages: any[] = session.state?.messages ?? session.messages ?? [];
 
-                // Step duration
-                let durationStr = "";
-                if (step.startTime) {
-                    if (isCompleted && step.endTime) {
-                        durationStr = ` (${formatDuration(step.endTime - step.startTime)})`;
-                    } else if (step.startTime) {
-                        durationStr = ` (${formatDuration(Date.now() - step.startTime)})`;
+            for (const msg of messages) {
+                // Handle different role formats
+                const role = typeof msg.role === "string" ? msg.role : "";
+
+                if (role === "user") {
+                    const text = extractMsgText(msg.content ?? msg.text ?? "");
+                    if (!text?.trim()) continue;
+                    contentLines.push(accent("[User]"));
+                    const wrapped = wrapText(text.trim(), innerWidth - 2);
+                    for (const line of wrapped) contentLines.push(` ${line}`);
+                    contentLines.push(dim("───"));
+                } else if (role === "assistant") {
+                    contentLines.push(bld("[Assistant]"));
+                    // Try multiple content formats
+                    let textParts: string[] = [];
+                    let tools: string[] = [];
+
+                    const content = msg.content ?? [];
+                    if (typeof content === "string") {
+                        textParts.push(content);
+                    } else if (Array.isArray(content)) {
+                        for (const part of content) {
+                            if (part.type === "text" && part.text) textParts.push(part.text);
+                            if (part.type === "inputText" && part.text) textParts.push(part.text);
+                            const toolName = part.name ?? part.toolName ?? part.tool_use?.name ?? "";
+                            if ((part.type === "toolUse" || part.type === "toolCall" || part.type === "tool_use") && toolName) {
+                                tools.push(toolName);
+                            }
+                        }
                     }
-                }
-
-                // Build step line
-                let stepLine: string;
-                if (isErrored) {
-                    stepLine = errCol(`${stepIcon} Step ${i + 1}: ${step.label}${durationStr}`);
-                } else if (isCompleted) {
-                    stepLine = success(`${stepIcon} Step ${i + 1}: ${step.label}${durationStr}`);
-                } else if (isActive) {
-                    stepLine = stepIcon + ` Step ${i + 1}: ${step.label}`;
-                } else {
-                    stepLine = mute(`○ Step ${i + 1}: ${step.label}`);
-                }
-                lines.push(box(stepLine));
-
-                // Substeps
-                if (isPending) continue; // no substeps for pending
-
-                const subs = step.substeps;
-                const showSubs = subs.slice(0, MAX_VISIBLE_SUBSTEPS);
-                const extraCount = subs.length - MAX_VISIBLE_SUBSTEPS;
-
-                for (let si = 0; si < showSubs.length; si++) {
-                    const sub = showSubs[si];
-                    const subCompleted = !!sub.completed;
-                    const subErrored = !!sub.errored;
-                    const subActive = !subCompleted && !subErrored;
-
-                    let subIcon: string;
-                    if (subErrored) subIcon = errCol("✗");
-                    else if (subCompleted) subIcon = success("✓");
-                    else if (subActive) subIcon = accent(SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]);
-                    else subIcon = mute("○");
-
-                    const subLine = `  ${subIcon} ${sub.label}`;
-                    lines.push(box(subLine));
-
-                    // Tool detail (only for active substep with toolDetail)
-                    if (subActive && sub.toolDetail) {
-                        const toolIcon = accent(SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]);
-                        const toolLine = `    ${toolIcon} Running: ${sub.toolDetail}`;
-                        lines.push(box(toolLine));
+                    if (textParts.length > 0) {
+                        const wrapped = wrapText(textParts.join("\n").trim(), innerWidth - 2);
+                        for (const line of wrapped) contentLines.push(` ${line}`);
                     }
-                }
-
-                if (extraCount > 0) {
-                    lines.push(box(mute(`  …+${extraCount} more`)));
+                    for (const name of tools) {
+                        contentLines.push(dim(`  [Tool: ${name}]`));
+                    }
+                    contentLines.push(dim("───"));
+                } else if (role === "toolResult" || role === "tool_result" || role === "tool") {
+                    const text = extractMsgText(msg.content ?? msg.text ?? "");
+                    if (!text?.trim()) continue;
+                    const truncated = text.length > 500 ? text.slice(0, 500) + dim("... (truncated)") : text;
+                    contentLines.push(dim("[Result]"));
+                    const wrapped = wrapText(truncated.trim(), innerWidth - 2);
+                    for (const line of wrapped) contentLines.push(dim(` ${line}`));
+                    contentLines.push(dim("───"));
                 }
             }
         }
 
-        // ── Separator & streaming lines ──
-        const hasStreaming = _peekLines.length > 0;
-
-        if (hasStreaming) {
-            // ├─ Output ──...──┤ separator
-            const sepText = "─ Output ";
-            const sepPad = Math.max(0, (width - 2) - vLen(sepText));
-            lines.push(mute("├") + mute(sepText) + mute("─".repeat(sepPad)) + mute("┤"));
-
-            // Streaming content lines
-            const usedSoFar = lines.length;
-            // Reserve 1 line for bottom border, aim for at least 3 streaming lines
-            const maxStreamLines = Math.max(3, MIN_HEIGHT - usedSoFar - 2);
-            const streamLines = _peekLines.slice(-maxStreamLines);
-            for (const rawLine of streamLines) {
-                const visLen = vLen(rawLine);
-                const truncated = visLen > innerWidth
-                    ? truncate(rawLine, Math.max(innerWidth - 1, 1)) + "…"
-                    : rawLine;
-                lines.push(box(truncated));
+        // Part 3: Streaming model text (continuous, word-wrapped)
+        if (_streamingBuffer.length > 0) {
+            // Show last 800 chars of streaming buffer
+            const displayText = _streamingBuffer.length > 800 
+                ? "…" + _streamingBuffer.slice(-800) 
+                : _streamingBuffer;
+            const wrapped = wrapText(displayText, innerWidth - 2);
+            for (const line of wrapped) {
+                contentLines.push(line);
             }
-
-            // Bottom border with footer
-            const bottomText = "─ Esc: close  xx′: abort ";
-            const bottomPad = Math.max(0, (width - 2) - vLen(bottomText));
-            lines.push(mute("└") + mute(bottomText) + mute("─".repeat(bottomPad)) + mute("┘"));
-        } else {
-            // No streaming text — bottom border directly after step tree
-            const bottomText = "─ Esc: close  xx′: abort ";
-            const bottomPad = Math.max(0, (width - 2) - vLen(bottomText));
-            lines.push(mute("└") + mute(bottomText) + mute("─".repeat(bottomPad)) + mute("┘"));
         }
+
+        // Part 4: Output section (completed/error)
+        if (_viewerOutput) {
+            if (contentLines.length > 0) {
+                contentLines.push(dim("─ output ─"));
+            }
+            const prefix = _viewerStatus === "error" ? errCol("✗ ") : success("✓ ");
+            contentLines.push(prefix + truncate(_viewerOutput, Math.max(innerWidth - 2, 10)));
+        }
+
+        // ── Fallback ──
+        if (contentLines.length === 0) {
+            if (_viewerStatus === "running") {
+                contentLines.push(dim("Waiting for subagent output..."));
+            } else if (_viewerStatus === "idle") {
+                contentLines.push(dim("○ Waiting for subagent..."));
+            }
+        }
+
+        // ── Render visible content lines ──
+        const usedSoFar = lines.length;
+        const maxContent = Math.max(3, MIN_HEIGHT - usedSoFar - 2);
+        const visibleLines = contentLines.slice(-maxContent);
+        for (const line of visibleLines) {
+            lines.push(box(line));
+        }
+
+        // ── Bottom border ──
+        const bottomText = "─ Esc: close  xx′: abort ";
+        const bottomPad = Math.max(0, (width - 2) - vLen(bottomText));
+        lines.push(mute("└") + mute(bottomText) + mute("─".repeat(bottomPad)) + mute("┘"));
 
         // Pad to MIN_HEIGHT
         while (lines.length < MIN_HEIGHT) {
@@ -288,6 +261,53 @@ function truncate(text: string, maxLen: number): string {
     return text.slice(0, maxLen - 1) + "…";
 }
 
+function extractMsgText(content: any): string {
+    if (!content) return "";
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+        const texts = content
+            .filter((p: any) => (p.type === "text" || p.type === "inputText") && p.text)
+            .map((p: any) => p.text);
+        if (texts.length > 0) return texts.join("\n");
+        // Fallback: try any text-like field
+        for (const p of content) {
+            if (typeof p === "string") return p;
+            if (p.text) return String(p.text);
+            if (p.content) return extractMsgText(p.content);
+        }
+        return "";
+    }
+    if (typeof content === "object") {
+        // Single content block
+        if (content.text) return String(content.text);
+        if (content.content) return extractMsgText(content.content);
+        return JSON.stringify(content).slice(0, 200);
+    }
+    return String(content).slice(0, 500);
+}
+
+function wrapText(text: string, width: number): string[] {
+    const lines: string[] = [];
+    for (const paragraph of text.split("\n")) {
+        if (paragraph.length === 0) { lines.push(""); continue; }
+        let start = 0;
+        while (start < paragraph.length) {
+            const end = Math.min(start + width, paragraph.length);
+            if (end < paragraph.length && paragraph[end] !== " " && paragraph[end - 1] !== " ") {
+                const spaceIdx = paragraph.lastIndexOf(" ", end);
+                if (spaceIdx > start) {
+                    lines.push(paragraph.slice(start, spaceIdx));
+                    start = spaceIdx + 1;
+                    continue;
+                }
+            }
+            lines.push(paragraph.slice(start, end));
+            start = end;
+        }
+    }
+    return lines;
+}
+
 export function startSpinnerTimer(): void {
     stopSpinnerTimer();
     _spinnerTimer = setInterval(() => {
@@ -307,44 +327,61 @@ export function stopSpinnerTimer(): void {
 
 function clearPeekState(): void {
     _peekLines = [];
+    _streamingBuffer = "";
     _peekGoal = "";
     _peekAbort = null;
-    _peekFeedState = null;
     _peekHandle = null;
     _peekComponent = null;
     _peekTui = null;
     _peekDone = null;
     _lastXPress = 0;
+    _viewerSession = null;
+    _viewerTask = "";
+    _viewerOutput = "";
+    _viewerStatus = "idle";
     resetSpinner();
     stopSpinnerTimer();
 }
 
 // ============================================================================
-// Feed registration — lets subagent-runner store state for shortcut access
+// Viewer state API
 // ============================================================================
 
 /**
- * Register the current subagent's feed state for peek access.
- * Called by subagent-runner when a subagent starts.
+ * Set the session to display in the viewer.
  */
-export function registerPeekFeed(
-    feed: ActivityFeedState,
-    abortController: AbortController,
-    goal: string,
-): void {
-    _registeredFeed = feed;
-    _registeredAbort = abortController;
-    _registeredGoal = goal;
+export function setViewerSession(session: any, task: string): void {
+    _viewerSession = session;
+    _viewerTask = task;
+    _viewerStatus = "running";
 }
 
 /**
- * Unregister the current subagent feed.
- * Called by delegate-tool after subagent completes.
+ * Set the viewer output on completion.
  */
-export function unregisterPeekFeed(): void {
-    _registeredFeed = null;
-    _registeredAbort = null;
-    _registeredGoal = "";
+export function setViewerOutput(output: string): void {
+    _viewerOutput = output;
+    _viewerStatus = "completed";
+    _peekTui?.requestRender();
+}
+
+/**
+ * Set the viewer error state.
+ */
+export function setViewerError(error: string): void {
+    _viewerOutput = error;
+    _viewerStatus = "error";
+    _peekTui?.requestRender();
+}
+
+/**
+ * Clear the viewer state.
+ */
+export function clearViewerState(): void {
+    _viewerSession = null;
+    _viewerTask = "";
+    _viewerOutput = "";
+    _viewerStatus = "idle";
 }
 
 // ============================================================================
@@ -353,22 +390,20 @@ export function unregisterPeekFeed(): void {
 
 /**
  * Open the peek overlay showing live subagent activity.
- * Can be called with explicit state or use previously registered feed.
  *
  * @param ctx - Extension context (needs ctx.ui.custom)
- * @param feedState - Live activity feed state (optional, uses registered feed)
+ * @param _feedState - Ignored (kept for backward compat)
  * @param abortController - AbortController for the running subagent (optional)
  * @param goal - Short goal label (optional)
  */
 export function showPeek(
     ctx: { ui: { custom: any } },
-    feedState?: ActivityFeedState,
+    _feedState?: any,
     abortController?: AbortController,
     goal?: string,
 ): void {
-    // If already open, just update the feed reference and return
+    // If already open, just update references and return
     if (_peekHandle && !_peekHandle.isHidden()) {
-        if (feedState) _peekFeedState = feedState;
         if (goal) _peekGoal = goal;
         if (abortController) _peekAbort = abortController;
         _peekTui?.requestRender();
@@ -378,10 +413,9 @@ export function showPeek(
     // Clear any stale state
     clearPeekState();
 
-    // Use explicit args or fall back to registered feed
-    _peekFeedState = feedState ?? _registeredFeed;
-    _peekGoal = goal || _registeredGoal;
-    _peekAbort = abortController ?? _registeredAbort;
+    // Use explicit args
+    if (goal) _peekGoal = goal;
+    if (abortController) _peekAbort = abortController;
 
     const component = new PeekComponent();
     _peekComponent = component;
@@ -434,11 +468,13 @@ export function updatePeek(text: string): void {
 }
 
 /**
- * Update the feed state reference (for live step/substep updates).
- * Call this when the activity feed changes.
+ * Push streaming model text — accumulates into a continuous buffer
+ * that gets word-wrapped when rendered. Unlike updatePeek which
+ * creates individual lines, this prevents one-word-per-line issues.
  */
-export function updatePeekFeed(feedState: ActivityFeedState): void {
-    _peekFeedState = feedState;
+export function pushStreamingText(text: string): void {
+    if (!_peekHandle || _peekHandle.isHidden()) return;
+    _streamingBuffer += text;
     _peekTui?.requestRender();
 }
 
@@ -466,11 +502,4 @@ export function hidePeek(): void {
  */
 export function isPeekOpen(): boolean {
     return _peekHandle !== null && !_peekHandle.isHidden();
-}
-
-/**
- * Return the feed currently registered for peek access, if any.
- */
-export function getRegisteredFeed(): ActivityFeedState | null {
-    return _registeredFeed;
 }

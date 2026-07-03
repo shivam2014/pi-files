@@ -197,6 +197,70 @@ describe("handleSubagentToolCall", () => {
 		});
 	});
 
+	describe("operation mapping", () => {
+		beforeEach(() => {
+			mockState.batchLoad = 1;
+			mockState.planParsed = true;
+		});
+
+		it("passes 'edit' operation for edit tool", () => {
+			const mockIsPathAllowed = vi.fn().mockReturnValue({ allowed: true });
+			ScopeGuardMock.mockImplementationOnce(function (this: any) {
+				this.isScopeValid = () => true;
+				this.isPathAllowed = mockIsPathAllowed;
+				this.checkFileSize = () => ({ allowed: true });
+				this.requestExpansion = () => null;
+			});
+
+			handleSubagentToolCall({
+				toolName: "edit",
+				input: { filePath: "src/file.ts" },
+			});
+			expect(mockIsPathAllowed).toHaveBeenCalledWith(
+				expect.stringContaining("src/file.ts"),
+				"edit",
+			);
+		});
+
+		it("passes 'write' operation for write tool", () => {
+			const mockIsPathAllowed = vi.fn().mockReturnValue({ allowed: true });
+			ScopeGuardMock.mockImplementationOnce(function (this: any) {
+				this.isScopeValid = () => true;
+				this.isPathAllowed = mockIsPathAllowed;
+				this.checkFileSize = () => ({ allowed: true });
+				this.requestExpansion = () => null;
+			});
+
+			handleSubagentToolCall({
+				toolName: "write",
+				input: { path: "src/file.ts" },
+			});
+			expect(mockIsPathAllowed).toHaveBeenCalledWith(
+				expect.stringContaining("src/file.ts"),
+				"write",
+			);
+		});
+
+		it("passes 'read' operation for read tool", () => {
+			const mockIsPathAllowed = vi.fn().mockReturnValue({ allowed: true });
+			ScopeGuardMock.mockImplementationOnce(function (this: any) {
+				this.isScopeValid = () => true;
+				this.isPathAllowed = mockIsPathAllowed;
+				this.checkFileSize = () => ({ allowed: true });
+				this.requestExpansion = () => null;
+			});
+
+			handleSubagentToolCall({
+				toolName: "read",
+				input: { path: "src/file.ts" },
+			});
+			expect(mockIsPathAllowed).toHaveBeenCalledWith(
+				expect.stringContaining("src/file.ts"),
+				"read",
+			);
+		});
+	});
+
 	describe("bash command interception (orchestrator context)", () => {
 		beforeEach(() => {
 			mockState.batchLoad = 0;

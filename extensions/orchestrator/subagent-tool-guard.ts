@@ -87,8 +87,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 
 			// Derive operation from tool name — reads always safe, writes require scope approval
 			const readOnlyTools = new Set(['read', 'grep', 'find', 'ls', 'git-read', 'head', 'tail', 'wc', 'file']);
-			const writeTools = new Set(['edit', 'write']);
-			const operation = writeTools.has(event.toolName) ? 'write'
+			const operation = event.toolName === 'edit' ? 'edit'
 				: readOnlyTools.has(event.toolName) ? 'read'
 				: 'write'; // fail-closed: unknown tools treated as mutations
 

@@ -1,6 +1,6 @@
 /**
  * Specialist roster for the orchestrator extension.
- * Extracted from orchestrator.ts during refactoring.
+ * Extracted from orchestrator.ts during refugging.
  * Design spec: ORCHESTRATION-UI-DESIGN.md
  */
 
@@ -8,6 +8,11 @@ import { type Specialist } from "./types.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+
+function generateToolPrompt(tools: string[]): string {
+	const toolList = tools.join(", ");
+	return `\n\nYour available tools: ${toolList}.\nYou do NOT have bash. You do NOT have edit or write.`;
+}
 
 // Inlined minimal-action discipline (formerly in skill-packs.ts, now removed per issue #41)
 const MINIMAL_ACTION = `## Minimal action
@@ -61,7 +66,7 @@ Example workflow:
 3. reportFinding("Found hardcoded JWT secret in config")
 4. advanceStep()
 5. [use read/grep etc. to execute step 2]
-6. reportFinding("Token expiry uses wrong comparison")
+6. reportFinding("Token expiry check uses '<' not '<='")
 7. advanceStep()
 8. [output your findings]
 
@@ -94,6 +99,12 @@ Drop caveman for: security warnings, destructive ops, multi-step ambiguity, user
 ## Boundaries
 Code/commits/PRs: write normal. "stop caveman" or "normal mode": revert. Think short too. No verbose CoT.`;
 
+const SCOUT_TOOLS = ["read", "grep", "find", "ls", "git-read", "gh"] as const;
+const RESEARCHER_TOOLS = ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "find"] as const;
+
+const _scoutToolPrompt = generateToolPrompt([...SCOUT_TOOLS]);
+const _researcherToolPrompt = generateToolPrompt([...RESEARCHER_TOOLS]);
+
 /**
  * Specialist roster: 5 built-in specialists.
  */
@@ -101,7 +112,7 @@ export const SPECIALISTS: Record<string, Specialist> = {
 	scout: {
 		name: "scout",
 		description: "Read-only codebase investigator. Uses grep/find/ls tools to locate code, read to examine files. Ideal for architecture discovery, bug investigation, code tracing, and verifying file contents.",
-		tools: ["read", "grep", "find", "ls", "git-read", "gh"],
+		tools: [...SCOUT_TOOLS],
 		suggestedSkills: ["diagnosing-bugs"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
@@ -167,6 +178,14 @@ Before finishing, note any problems encountered and how you handled them:
 - resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
 - scope_stayed: [yes/no — did you stay within the assigned task?]
 - scope_notes: [if no, what you deviated from and why]
+${_scoutToolPrompt}
+
+Common read-only operations:
+- Count lines in a file → use \`read\` and count in your reasoning
+- Check if a file exists → use \`ls\` or \`find\`
+- List files in a directory → use \`ls\`
+- Search for a pattern → use \`grep\`
+- Read a git commit → use \`git-read\`
 
 ${TERSE_INSTRUCTION}`,
 	},
@@ -291,7 +310,7 @@ ${TERSE_INSTRUCTION}`,
 	researcher: {
 		name: "researcher",
 		description: "Read-only research specialist with web search capabilities. Searches the web, reads docs, configs, and code to answer questions with evidence-based answers and source references.",
-		tools: ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "find"],
+		tools: [...RESEARCHER_TOOLS],
 		suggestedSkills: ["domain-modeling"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
@@ -351,6 +370,7 @@ Before finishing, note any problems encountered and how you handled them:
 - resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
 - scope_stayed: [yes/no — did you stay within the assigned task?]
 - scope_notes: [if no, what you deviated from and why]
+${_researcherToolPrompt}
 
 ${TERSE_INSTRUCTION}`,
 	},
@@ -455,4 +475,3 @@ export function getSpecialistSkills(name: string, override?: string[], disableDe
 	const merged = new Set([...(spec.suggestedSkills ?? []), ...override]);
 	return [...merged];
 }
-

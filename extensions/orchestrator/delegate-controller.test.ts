@@ -54,7 +54,7 @@ vi.mock("./delegate-output-formatter.ts", () => ({
   extractFindingsFromOutput: vi.fn(() => null),
   extractAuditFromOutput: vi.fn(() => null),
 }));
-vi.mock("./peek-overlay.ts", () => ({ hidePeek: vi.fn(), unregisterPeekFeed: vi.fn() }));
+vi.mock("./peek-overlay.ts", () => ({ hidePeek: vi.fn(), clearViewerState: vi.fn() }));
 vi.mock("./spinner-state.ts", () => ({
   SPINNER_FRAMES: ["⠋", "⠙", "⠹"],
   getSpinnerIndex: vi.fn(() => 0),

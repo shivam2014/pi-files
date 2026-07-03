@@ -10,7 +10,7 @@ import { createAskOrchestratorResolver } from "./ask-resolver.ts";
 import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
 import { hasActivePlan, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
-import { hidePeek, unregisterPeekFeed } from "./peek-overlay.ts";
+import { hidePeek, clearViewerState } from "./peek-overlay.ts";
 import { ScopeManager } from "./scope-manager.ts";
 import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
 import { resolveScope } from "./resolve-delegation-scope.ts";
@@ -271,7 +271,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		decrementDelegationCount(ctx);
 		clearPlanIfComplete(ctx);
 		hidePeek();
-		unregisterPeekFeed();
+		clearViewerState();
 		// Clear scope after delegation completes
 		new ScopeManager(ctx.cwd).clearScope();
 		// Dynamic status: clear on completion
