@@ -7,6 +7,7 @@
  */
 
 import { listSpecialists, SPECIALISTS } from "./specialists.ts";
+import { generateScopeDocumentation } from "./scope-manager.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const ROUTING_TABLE = `
@@ -45,15 +46,7 @@ function generateToolDocumentation(pi: ExtensionAPI): string {
 |------|--------|--------|
 ${toolRows}
 
-**ScopeObject shape:**
-\`\`\`
-{
-    filesToModify: ["src/auth.ts"],
-    filesToCreate: ["tests/**/*.test.ts"],
-    directories: ["src"],
-    boundaries?: "do not modify src/legacy"
-}
-\`\`\`
+${generateScopeDocumentation()}
 `;
 }
 

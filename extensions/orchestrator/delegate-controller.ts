@@ -5,7 +5,7 @@
  */
 
 import type { Specialist, DelegationMetrics, SubagentContext, Scope, SubagentDiagnostic, DelegateControllerContext } from "./types.ts";
-import { SPECIALISTS, getSpecialistSkills } from "./specialists.ts";
+import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills } from "./specialists.ts";
 import { createAskOrchestratorResolver } from "./ask-resolver.ts";
 import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
 import { hasActivePlan, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
@@ -18,14 +18,7 @@ import { applyScope } from "./apply-scope.ts";
 import { handleDiagnostics } from "./handle-diagnostics.ts";
 import { processDelegateResult } from "./delegate-result-processor.ts";
 
-// Verb mapping for working loader messages during delegation lifecycle
-const PRESENT_PARTICIPLE: Record<string, string> = {
-	scout: 'Scouting',
-	coder: 'Coding',
-	reviewer: 'Reviewing',
-	researcher: 'Researching',
-	writer: 'Writing',
-};
+// Verb mapping now lives in specialists.ts as SPECIALIST_VERBS (SSOT with SPECIALISTS dict)
 
 /** Result type returned by executeDelegate */
 export interface ExecuteDelegateResult {
@@ -126,7 +119,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 
 	// Dynamic status: delegating
 	const orchestratorUi: OrchestratorUi | undefined = ctx?.ui ? ctx.ui : undefined;
-	const verb = PRESENT_PARTICIPLE[specialist.name] || 'Working';
+	const verb = SPECIALIST_VERBS[specialist.name] || 'Working';
 	try {
 		if (orchestratorUi) {
 			orchestratorUi.setWorkingMessage(`Sending to ${specialist.name}...`);

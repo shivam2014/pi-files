@@ -1,11 +1,8 @@
+import type { ReadSkillParams } from "./types.ts";
 import { Type } from "typebox";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-
-export interface ReadSkillParams {
-	name: string;
-}
 
 /**
  * Create the read_skill tool definition.

@@ -423,6 +423,15 @@ ${TERSE_INSTRUCTION}`,
 	},
 };
 
+/** Present-participle verb map for specialist working-loader messages (SSOT: co-located with SPECIALISTS). */
+export const SPECIALIST_VERBS: Record<string, string> = {
+	scout: 'Scouting',
+	coder: 'Coding',
+	reviewer: 'Reviewing',
+	researcher: 'Researching',
+	writer: 'Writing',
+};
+
 export function getSpecialist(name: string): Specialist | undefined {
 	return SPECIALISTS[name];
 }

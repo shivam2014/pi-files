@@ -14,6 +14,13 @@ const mockResolve = vi.hoisted(() => vi.fn(() => "pass"));
 
 vi.mock("./specialists.ts", () => ({
   SPECIALISTS: mockSpecialists,
+  SPECIALIST_VERBS: {
+    scout: 'Scouting',
+    coder: 'Coding',
+    reviewer: 'Reviewing',
+    researcher: 'Researching',
+    writer: 'Writing',
+  },
   getSpecialistSkills: (_name: string, override?: string[]) => override !== undefined ? override : [],
 }));
 

@@ -1,7 +1,28 @@
 import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
+/** ScopeGateMode type */
 export type ScopeGateMode = 'strict' | 'relaxed';
+
+/**
+ * Generate documentation string for ResolvedScope fields (SSOT for scope shape docs).
+ * Used by prompt-builder to show ScopeObject shape to orchestrator agents.
+ */
+export function generateScopeDocumentation(): string {
+    return `**ScopeObject shape:**
+\`\`\`
+{
+    filesToModify: ["src/auth.ts"],
+    filesToCreate: ["tests/**/*.test.ts"],
+    directories: ["src"],
+    maxFiles: 10,
+    maxLinesPerFile: 400,
+    changeType: "single-file" | "multi-file",
+    requiresApprovalBeyondScope: true,
+    boundaries?: "do not modify src/legacy"
+}
+\`\`\``;
+}
 
 export interface ScopeFileContract {
   version: number;

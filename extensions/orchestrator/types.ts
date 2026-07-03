@@ -104,6 +104,11 @@ export interface DelegationMetrics {
 	scopeViolations: number;
 }
 
+/** Format DelegationMetrics as a single-line summary string (SSOT for metrics formatting). */
+export function formatMetricsLine(m: DelegationMetrics): string {
+	return `[Metrics: read=${m.readCalls}, grep=${m.grepCalls}, find=${m.findCalls}, edit=${m.editCalls}, write=${m.writeCalls}, bash=${m.bashCalls}, ls=${m.lsCalls}, scopeViolations=${m.scopeViolations}]`;
+}
+
 export interface FusionConfig {
 	enabled?: boolean;
 	panel?: string[];

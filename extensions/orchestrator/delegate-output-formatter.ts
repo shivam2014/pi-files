@@ -1,4 +1,5 @@
 import type { DelegationMetrics } from "./types";
+import { formatMetricsLine } from "./types.ts";
 
 export interface FormatResultInput {
   output: string;
@@ -83,7 +84,7 @@ export function formatResult(input: FormatResultInput): FormatResultOutput {
     }
 
     const m = input.metrics;
-    const metricsLine = `[Metrics: read=${m.readCalls}, grep=${m.grepCalls}, find=${m.findCalls}, edit=${m.editCalls}, write=${m.writeCalls}, bash=${m.bashCalls}, ls=${m.lsCalls}, scopeViolations=${m.scopeViolations}]`;
+    const metricsLine = formatMetricsLine(m);
 
     const execStatus = input.status === 'error' ? 'error' : 'ok';
     const execMeta = `[Execution: elapsed=${input.elapsed.toFixed(1)}s, turns=${turns}, status=${execStatus}]`;

@@ -3,6 +3,7 @@
  */
 
 import type { DelegationMetrics } from "./types.ts";
+import { formatMetricsLine } from "./types.ts";
 import { extractFindingsFromOutput, extractAuditFromOutput } from "./delegate-output-formatter.ts";
 
 /**
@@ -61,7 +62,7 @@ function formatSuccess(
 	}
 
 	// Prepend metrics line
-	const metricsLine = `[Metrics: read=${metrics.readCalls}, grep=${metrics.grepCalls}, find=${metrics.findCalls}, edit=${metrics.editCalls}, write=${metrics.writeCalls}, bash=${metrics.bashCalls}, ls=${metrics.lsCalls}, scopeViolations=${metrics.scopeViolations}]`;
+	const metricsLine = formatMetricsLine(metrics);
 	result = metricsLine + '\n' + result;
 
 	// Status note
