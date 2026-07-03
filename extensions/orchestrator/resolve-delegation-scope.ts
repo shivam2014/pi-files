@@ -34,7 +34,7 @@ function normalizeExplicitScope(scope: Scope): Scope {
 		requiresApprovalBeyondScope: scope.requiresApprovalBeyondScope ?? true,
 		changeType: scope.changeType ?? "multi-file",
 		maxLinesPerFile: scope.maxLinesPerFile ?? 400,
-		gateMode: scope.gateMode,
+		gateMode: scope.gateMode ?? (scope.changeType === 'single-file' ? 'relaxed' as const : 'strict' as const),
 		boundaries: scope.boundaries,
 	};
 }
@@ -65,7 +65,7 @@ export function resolveScope(
 
 	// Read-only specialists (scout, reviewer, researcher) get relaxed defaults
 	if (isReadOnly) {
-		if (!params.scope || (params.scope.filesToModify.length === 0 && params.scope.filesToCreate.length === 0)) {
+		if (!params.scope || (!params.scope.filesToModify?.length && !params.scope.filesToCreate?.length)) {
 			return { filesToModify: [], filesToCreate: [], directories: [], maxFiles: 10, requiresApprovalBeyondScope: false, changeType: 'multi-file', maxLinesPerFile: 400, gateMode: 'relaxed' };
 		}
 		return normalizeExplicitScope(params.scope);
