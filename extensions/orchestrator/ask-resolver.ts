@@ -13,6 +13,10 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve as pathResolve, isAbsolute, basename, extname } from "node:path";
+import type { Scope } from "./scope-manager.ts";
+
+// Minimal scope type for resolve() — only fields this function needs
+type ScopeForResolve = Pick<Scope, "filesToModify" | "filesToCreate" | "boundaries"> & { directories?: string[] };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -277,21 +281,7 @@ export function createAskOrchestratorResolver(ctx: any): (question: string, cont
 }
 
 
-// ─── AskResolver Boolean Gate ─────────────────────────────────────────────────────
 
-/**
- * Scope type for the resolve gate.
- * Compatible with existing ResolvedScope from scope-manager (directories field)
- * and the PRD-specified allowedDirectories field.
- */
-export type Scope = {
-	filesToModify: string[];
-	filesToCreate: string[];
-	directories?: string[];
-	allowedDirectories?: string[];
-	maxFiles?: number;
-	boundaries?: string;
-};
 
 /** Result of the AskResolver boolean gate */
 export type ResolveResult = "ask" | "proceed";
@@ -316,7 +306,7 @@ export function hasLiteralSegment(pattern: string): boolean {
  * - filesToModify or filesToCreate entries with at least one literal segment
  * - directories/allowedDirectories set with specific dirs
  */
-export function resolve(request: string, scope: Scope | null): ResolveResult {
+export function resolve(request: string, scope: ScopeForResolve | null): ResolveResult {
 	const s = scope;
 	// No scope defined → ask
 	if (s === null || s === undefined) return "ask";
@@ -334,8 +324,8 @@ export function resolve(request: string, scope: Scope | null): ResolveResult {
 	// filesToModify has entries but all are wildcards → ask
 	if (Array.isArray(fMod) && fMod.length > 0) return "ask";
 
-	// No file specs — check directories / allowedDirectories as fallback
-	const dirs = s.directories ?? s.allowedDirectories ?? [];
+	// No file specs — check directories as fallback
+	const dirs = s.directories ?? [];
 	if (Array.isArray(dirs) && dirs.length > 0) {
 		const hasConcreteDirs = dirs.some((d) => hasLiteralSegment(d) && d.toUpperCase() !== "ALL");
 		if (hasConcreteDirs) return "proceed";
