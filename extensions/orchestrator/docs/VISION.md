@@ -280,26 +280,29 @@ The routing table must match the actual specialist capabilities. If a specialist
 ### 12. Scope is a contract
 Scope declares what the subagent may touch. The orchestrator must scan the task text for every file name, component name, and implied dependency before declaring scope. Glob patterns (e.g., `*.test.ts`) are supported for bulk inclusion. Bare wildcards (`*`, `**`) without a literal directory are rejected. The scope example in the prompt must show both exact paths and glob patterns.
 
+### 13. Tool documentation — syntax, arguments, output
+When documenting tools, explain three things: what it does, when to use it, and how to call it. Show the exact syntax with argument types. Show what the output looks like. An agent that knows a tool exists but not how to call it will either not use it or trigger errors. Every tool in the prompt must have: syntax example, argument list, output format.
+
 ---
 
 ## Architectural Principles
 
 These principles govern how the orchestrator extension is built and maintained.
 
-### 13. Reuse before building
+### 14. Reuse before building
 Check existing APIs and patterns before implementing new features. The pi SDK provides `pi.getAllTools()` (full tool metadata), `pi.getActiveTools()` (names), `pi.registerTool()` (registration). Don't build what already exists.
 
-### 14. Modular, single-responsibility
+### 15. Modular, single-responsibility
 Each file handles one concern. Tool registration in separate files. Pure logic (scope-guard, ask-resolver) separated from pi API coupling. Shared utilities in ui-utils.ts. Registration-hub.ts is the central wiring point.
 
-### 15. Pure logic before pi coupling
+### 16. Pure logic before pi coupling
 Business logic lives in pure functions or classes that don't import pi. Pi API calls happen at the registration layer, not in the logic layer. This makes logic testable without mocking pi.
 
-### 16. Registration pattern
+### 17. Registration pattern
 New tools follow the pattern: `registerXTool(pi: ExtensionAPI)` function → export from module → wire in registration-hub.ts → add to active tools in index.ts. Don't skip steps.
 
-### 17. Dynamic over static
+### 18. Dynamic over static
 Prefer dynamic tool metadata over static lists. `pi.getAllTools()` provides descriptions automatically. Don't manually list tool descriptions in prompts when the SDK can provide them.
 
-### 18. Token-neutral changes
+### 19. Token-neutral changes
 When adding new prompt text, identify what can be removed. Every line costs tokens per session. New features should be token-neutral or token-negative. Measure before committing.
