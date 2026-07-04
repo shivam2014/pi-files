@@ -327,7 +327,6 @@ export async function runSubagent(
 			await loader.reload();
 		} finally {
 			_batchLoadSubagent--;
-			_planParsed = false;  // Reset for next subagent session
 			delete process.env[SUBAGENT_ENV_KEY];
 		}
 
@@ -725,6 +724,7 @@ export async function runSubagent(
 				? `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`
 				: `[error] ${errorMsg}`;
 		} finally {
+			_planParsed = false;  // Reset plan state only after session ends (RUN-001)
 			unsubscribe();
 			if (renderTimer) {
 				clearInterval(renderTimer);
