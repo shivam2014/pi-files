@@ -290,7 +290,6 @@ export async function runSubagent(
 
 		// Load extensions for subagent, flag context so orchestrator skips re-registration
 		_batchLoadSubagent++;
-		process.env[SUBAGENT_ENV_KEY] = "1";
 		let loader: DefaultResourceLoader | undefined;
 		try {
 			loader = new DefaultResourceLoader({
@@ -324,10 +323,14 @@ export async function runSubagent(
 			},
 				noContextFiles: true, // Don't load parent's AGENTS.md/context into subagent
 			});
+			// Set env flag only during reload so orchestrator extension detects
+			// subagent context; deleted in finally before any child processes spawn.
+			process.env[SUBAGENT_ENV_KEY] = "1";
 			await loader.reload();
-		} finally {
-			_batchLoadSubagent--;
 			delete process.env[SUBAGENT_ENV_KEY];
+		} finally {
+			delete process.env[SUBAGENT_ENV_KEY];
+			_batchLoadSubagent--;
 		}
 
 		const excludeTools = (specialist.name === "writer" || specialist.name === "researcher" || specialist.name === "scout")
