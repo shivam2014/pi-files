@@ -22,6 +22,7 @@ export interface OrchestratorActivity {
 
 /** A substep within an activity feed step (Layer 2 chat blocks) */
 export interface Substep {
+	toolCallId?: string;
 	label: string;
 	completed: boolean;
 	startTime?: number;

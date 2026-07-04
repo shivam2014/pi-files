@@ -18,9 +18,6 @@
       "typebox": [
         "/Users/shivam94/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/index.d.mts"
       ],
-      "@earendil-works/pi-ai": [
-        "/Users/shivam94/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.d.ts"
-      ],
       "@earendil-works/pi-coding-agent": [
         "/Users/shivam94/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
       ],

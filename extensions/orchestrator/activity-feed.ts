@@ -72,7 +72,7 @@ export function addStep(state: ActivityFeedState, label: string): ActivityFeedSt
 	return { ...state, steps, currentStep };
 }
 
-export function addSubstep(state: ActivityFeedState, label: string): ActivityFeedState {
+export function addSubstep(state: ActivityFeedState, label: string, toolCallId?: string): ActivityFeedState {
 	let { steps, currentStep } = state;
 
 	if (currentStep >= 0 && currentStep < steps.length && steps[currentStep].completed) {
@@ -83,7 +83,7 @@ export function addSubstep(state: ActivityFeedState, label: string): ActivityFee
 			const stepLabel = label.length > 60 ? label.slice(0, 57) + "..." : label;
 			return {
 				...state,
-				steps: [{ label: stepLabel, completed: false, substeps: [{ label, completed: false, startTime: Date.now() }], startTime: Date.now() }],
+				steps: [{ label: stepLabel, completed: false, substeps: [{ label, completed: false, startTime: Date.now(), ...(toolCallId ? { toolCallId } : {}) }], startTime: Date.now() }],
 				currentStep: 0,
 			};
 		}
@@ -99,7 +99,7 @@ export function addSubstep(state: ActivityFeedState, label: string): ActivityFee
 	if (step.substeps.length >= MAX_FEED_SUBSTEPS) {
 		newSubsteps = step.substeps.slice(1);
 	}
-	newSubsteps = [...newSubsteps, { label, completed: false, startTime: Date.now() }];
+	newSubsteps = [...newSubsteps, { label, completed: false, startTime: Date.now(), ...(toolCallId ? { toolCallId } : {}) }];
 
 	const newSteps = steps.map((s, i) => i === currentStep ? { ...s, substeps: newSubsteps } : s);
 	const wasErrored = state.errored;
@@ -128,6 +128,31 @@ export function completeLastSubstep(state: ActivityFeedState, outputPreview?: st
 	const now = Date.now();
 	const newSubsteps = step.substeps.map((sub, i) => {
 		if (i !== activeIdx) return sub;
+		return { ...sub, completed: true, errored: isError === true, endTime: now, ...(outputPreview ? { outputPreview } : {}) };
+	});
+	const newSteps = state.steps.map((s, i) => i === state.currentStep ? { ...s, substeps: newSubsteps } : s);
+	const wasErrored = state.errored;
+	return { ...state, steps: newSteps, ...(wasErrored ? { errored: false, errorMessage: undefined } : {}) };
+}
+
+export function completeSubstepByToolCallId(state: ActivityFeedState, toolCallId: string, outputPreview?: string, isError?: boolean): ActivityFeedState {
+	if (state.currentStep < 0 || state.currentStep >= state.steps.length) return state;
+	const step = state.steps[state.currentStep];
+	if (step.substeps.length === 0) return state;
+
+	// Find substep matching toolCallId
+	let targetIdx = -1;
+	for (let i = 0; i < step.substeps.length; i++) {
+		if (step.substeps[i].toolCallId === toolCallId && !step.substeps[i].completed) {
+			targetIdx = i;
+			break;
+		}
+	}
+	if (targetIdx < 0) return state;
+
+	const now = Date.now();
+	const newSubsteps = step.substeps.map((sub, i) => {
+		if (i !== targetIdx) return sub;
 		return { ...sub, completed: true, errored: isError === true, endTime: now, ...(outputPreview ? { outputPreview } : {}) };
 	});
 	const newSteps = state.steps.map((s, i) => i === state.currentStep ? { ...s, substeps: newSubsteps } : s);

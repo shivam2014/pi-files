@@ -30,6 +30,7 @@ import {
 	setToolDetail,
 	clearToolDetail,
 	completeLastSubstep,
+	completeSubstepByToolCallId,
 	completeActiveSubstepWithLabel,
 	completeCurrentStep,
 	markFeedError,
@@ -47,6 +48,7 @@ import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearViewerState, pushStreamingText } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
+import { createReadSkillTool } from "./read-skill-tool.ts";
 
 /** Optional orchestrator UI for dynamic status messages */
 export interface OrchestratorUi {
@@ -380,6 +382,9 @@ export async function runSubagent(
 			description: "Mark the current step as complete and advance to the next step. Call this after each step finishes.",
 			parameters: Type.Object({}),
 			execute: async (_toolCallId: string, _params: Record<string, never>) => {
+				if (!feed.planParsed) {
+					return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
+				}
 				if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
 					feed = completeCurrentStep(feed);
 					const nextLabel = feed.currentStep < feed.steps.length
@@ -402,6 +407,9 @@ export async function runSubagent(
 				finding: Type.String({ description: "What you discovered" }),
 			}),
 			execute: async (_toolCallId: string, params: { finding: string }) => {
+				if (!feed.planParsed) {
+					return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
+				}
 				if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
 					const step = feed.steps[feed.currentStep];
 					const newSubstep: Substep = {
@@ -425,7 +433,7 @@ export async function runSubagent(
 		});
 
 		// Merge tools with planSteps, advanceStep, reportFinding, and ask_orchestrator
-		const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding", "ask_orchestrator"];
+		const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding", "ask_orchestrator", "read_skill"];
 
 		const askOrchestratorTool = createAskOrchestratorTool(
 			parentCtx?.onAskOrchestrator,
@@ -443,6 +451,7 @@ export async function runSubagent(
 				advanceStepTool,
 				reportFindingTool,
 				askOrchestratorTool,
+				createReadSkillTool(),
 				...(specialist.name === "scout" ? [gitReadTool, ghTool] : []),
 			],
 			excludeTools,
@@ -522,7 +531,7 @@ export async function runSubagent(
 				if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") return;
 				const substepLabel = toolCallToSubstep(event.toolName, event.args);
 				// Auto-create substep if feed is empty (model skipped text output)
-				feed = addSubstep(feed, substepLabel);
+				feed = addSubstep(feed, substepLabel, event.toolCallId);
 				// Show multi-item detail (queries[], urls[]) in tool_detail instead of repeating substep label
 				const extraDetail = substepToolDetail(event.toolName, event.args);
 				feed = setToolDetail(feed, extraDetail ?? substepLabel);
@@ -616,7 +625,7 @@ export async function runSubagent(
 					}
 				}
 				if (!completedWithLabel) {
-					feed = completeLastSubstep(feed, outputPreview, isError);
+					feed = completeSubstepByToolCallId(feed, (event as any).toolCallId, outputPreview, isError);
 				}
 				// After edit/write tool completion, add lint indicator substep
 				if (!isError && (event.toolName === "edit" || event.toolName === "write")) {
