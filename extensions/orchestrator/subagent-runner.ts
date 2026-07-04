@@ -477,7 +477,12 @@ export async function runSubagent(
 				if (snapshot !== _lastFeedSnapshot) {
 					_lastFeedSnapshot = snapshot;
 					resetSpinner();
-					updatePlanStepDetail(feed.goal || "", orchestratorCtx);
+					const activeStep = feed.steps[feed.currentStep];
+					if (activeStep) {
+						updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
+					} else {
+						updatePlanStepDetail(feed.goal || "", orchestratorCtx);
+					}
 					recordTimelineFrame("step_started", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
 				}
 				pushStreamingText(event.assistantMessageEvent.delta);
