@@ -128,6 +128,7 @@ class PeekSession {
         this._viewerOutput = "";
         this._viewerStatus = "idle";
         resetSpinner();
+        stopSpinnerTimer();
     }
 }
 
@@ -604,5 +605,5 @@ export function hidePeek(): void {
  * Check if the peek overlay is currently open.
  */
 export function isPeekOpen(): boolean {
-    return _current?.handle != null && !_current.handle.isHidden();
+    return _current !== null && _current.handle !== null && !_current.handle.isHidden();
 }
