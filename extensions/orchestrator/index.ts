@@ -64,15 +64,7 @@ export default function (pi: ExtensionAPI) {
 	//      await pi.trigger("before_agent_start", event, ctx)
 	//    Without this, setActiveTools never fires and getActiveToolsHistory() returns undefined.
 	pi.on("session_start", async (_event, ctx) => {
-		const cwd = ctx?.cwd ?? process.cwd();
-		const fusionConfig = loadFusionConfig(cwd);
-		const activeTools: string[] = ["plan", "delegate"];
-		if (fusionConfig.enabled) {
-			activeTools.push("fusion");
-		}
-		activeTools.push("read_skill");
-		activeTools.push("list_skills");
-		activeTools.push("list_tools");
+		const activeTools: string[] = ["plan", "delegate", "fusion", "read_skill", "list_skills", "list_tools"];
 		pi.setActiveTools(activeTools);
 	});
 
