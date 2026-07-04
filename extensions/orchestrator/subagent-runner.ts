@@ -29,7 +29,6 @@ import {
 	createActivityFeed,
 	setToolDetail,
 	clearToolDetail,
-	completeLastSubstep,
 	completeSubstepByToolCallId,
 	completeActiveSubstepWithLabel,
 	completeCurrentStep,
@@ -383,7 +382,7 @@ export async function runSubagent(
 			parameters: Type.Object({}),
 			execute: async (_toolCallId: string, _params: Record<string, never>) => {
 				if (!feed.planParsed) {
-					return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
+					return { content: [{ type: "text" as const, text: `Call planSteps({ goal, steps }) before this tool. Example: planSteps({ goal: 'Fix bug', steps: ['Find bug', 'Fix it'] })` }], details: {} };
 				}
 				if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
 					feed = completeCurrentStep(feed);
@@ -408,7 +407,7 @@ export async function runSubagent(
 			}),
 			execute: async (_toolCallId: string, params: { finding: string }) => {
 				if (!feed.planParsed) {
-					return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
+					return { content: [{ type: "text" as const, text: `Call planSteps({ goal, steps }) before this tool. Example: planSteps({ goal: 'Fix bug', steps: ['Find bug', 'Fix it'] })` }], details: {} };
 				}
 				if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
 					const step = feed.steps[feed.currentStep];
@@ -512,8 +511,9 @@ export async function runSubagent(
 						: JSON.stringify(lintMsg.content ?? "");
 
 					// Add lint result as a substep in the feed (visible in delegation step/substep view)
-					feed = addSubstep(feed, lintContent.slice(0, 80));
-					feed = completeLastSubstep(feed);
+					const lintCallId = `lint-${Date.now()}`;
+					feed = addSubstep(feed, lintContent.slice(0, 80), lintCallId);
+					feed = completeSubstepByToolCallId(feed, lintCallId);
 
 					// Forward lint content to the delegation output blob
 					output += "\n" + lintContent + "\n";
@@ -599,7 +599,7 @@ export async function runSubagent(
 						outputPreview = stripped.length > 80 ? stripped.slice(0, 77) + "..." : stripped || undefined;
 					}
 				} catch {}
-				const isError = (event as any).isError === true;
+				const isError = event.isError === true;
 				// For errors, extract actual error message from result structure
 				if (isError && rawResult != null) {
 					if (typeof rawResult === "string") {
@@ -625,7 +625,7 @@ export async function runSubagent(
 					}
 				}
 				if (!completedWithLabel) {
-					feed = completeSubstepByToolCallId(feed, (event as any).toolCallId, outputPreview, isError);
+					feed = completeSubstepByToolCallId(feed, event.toolCallId, outputPreview, isError);
 				}
 				// After edit/write tool completion, add lint indicator substep
 				if (!isError && (event.toolName === "edit" || event.toolName === "write")) {

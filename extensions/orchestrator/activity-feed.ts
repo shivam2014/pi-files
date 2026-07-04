@@ -106,33 +106,9 @@ export function addSubstep(state: ActivityFeedState, label: string, toolCallId?:
 	return { ...state, steps: newSteps, ...(wasErrored ? { errored: false, errorMessage: undefined } : {}) };
 }
 
-/**
- * Complete the active (first uncompleted) substep of the current step.
- * In the new model, substeps are parsed upfront in order; the first uncompleted is the active one.
- */
+/** @deprecated Use completeSubstepByToolCallId instead. Kept for delegate-feed-builder compat. */
 export function completeLastSubstep(state: ActivityFeedState, outputPreview?: string, isError?: boolean): ActivityFeedState {
-	if (state.currentStep < 0 || state.currentStep >= state.steps.length) return state;
-	const step = state.steps[state.currentStep];
-	if (step.substeps.length === 0) return state;
-
-	// Find first uncompleted substep (the active one)
-	let activeIdx = -1;
-	for (let i = 0; i < step.substeps.length; i++) {
-		if (!step.substeps[i].completed) {
-			activeIdx = i;
-			break;
-		}
-	}
-	if (activeIdx < 0) return state;
-
-	const now = Date.now();
-	const newSubsteps = step.substeps.map((sub, i) => {
-		if (i !== activeIdx) return sub;
-		return { ...sub, completed: true, errored: isError === true, endTime: now, ...(outputPreview ? { outputPreview } : {}) };
-	});
-	const newSteps = state.steps.map((s, i) => i === state.currentStep ? { ...s, substeps: newSubsteps } : s);
-	const wasErrored = state.errored;
-	return { ...state, steps: newSteps, ...(wasErrored ? { errored: false, errorMessage: undefined } : {}) };
+	return completeActiveSubstepWithLabel(state, state.steps[state.currentStep]?.substeps.find(s => !s.completed)?.label ?? "", outputPreview, isError);
 }
 
 export function completeSubstepByToolCallId(state: ActivityFeedState, toolCallId: string, outputPreview?: string, isError?: boolean): ActivityFeedState {
