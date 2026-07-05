@@ -56,8 +56,7 @@ export function addStep(state: ActivityFeedState, label: string): ActivityFeedSt
 
 	for (let i = 0; i < state.steps.length; i++) {
 		const existing = state.steps[i];
-		if (label.startsWith(existing.label) && label.length > existing.label.length
-			&& existing.substeps.length === 0 && !existing.completed) {
+		if (label === existing.label && existing.substeps.length === 0 && !existing.completed) {
 			const newSteps = state.steps.map((s, idx) => idx === i ? { label, completed: false, substeps: [], startTime: existing.startTime } : s);
 			return { ...state, steps: newSteps };
 		}
@@ -96,12 +95,14 @@ export function addSubstep(state: ActivityFeedState, label: string, toolCallId?:
 	if (step.substeps.some((s) => s.label === label)) return state;
 
 	let newSubsteps = step.substeps;
+	let overflowCount = step.overflowCount || 0;
 	if (step.substeps.length >= MAX_FEED_SUBSTEPS) {
 		newSubsteps = step.substeps.slice(1);
+		overflowCount += 1;
 	}
 	newSubsteps = [...newSubsteps, { label, completed: false, startTime: Date.now(), ...(toolCallId ? { toolCallId } : {}) }];
 
-	const newSteps = steps.map((s, i) => i === currentStep ? { ...s, substeps: newSubsteps } : s);
+	const newSteps = steps.map((s, i) => i === currentStep ? { ...s, substeps: newSubsteps, overflowCount } : s);
 	const wasErrored = state.errored;
 	return { ...state, steps: newSteps, ...(wasErrored ? { errored: false, errorMessage: undefined } : {}) };
 }
@@ -573,6 +574,10 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 							errorLines.push(`    ✗ ${sub.label}`);
 						} // else: pending substeps after active one — not shown
 					}
+					const pendingCount = step.substeps.filter(s => !s.completed).length - (foundActive ? 1 : 0);
+					if (pendingCount > 0) {
+						errorLines.push(`    ○ +${pendingCount} pending`);
+					}
 					if (msg && !foundActive) {
 						errorLines.push(`    ⚠ ${msg}`);
 					}
@@ -675,6 +680,9 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 					// Pending substep
 					lines.push(`    ○ ${sub.label}`);
 				}
+			}
+			if (step.overflowCount && step.overflowCount > 0) {
+				lines.push(`    … +${step.overflowCount} more`);
 			}
 		} else if (isPending) {
 			// Pending step:  ○ Step N: <label>

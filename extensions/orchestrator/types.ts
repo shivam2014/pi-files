@@ -40,6 +40,7 @@ export interface Step {
 	substeps: Substep[];
 	startTime?: number;
 	endTime?: number;
+	overflowCount?: number;
 }
 
 /** Activity feed state for subagent tool blocks */
