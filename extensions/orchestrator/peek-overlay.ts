@@ -38,6 +38,7 @@ interface TUI {
 const MAX_PEEK_LINES = 50;
 export const MIN_HEIGHT = 15;
 const X_PRESS_WINDOW_MS = 600;
+const STREAMING_BUFFER_MAX = 5000;
 
 // ============================================================================
 // Module-level state
@@ -351,8 +352,7 @@ export function setViewerSession(session: any, task: string): void {
     _viewerSession = session;
     _viewerTask = task;
     _viewerStatus = "running";
-    _peekComponent?.invalidate();
-    _peekTui?.requestRender();
+    scheduleRender();
 }
 
 /**
@@ -361,8 +361,7 @@ export function setViewerSession(session: any, task: string): void {
 export function setViewerOutput(output: string): void {
     _viewerOutput = output;
     _viewerStatus = "completed";
-    _peekComponent?.invalidate();
-    _peekTui?.requestRender();
+    scheduleRender();
 }
 
 /**
@@ -371,8 +370,7 @@ export function setViewerOutput(output: string): void {
 export function setViewerError(error: string): void {
     _viewerOutput = error;
     _viewerStatus = "error";
-    _peekComponent?.invalidate();
-    _peekTui?.requestRender();
+    scheduleRender();
 }
 
 /**
@@ -383,8 +381,20 @@ export function clearViewerState(): void {
     _viewerTask = "";
     _viewerOutput = "";
     _viewerStatus = "idle";
-    _peekComponent?.invalidate();
-    _peekTui?.requestRender();
+    scheduleRender();
+}
+
+// Shared render scheduler — coalesces multiple rapid invalidate+requestRender
+// calls into a single microtask, preventing compounding render triggers.
+let _renderScheduled = false;
+function scheduleRender(): void {
+    if (_renderScheduled) return;
+    _renderScheduled = true;
+    queueMicrotask(() => {
+        _renderScheduled = false;
+        _peekComponent?.invalidate();
+        _peekTui?.requestRender();
+    });
 }
 
 // ============================================================================
@@ -468,8 +478,7 @@ export function updatePeek(text: string): void {
     }
 
     // Trigger TUI re-render
-    _peekComponent?.invalidate();
-    _peekTui?.requestRender();
+    scheduleRender();
 }
 
 /**
@@ -481,12 +490,16 @@ export function pushStreamingText(text: string): void {
     if (!_peekHandle || _peekHandle.isHidden()) return;
     _streamingBuffer += text;
     
+    // GC: trim oldest text when buffer exceeds max
+    if (_streamingBuffer.length > STREAMING_BUFFER_MAX) {
+        _streamingBuffer = _streamingBuffer.slice(-STREAMING_BUFFER_MAX);
+    }
+    
     // Debounce re-renders during rapid streaming — max ~5fps
     if (_pushRenderTimer) clearTimeout(_pushRenderTimer);
     _pushRenderTimer = setTimeout(() => {
         _pushRenderTimer = null;
-        _peekComponent?.invalidate();
-        _peekTui?.requestRender();
+        scheduleRender();
     }, 200);
 }
 
@@ -495,8 +508,7 @@ export function pushStreamingText(text: string): void {
  */
 export function setPeekGoal(goal: string): void {
     _peekGoal = goal;
-    _peekComponent?.invalidate();
-    _peekTui?.requestRender();
+    scheduleRender();
 }
 
 /**

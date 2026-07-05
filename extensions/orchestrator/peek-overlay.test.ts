@@ -304,3 +304,31 @@ describe("streaming flickering regression", () => {
 		expect(results[0].length).toBeGreaterThanOrEqual(MIN_HEIGHT);
 	});
 });
+
+// ============================================================================
+// Issue #87: streaming buffer GC test
+// ============================================================================
+
+describe("streaming buffer GC", () => {
+	it("should handle large streaming text without throwing", () => {
+		const longText = "x".repeat(6000);
+		pushStreamingText(longText);
+		const comp = new PeekComponent();
+		expect(() => comp.render(80)).not.toThrow();
+	});
+});
+
+// ============================================================================
+// Issue #86: render coordination test
+// ============================================================================
+
+describe("render coordination", () => {
+	it("multiple render triggers should not throw", () => {
+		const comp = new PeekComponent();
+		comp.render(80);
+		expect(() => {
+			// Simulate rapid succession of render triggers
+			updatePeek("test line");
+		}).not.toThrow();
+	});
+});
