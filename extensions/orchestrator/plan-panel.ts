@@ -56,6 +56,7 @@ export class PlanPanel {
 	private _lastWidgetContent: string[] | null = null;
 	private _planTimer: ReturnType<typeof setInterval> | null = null;
 	private _spinnerTimer: ReturnType<typeof setInterval> | null = null;
+	private _cleared: boolean = false;
 
 	constructor(ctx?: { cwd?: string }) {
 		this._cwd = ctx?.cwd ?? process.cwd();
@@ -112,6 +113,14 @@ export class PlanPanel {
 					if (dm) { substeps.push({ label: dm[1].trim(), completed: true }); continue; }
 					const sm = line.match(/^    [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (.+)$/);
 					if (sm && !substeps.find(s => !s.completed)) substeps.push({ label: sm[1].trim(), completed: false });
+					const om = line.match(/^    ○ (.+)$/);
+					if (om) substeps.push({ label: om[1].trim(), completed: false });
+				}
+			}
+			if (!ps.completed && !ps.active && ps.detailLines?.length) {
+				for (const line of ps.detailLines) {
+					const sm = line.match(/^    [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (.+)$/);
+					if (sm && !substeps.find(s => !s.completed)) substeps.push({ label: sm[1].trim(), completed: false });
 				}
 			}
 			return { label: truncateLabel(ps.label, 120), completed: ps.completed, startTime: ps.startTime, endTime: ps.endTime, substeps };
@@ -130,18 +139,24 @@ export class PlanPanel {
 
 	private trimToBudget(lines: string[], budget: number): string[] {
 		if (lines.length <= budget) return lines;
-		const keepIndices = new Set<number>([0]);
-		if (lines.length > 1) keepIndices.add(1);
+		const essentialCount = Math.min(2, lines.length);
+		const essential = lines.slice(0, essentialCount);
+		const remainingBudget = budget - essential.length;
+		if (remainingBudget <= 0) return essential.slice(0, budget);
+		const rest = lines.slice(essentialCount);
 		let activeIdx = -1;
-		for (let i = 2; i < lines.length; i++) { if (/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(lines[i].trimStart())) { activeIdx = i; break; } }
-		if (activeIdx >= 0) { for (let i = activeIdx; i < lines.length; i++) keepIndices.add(i); }
-		const result: string[] = [];
-		let remaining = budget - (lines.length - (activeIdx >= 0 ? activeIdx : lines.length));
+		for (let i = 0; i < rest.length; i++) {
+			if (/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(rest[i].trimStart())) { activeIdx = i; break; }
+		}
 		if (activeIdx >= 0) {
-			for (let i = 0; i < activeIdx && remaining > 0; i++) { result.push(lines[i]); remaining--; }
-			for (let i = activeIdx; i < lines.length; i++) result.push(lines[i]);
-		} else { for (let i = lines.length - budget; i < lines.length; i++) result.push(lines[i]); }
-		return result.slice(-budget);
+			const before = rest.slice(0, activeIdx);
+			const fromActive = rest.slice(activeIdx);
+			const keepFromActive = Math.min(fromActive.length, remainingBudget);
+			const keepBefore = Math.min(before.length, remainingBudget - keepFromActive);
+			const trimmedBefore = before.slice(before.length - keepBefore);
+			return [...essential, ...trimmedBefore, ...fromActive.slice(0, keepFromActive)];
+		}
+		return [...essential, ...rest.slice(rest.length - remainingBudget)];
 	}
 
 	private renderPlanLines(): string[] {
@@ -150,7 +165,7 @@ export class PlanPanel {
 	}
 
 	private _renderWidget(): void {
-		if (!this._setWidget) return;
+		if (!this._setWidget || this._cleared) return;
 		const lines = this.renderPlanLines();
 		if (this._lastWidgetContent && this._lastWidgetContent.length === lines.length) {
 			let same = true;
@@ -220,6 +235,7 @@ export class PlanPanel {
 	hasActivePlan(): boolean { return this.planState !== null; }
 
 	setupPlanPanel(goal: string, stepLabels: string[], ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
+		this._cleared = false;
 		const sameGoal = this.planState?.goal === goal;
 		if (!sameGoal) { this._sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8); this._activeDelegations = 0; }
 		const oldSteps = sameGoal ? (this.planState?.steps || []) : [];
@@ -243,13 +259,13 @@ export class PlanPanel {
 	clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 		if (this._activeDelegations > 0 && this.planState?.sessionId === this._sessionId) return;
 		const sessionId = this._sessionId;
+		this._cleared = true;
+		this._setWidget = null;
 		this.dumpTimelineToDisk();
 		this._sessionId = null;
 		this.stopPlanTimer();
 		this.planState = null;
 		this._lastWidgetContent = null;
-		if (this._setWidget) this._setWidget(WIDGET_KEY, undefined);
-		this._setWidget = null;
 		if (sessionId) _removeSession(sessionId);
 	}
 
