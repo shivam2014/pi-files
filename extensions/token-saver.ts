@@ -266,6 +266,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		if (!enabled) return;
+		// If orchestrator is active, it handles caveman via specialists.ts COPY C
+		if (event.systemPrompt.includes("## Orchestrator Mode")) return;
 		const prompt = TERSE_PROMPTS[currentTerseMode];
 		if (!prompt) return;
 		return { systemPrompt: event.systemPrompt + prompt };

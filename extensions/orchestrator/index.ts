@@ -20,6 +20,7 @@ import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed }
 import { clearPlanPanel } from "./plan-panel.ts";
 import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
+import { traceToolCallEntry, traceMark } from "./debug-path-trace.ts";
 import { loadFusionConfig } from "./fusion-tool.ts";
 import { ScopeManager } from "./scope-manager.ts";
 import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
@@ -43,9 +44,12 @@ export default function (pi: ExtensionAPI) {
 			envGuard: process.env[SUBAGENT_ENV_KEY],
 		});
 		pi.on("tool_call", (event, ctx) => {
+			traceToolCallEntry('index:subagent-tool_call', event, ctx);
 			const cwd = resolveCwd(ctx);
 			const fusionConfig = loadFusionConfig(cwd);
-			return handleSubagentToolCall(event, fusionConfig.enabled, ctx);
+			const result = handleSubagentToolCall(event, fusionConfig.enabled, ctx);
+			traceMark('index:subagent-tool_call.result', { tool: event.toolName, input_path: (event.input as any)?.path, result });
+			return result;
 		});
 		return;
 	}
@@ -64,7 +68,15 @@ export default function (pi: ExtensionAPI) {
 	//      await pi.trigger("before_agent_start", event, ctx)
 	//    Without this, setActiveTools never fires and getActiveToolsHistory() returns undefined.
 	pi.on("session_start", async (_event, ctx) => {
-		const activeTools: string[] = ["plan", "delegate", "fusion", "read_skill", "list_skills", "list_tools"];
+		const cwd = ctx?.cwd ?? process.cwd();
+		const fusionConfig = loadFusionConfig(cwd);
+		const activeTools: string[] = ["plan", "delegate"];
+		if (fusionConfig.enabled) {
+			activeTools.push("fusion");
+		}
+		activeTools.push("read_skill");
+		activeTools.push("list_skills");
+		activeTools.push("list_tools");
 		pi.setActiveTools(activeTools);
 	});
 
@@ -79,6 +91,7 @@ export default function (pi: ExtensionAPI) {
 			basePrompt: event.systemPrompt ?? "",
 			skills: parentSkills,
 			fusionEnabled: fusionConfig.enabled,
+			pi,
 		});
 	});
 
@@ -98,6 +111,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Safety net: Block non-delegation tool calls ──
 	pi.on("tool_call", async (event, ctx) => {
+		traceToolCallEntry('index:orchestrator-tool_call', event, ctx);
 		// Subagent: enforce planSteps-first before any other tool
 		if (_batchLoadSubagent > 0 && !isPlanParsed()) {
 			if (event.toolName !== "planSteps") {

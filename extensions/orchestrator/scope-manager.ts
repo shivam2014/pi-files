@@ -21,7 +21,8 @@ export function generateScopeDocumentation(): string {
     requiresApprovalBeyondScope: true,
     boundaries?: "do not modify src/legacy"
 }
-\`\`\``;
+\`\`\`
+Glob patterns (*, **, ?) supported. Bare wildcard '/*' rejected — must include a literal path segment.`;
 }
 
 export interface ScopeFileContract {
@@ -67,6 +68,23 @@ export interface ResolvedScope {
 // Backward-compat alias
 export type Scope = ResolvedScope;
 
+/**
+ * Pure function: parse a `.pi/scope.json` file and return the ResolvedScope.
+ * Returns null if missing, malformed, or wrong version/schema (fail-closed).
+ * Shared by ScopeManager.readScope() and ScopeGuard._readScope().
+ */
+export function parseScopeFile(scopePath: string): ResolvedScope | null {
+  try {
+    if (!existsSync(scopePath)) return null;
+    const raw = JSON.parse(readFileSync(scopePath, 'utf-8'));
+    if (!raw.version || !raw.schema || !raw.scope) return null;
+    if (raw.version !== 1 || raw.schema !== 'scope-file-contract-v1') return null;
+    return raw.scope as ResolvedScope;
+  } catch {
+    return null;
+  }
+}
+
 export class ScopeManager {
   constructor(private cwd: string) {}
 
@@ -100,14 +118,7 @@ export class ScopeManager {
 
   readScope(): ResolvedScope | null {
     const path = join(this.cwd, '.pi', 'scope.json');
-    try {
-      if (!existsSync(path)) return null;
-      const raw = JSON.parse(readFileSync(path, 'utf-8'));
-      if (!raw.version || !raw.schema || !raw.scope) return null;
-      return raw.scope as ResolvedScope;
-    } catch {
-      return null;
-    }
+    return parseScopeFile(path);
   }
 
   clearScope(): void {

@@ -11,6 +11,7 @@ import {
 	createActivityFeed,
 	addStep,
 	addSubstep,
+	completeLastSubstep,
 	completeCurrentStep,
 	completeActiveSubstepWithLabel,
 	updateActiveSubstepOutput,
@@ -62,8 +63,7 @@ export class DelegateFeedBuilder {
 
 		const label = toolCallToSubstep(toolName, input);
 		// Complete the previous active substep if one exists
-		const prevLabel = this.state.steps[this.state.currentStep]?.substeps.find(s => !s.completed)?.label ?? "";
-		this.state = completeActiveSubstepWithLabel(this.state, prevLabel);
+		this.state = completeLastSubstep(this.state);
 		// Add the new substep
 		this.state = addSubstep(this.state, label);
 		this.toolCallHistory.push({ tool: toolName, input });
@@ -97,8 +97,7 @@ export class DelegateFeedBuilder {
 	onComplete(output?: string): void {
 		if (!this.state) return;
 		// Complete the last active substep with output preview
-		const prevLabel = this.state.steps[this.state.currentStep]?.substeps.find(s => !s.completed)?.label ?? "";
-		this.state = completeActiveSubstepWithLabel(this.state, prevLabel, output);
+		this.state = completeLastSubstep(this.state, output);
 		// Complete the current step
 		this.state = completeCurrentStep(this.state);
 	}

@@ -8,10 +8,6 @@
  * - Streaming text output
  *
  * Auto-scrolls, caps at ~50 lines, Escape to close, double-press x to abort.
- *
- * ARCH-005: State is encapsulated in PeekSession class instances.
- * Module-level singleton state is replaced by a session-keyed registry.
- * Exported API remains backward-compatible — delegates to `_current` session.
  */
 
 import { SPINNER_FRAMES, getSpinnerIndex, advanceSpinner, resetSpinner } from "./spinner-state.ts";
@@ -42,115 +38,29 @@ interface TUI {
 const MAX_PEEK_LINES = 50;
 export const MIN_HEIGHT = 15;
 const X_PRESS_WINDOW_MS = 600;
-const MAX_SESSIONS = 10;
 
 // ============================================================================
-// PeekSession — encapsulates all state for one peek overlay instance
+// Module-level state
 // ============================================================================
 
-class PeekSession {
-    private _lines: string[] = [];
-    private _goal: string = "";
-    private _abort: AbortController | null = null;
-    private _lastXPress: number = 0;
-    private _streamingBuffer: string = "";
-    private _handle: OverlayHandle | null = null;
-    private _component: PeekComponent | null = null;
-    private _tui: TUI | null = null;
-    private _done: (() => void) | null = null;
-    private _viewerSession: any | null = null;
-    private _viewerTask: string = "";
-    private _viewerOutput: string = "";
-    private _viewerStatus: "idle" | "running" | "completed" | "error" = "idle";
+let _peekLines: string[] = [];
+let _peekGoal: string = "";
+let _peekAbort: AbortController | null = null;
+let _lastXPress: number = 0;
+let _spinnerTimer: ReturnType<typeof setInterval> | null = null;
+let _streamingBuffer: string = "";
 
-    // -- Getters (for PeekComponent rendering) --
+/** Stored refs for controlling the live overlay */
+let _peekHandle: OverlayHandle | null = null;
+let _peekComponent: PeekComponent | null = null;
+let _peekTui: TUI | null = null;
+let _peekDone: (() => void) | null = null;
 
-    get lines(): string[] { return this._lines; }
-    get goal(): string { return this._goal; }
-    get abort(): AbortController | null { return this._abort; }
-    get lastXPress(): number { return this._lastXPress; }
-    get streamingBuffer(): string { return this._streamingBuffer; }
-    get handle(): OverlayHandle | null { return this._handle; }
-    get component(): PeekComponent | null { return this._component; }
-    get tui(): TUI | null { return this._tui; }
-    get done(): (() => void) | null { return this._done; }
-    get viewerSession(): any { return this._viewerSession; }
-    get viewerTask(): string { return this._viewerTask; }
-    get viewerOutput(): string { return this._viewerOutput; }
-    get viewerStatus(): "idle" | "running" | "completed" | "error" { return this._viewerStatus; }
-
-    // -- Setters --
-
-    set goal(v: string) { this._goal = v; }
-    set abort(v: AbortController | null) { this._abort = v; }
-    set lastXPress(v: number) { this._lastXPress = v; }
-    set streamingBuffer(v: string) { this._streamingBuffer = v; }
-    set handle(v: OverlayHandle | null) { this._handle = v; }
-    set component(v: PeekComponent | null) { this._component = v; }
-    set tui(v: TUI | null) { this._tui = v; }
-    set done(v: (() => void) | null) { this._done = v; }
-    set viewerSession(v: any) { this._viewerSession = v; }
-    set viewerTask(v: string) { this._viewerTask = v; }
-    set viewerOutput(v: string) { this._viewerOutput = v; }
-    set viewerStatus(v: "idle" | "running" | "completed" | "error") { this._viewerStatus = v; }
-    set lines(v: string[]) { this._lines = v; }
-
-    // -- Methods --
-
-    appendLines(newLines: string[]): void {
-        this._lines.push(...newLines);
-        while (this._lines.length > MAX_PEEK_LINES) {
-            this._lines.shift();
-        }
-    }
-
-    appendStreamingText(text: string): void {
-        this._streamingBuffer += text;
-    }
-
-    invalidateRender(): void {
-        this._component?.invalidate();
-        this._tui?.requestRender();
-    }
-
-    clear(): void {
-        this._lines = [];
-        this._streamingBuffer = "";
-        this._goal = "";
-        this._abort = null;
-        this._handle = null;
-        this._component = null;
-        this._tui = null;
-        this._done = null;
-        this._lastXPress = 0;
-        this._viewerSession = null;
-        this._viewerTask = "";
-        this._viewerOutput = "";
-        this._viewerStatus = "idle";
-        resetSpinner();
-        stopSpinnerTimer();
-    }
-}
-
-// ============================================================================
-// Session registry
-// ============================================================================
-
-let _sessionCounter = 0;
-const _sessions = new Map<string, PeekSession>();
-let _current: PeekSession | null = null;
-
-function _evictOldest(): void {
-    if (_sessions.size >= MAX_SESSIONS) {
-        const oldestKey = _sessions.keys().next().value;
-        if (oldestKey !== undefined) {
-            const oldest = _sessions.get(oldestKey)!;
-            oldest.clear();
-            _sessions.delete(oldestKey);
-            if (_current === oldest) _current = null;
-        }
-    }
-}
+/** Viewer state — conversation from session messages */
+let _viewerSession: any | null = null;
+let _viewerTask: string = "";
+let _viewerOutput: string = "";
+let _viewerStatus: "idle" | "running" | "completed" | "error" = "idle";
 
 // ============================================================================
 // PeekComponent — renders live subagent content inside the overlay
@@ -158,36 +68,25 @@ function _evictOldest(): void {
 
 export class PeekComponent implements Component {
     _theme: Theme | null = null;
-    session: PeekSession | null = null;
 
     render(width: number): string[] {
-        const s = this.session;
         const lines: string[] = [];
         const innerWidth = Math.max(width - 4, 20);
         const t = this._theme;
 
-        const vLen = (str: string): number => visibleLen(str).length;
-        const mute = (str: string): string => t ? t.fg("muted", str) : str;
-        const accent = (str: string): string => t ? t.fg("accent", str) : str;
-        const success = (str: string): string => t ? t.fg("success", str) : str;
-        const errCol = (str: string): string => t ? t.fg("error", str) : str;
-        const bld = (str: string): string => t ? t.bold(str) : str;
-        const dim = (str: string): string => t ? t.fg("dim", str) : str;
+        const vLen = (s: string): number => visibleLen(s).length;
+        const mute = (s: string): string => t ? t.fg("muted", s) : s;
+        const accent = (s: string): string => t ? t.fg("accent", s) : s;
+        const success = (s: string): string => t ? t.fg("success", s) : s;
+        const errCol = (s: string): string => t ? t.fg("error", s) : s;
+        const bld = (s: string): string => t ? t.bold(s) : s;
+        const dim = (s: string): string => t ? t.fg("dim", s) : s;
 
         const box = (content: string): string =>
             `│ ${content}${' '.repeat(Math.max(0, innerWidth - vLen(content)))} │`;
 
-        // Read state from session (null-safe for tests that create component without session)
-        const viewerSession = s?.viewerSession ?? null;
-        const peekLines = s?.lines ?? [];
-        const viewerOutput = s?.viewerOutput ?? "";
-        const viewerTask = s?.viewerTask ?? "";
-        const viewerStatus = s?.viewerStatus ?? "idle";
-        const peekGoal = s?.goal ?? "";
-        const streamingBuffer = s?.streamingBuffer ?? "";
-
         // ── Empty state ──
-        if (!viewerSession && peekLines.length === 0 && !viewerOutput) {
+        if (!_viewerSession && _peekLines.length === 0 && !_viewerOutput) {
             const topPad = Math.max(0, width - 4);
             lines.push(mute("┌ ") + mute("─".repeat(topPad)) + mute(" ┐"));
             lines.push(box(mute("○ Waiting for subagent...")));
@@ -199,24 +98,24 @@ export class PeekComponent implements Component {
         }
 
         // ── Header ──
-        const goalLabel = viewerTask || peekGoal || "Subagent";
+        const goalLabel = _viewerTask || _peekGoal || "Subagent";
         const topInnerText = ` ◆ ${goalLabel} `;
         const topPad = Math.max(0, (width - 2) - vLen(topInnerText));
         lines.push(mute("┌") + accent("◆") + ` ${bld(goalLabel)} ` + mute("─".repeat(topPad)) + mute("┐"));
 
         // Status line
         let statusText = "";
-        if (viewerStatus === "running") statusText = accent("● Running");
-        else if (viewerStatus === "completed") statusText = success("✓ Completed");
-        else if (viewerStatus === "error") statusText = errCol("✗ Error");
+        if (_viewerStatus === "running") statusText = accent("● Running");
+        else if (_viewerStatus === "completed") statusText = success("✓ Completed");
+        else if (_viewerStatus === "error") statusText = errCol("✗ Error");
         if (statusText) lines.push(box(statusText));
 
         // ── Build content lines from session messages ──
         const contentLines: string[] = [];
 
         // Part 1: Session messages (committed history)
-        if (viewerSession) {
-            const session = viewerSession as any;
+        if (_viewerSession) {
+            const session = _viewerSession as any;
             const messages: any[] = session.state?.messages ?? session.messages ?? [];
 
             for (const msg of messages) {
@@ -270,11 +169,11 @@ export class PeekComponent implements Component {
         }
 
         // Part 3: Streaming model text (continuous, word-wrapped)
-        if (streamingBuffer.length > 0) {
+        if (_streamingBuffer.length > 0) {
             // Show last 800 chars of streaming buffer
-            const displayText = streamingBuffer.length > 800
-                ? "…" + streamingBuffer.slice(-800)
-                : streamingBuffer;
+            const displayText = _streamingBuffer.length > 800 
+                ? "…" + _streamingBuffer.slice(-800) 
+                : _streamingBuffer;
             const wrapped = wrapText(displayText, innerWidth - 2);
             for (const line of wrapped) {
                 contentLines.push(line);
@@ -282,19 +181,19 @@ export class PeekComponent implements Component {
         }
 
         // Part 4: Output section (completed/error)
-        if (viewerOutput) {
+        if (_viewerOutput) {
             if (contentLines.length > 0) {
                 contentLines.push(dim("─ output ─"));
             }
-            const prefix = viewerStatus === "error" ? errCol("✗ ") : success("✓ ");
-            contentLines.push(prefix + truncate(viewerOutput, Math.max(innerWidth - 2, 10)));
+            const prefix = _viewerStatus === "error" ? errCol("✗ ") : success("✓ ");
+            contentLines.push(prefix + truncate(_viewerOutput, Math.max(innerWidth - 2, 10)));
         }
 
         // ── Fallback ──
         if (contentLines.length === 0) {
-            if (viewerStatus === "running") {
+            if (_viewerStatus === "running") {
                 contentLines.push(dim("Waiting for subagent output..."));
-            } else if (viewerStatus === "idle") {
+            } else if (_viewerStatus === "idle") {
                 contentLines.push(dim("○ Waiting for subagent..."));
             }
         }
@@ -329,18 +228,16 @@ export class PeekComponent implements Component {
         // Double-press x → abort subagent
         if (data === "x") {
             const now = Date.now();
-            if (this.session && now - this.session.lastXPress < X_PRESS_WINDOW_MS) {
+            if (now - _lastXPress < X_PRESS_WINDOW_MS) {
                 // Double-press detected — abort
-                this.session.lastXPress = 0;
-                if (this.session.abort) {
-                    this.session.abort.abort();
+                _lastXPress = 0;
+                if (_peekAbort) {
+                    _peekAbort.abort();
                 }
                 hidePeek();
                 return;
             }
-            if (this.session) {
-                this.session.lastXPress = now;
-            }
+            _lastXPress = now;
         }
     }
 
@@ -409,19 +306,13 @@ function wrapText(text: string, width: number): string[] {
     return lines;
 }
 
-// ============================================================================
-// Spinner API (module-level — shared infrastructure, reads from _current)
-// ============================================================================
-
-let _spinnerTimer: ReturnType<typeof setInterval> | null = null;
-
 export function startSpinnerTimer(): void {
     stopSpinnerTimer();
     _spinnerTimer = setInterval(() => {
         advanceSpinner();
-        if (_current?.handle && !_current.handle.isHidden()) {
-            _current.component?.invalidate();
-            _current.tui?.requestRender();
+        if (_peekHandle && !_peekHandle.isHidden()) {
+            _peekComponent?.invalidate();
+            _peekTui?.requestRender();
         }
     }, 250);
 }
@@ -433,6 +324,24 @@ export function stopSpinnerTimer(): void {
     }
 }
 
+function clearPeekState(): void {
+    _peekLines = [];
+    _streamingBuffer = "";
+    _peekGoal = "";
+    _peekAbort = null;
+    _peekHandle = null;
+    _peekComponent = null;
+    _peekTui = null;
+    _peekDone = null;
+    _lastXPress = 0;
+    _viewerSession = null;
+    _viewerTask = "";
+    _viewerOutput = "";
+    _viewerStatus = "idle";
+    resetSpinner();
+    stopSpinnerTimer();
+}
+
 // ============================================================================
 // Viewer state API
 // ============================================================================
@@ -441,43 +350,43 @@ export function stopSpinnerTimer(): void {
  * Set the session to display in the viewer.
  */
 export function setViewerSession(session: any, task: string): void {
-    if (!_current) return;
-    _current.viewerSession = session;
-    _current.viewerTask = task;
-    _current.viewerStatus = "running";
-    _current.invalidateRender();
+    _viewerSession = session;
+    _viewerTask = task;
+    _viewerStatus = "running";
+    _peekComponent?.invalidate();
+    _peekTui?.requestRender();
 }
 
 /**
  * Set the viewer output on completion.
  */
 export function setViewerOutput(output: string): void {
-    if (!_current) return;
-    _current.viewerOutput = output;
-    _current.viewerStatus = "completed";
-    _current.invalidateRender();
+    _viewerOutput = output;
+    _viewerStatus = "completed";
+    _peekComponent?.invalidate();
+    _peekTui?.requestRender();
 }
 
 /**
  * Set the viewer error state.
  */
 export function setViewerError(error: string): void {
-    if (!_current) return;
-    _current.viewerOutput = error;
-    _current.viewerStatus = "error";
-    _current.invalidateRender();
+    _viewerOutput = error;
+    _viewerStatus = "error";
+    _peekComponent?.invalidate();
+    _peekTui?.requestRender();
 }
 
 /**
  * Clear the viewer state.
  */
 export function clearViewerState(): void {
-    if (!_current) return;
-    _current.viewerSession = null;
-    _current.viewerTask = "";
-    _current.viewerOutput = "";
-    _current.viewerStatus = "idle";
-    _current.invalidateRender();
+    _viewerSession = null;
+    _viewerTask = "";
+    _viewerOutput = "";
+    _viewerStatus = "idle";
+    _peekComponent?.invalidate();
+    _peekTui?.requestRender();
 }
 
 // ============================================================================
@@ -499,32 +408,29 @@ export function showPeek(
     goal?: string,
 ): void {
     // If already open, just update references and return
-    if (_current?.handle && !_current.handle.isHidden()) {
-        if (goal) _current.goal = goal;
-        if (abortController) _current.abort = abortController;
-        _current.invalidateRender();
+    if (_peekHandle && !_peekHandle.isHidden()) {
+        if (goal) _peekGoal = goal;
+        if (abortController) _peekAbort = abortController;
+        _peekComponent?.invalidate();
+        _peekTui?.requestRender();
         return;
     }
 
-    // Evict if at capacity, then create new session
-    _evictOldest();
-    const session = new PeekSession();
-    const key = `peek-${++_sessionCounter}`;
-    _sessions.set(key, session);
-    _current = session;
+    // Clear any stale state
+    clearPeekState();
 
-    if (goal) session.goal = goal;
-    if (abortController) session.abort = abortController;
+    // Use explicit args
+    if (goal) _peekGoal = goal;
+    if (abortController) _peekAbort = abortController;
 
     const component = new PeekComponent();
-    component.session = session;
-    session.component = component;
+    _peekComponent = component;
 
     ctx.ui.custom(
         (tui: TUI, theme: any, _keybindings: any, done: () => void) => {
-            session.tui = tui;
+            _peekTui = tui;
             component._theme = theme;
-            session.done = done;
+            _peekDone = done;
             startSpinnerTimer();
             return component;
         },
@@ -536,14 +442,12 @@ export function showPeek(
                 maxHeight: "80%",
             },
             onHandle: (handle: OverlayHandle) => {
-                session.handle = handle;
+                _peekHandle = handle;
             },
         },
     ).catch((err: unknown) => {
         console.error('[peek] overlay error:', err);
-        session.clear();
-        _sessions.delete(key);
-        if (_current === session) _current = null;
+        clearPeekState();
     });
 }
 
@@ -555,9 +459,19 @@ export function showPeek(
  * @param text - New content text (may contain newlines)
  */
 export function updatePeek(text: string): void {
-    if (!_current?.handle || _current.handle.isHidden()) return;
-    _current.appendLines(text.split("\n"));
-    _current.invalidateRender();
+    if (!_peekHandle || _peekHandle.isHidden()) return;
+
+    const newLines = text.split("\n");
+    _peekLines.push(...newLines);
+
+    // Cap at MAX_PEEK_LINES — trim oldest
+    while (_peekLines.length > MAX_PEEK_LINES) {
+        _peekLines.shift();
+    }
+
+    // Trigger TUI re-render
+    _peekComponent?.invalidate();
+    _peekTui?.requestRender();
 }
 
 /**
@@ -566,18 +480,19 @@ export function updatePeek(text: string): void {
  * creates individual lines, this prevents one-word-per-line issues.
  */
 export function pushStreamingText(text: string): void {
-    if (!_current?.handle || _current.handle.isHidden()) return;
-    _current.appendStreamingText(text);
-    _current.invalidateRender();
+    if (!_peekHandle || _peekHandle.isHidden()) return;
+    _streamingBuffer += text;
+    _peekComponent?.invalidate();
+    _peekTui?.requestRender();
 }
 
 /**
  * Update the peek goal label.
  */
 export function setPeekGoal(goal: string): void {
-    if (!_current) return;
-    _current.goal = goal;
-    _current.invalidateRender();
+    _peekGoal = goal;
+    _peekComponent?.invalidate();
+    _peekTui?.requestRender();
 }
 
 /**
@@ -585,25 +500,15 @@ export function setPeekGoal(goal: string): void {
  */
 export function hidePeek(): void {
     stopSpinnerTimer();
-    if (_current?.handle) {
-        try { _current.handle.hide(); } catch (err: unknown) { console.error('[peek] hide error:', err); }
+    if (_peekHandle) {
+        try { _peekHandle.hide(); } catch (err: unknown) { console.error('[peek] hide error:', err); }
     }
-    // Remove from registry
-    if (_current) {
-        for (const [key, session] of _sessions) {
-            if (session === _current) {
-                _sessions.delete(key);
-                break;
-            }
-        }
-        _current.clear();
-        _current = null;
-    }
+    clearPeekState();
 }
 
 /**
  * Check if the peek overlay is currently open.
  */
 export function isPeekOpen(): boolean {
-    return _current !== null && _current.handle !== null && !_current.handle.isHidden();
+    return _peekHandle !== null && !_peekHandle.isHidden();
 }

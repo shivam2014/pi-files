@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import type { ActivityFeedState, Step } from "./types.ts";
 import {
 	addSubstep,
+	completeLastSubstep,
 	completeSubstepByToolCallId,
 } from "./activity-feed.ts";
 
@@ -107,5 +108,45 @@ describe("completeSubstepByToolCallId", () => {
 
 		// Original substep should remain untouched
 		assert.equal(result.steps[0].substeps[0].completed, false);
+	});
+
+	it("demonstrates the bug: completeLastSubstep completes WRONG substep in parallel", () => {
+		// This test should PASS with current code but shows the race condition.
+		// With two parallel calls, completeLastSubstep always grabs the first
+		// uncompleted one regardless of which tool actually finished.
+		const state = makeState(
+			["grep pattern", "read file"],
+			["call_1", "call_2"],
+		);
+
+		// Simulate: grep finishes first (call_1), then read finishes (call_2)
+		// This sequential case works fine with completeLastSubstep:
+		const afterFirst = completeLastSubstep(state, "grep output");
+		assert.equal(afterFirst.steps[0].substeps[0].completed, true);
+		assert.equal(afterFirst.steps[0].substeps[0].outputPreview, "grep output");
+
+		const afterSecond = completeLastSubstep(afterFirst, "read output");
+		assert.equal(afterSecond.steps[0].substeps[1].completed, true);
+		assert.equal(afterSecond.steps[0].substeps[1].outputPreview, "read output");
+	});
+
+	it("demonstrates the bug: completeLastSubstep assigns wrong output when order is reversed", () => {
+		// This is the race condition: read finishes first, but completeLastSubstep
+		// gives its output to grep (position 0) instead of read (position 1).
+		const state = makeState(
+			["grep pattern", "read file"],
+			["call_1", "call_2"],
+		);
+
+		// Simulate: read finishes FIRST (out of order), then grep
+		// completeLastSubstep gives read's output to grep!
+		const afterRead = completeLastSubstep(state, "read output");
+		// BUG: "read output" goes to substep[0] (grep), not substep[1] (read)
+		assert.equal(afterRead.steps[0].substeps[0].completed, true);
+		assert.equal(afterRead.steps[0].substeps[0].outputPreview, "read output"); // WRONG — this is grep's slot
+
+		const afterGrep = completeLastSubstep(afterRead, "grep output");
+		assert.equal(afterGrep.steps[0].substeps[1].completed, true);
+		assert.equal(afterGrep.steps[0].substeps[1].outputPreview, "grep output"); // WRONG — this is read's slot
 	});
 });

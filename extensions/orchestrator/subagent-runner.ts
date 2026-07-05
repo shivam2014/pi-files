@@ -29,6 +29,7 @@ import {
 	createActivityFeed,
 	setToolDetail,
 	clearToolDetail,
+	completeLastSubstep,
 	completeSubstepByToolCallId,
 	completeActiveSubstepWithLabel,
 	completeCurrentStep,
@@ -290,6 +291,7 @@ export async function runSubagent(
 
 		// Load extensions for subagent, flag context so orchestrator skips re-registration
 		_batchLoadSubagent++;
+		process.env[SUBAGENT_ENV_KEY] = "1";
 		let loader: DefaultResourceLoader | undefined;
 		try {
 			loader = new DefaultResourceLoader({
@@ -323,14 +325,11 @@ export async function runSubagent(
 			},
 				noContextFiles: true, // Don't load parent's AGENTS.md/context into subagent
 			});
-			// Set env flag only during reload so orchestrator extension detects
-			// subagent context; deleted in finally before any child processes spawn.
-			process.env[SUBAGENT_ENV_KEY] = "1";
 			await loader.reload();
-			delete process.env[SUBAGENT_ENV_KEY];
 		} finally {
-			delete process.env[SUBAGENT_ENV_KEY];
 			_batchLoadSubagent--;
+			_planParsed = false;  // Reset for next subagent session
+			delete process.env[SUBAGENT_ENV_KEY];
 		}
 
 		const excludeTools = (specialist.name === "writer" || specialist.name === "researcher" || specialist.name === "scout")
@@ -384,7 +383,7 @@ export async function runSubagent(
 			parameters: Type.Object({}),
 			execute: async (_toolCallId: string, _params: Record<string, never>) => {
 				if (!feed.planParsed) {
-					return { content: [{ type: "text" as const, text: `Call planSteps({ goal, steps }) before this tool. Example: planSteps({ goal: 'Fix bug', steps: ['Find bug', 'Fix it'] })` }], details: {} };
+					return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
 				}
 				if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
 					feed = completeCurrentStep(feed);
@@ -409,7 +408,7 @@ export async function runSubagent(
 			}),
 			execute: async (_toolCallId: string, params: { finding: string }) => {
 				if (!feed.planParsed) {
-					return { content: [{ type: "text" as const, text: `Call planSteps({ goal, steps }) before this tool. Example: planSteps({ goal: 'Fix bug', steps: ['Find bug', 'Fix it'] })` }], details: {} };
+					return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
 				}
 				if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
 					const step = feed.steps[feed.currentStep];
@@ -479,12 +478,7 @@ export async function runSubagent(
 				if (snapshot !== _lastFeedSnapshot) {
 					_lastFeedSnapshot = snapshot;
 					resetSpinner();
-					const activeStep = feed.steps[feed.currentStep];
-					if (activeStep) {
-						updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
-					} else {
-						updatePlanStepDetail(feed.goal || "", orchestratorCtx);
-					}
+					updatePlanStepDetail(feed.goal || "", orchestratorCtx);
 					recordTimelineFrame("step_started", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
 				}
 				pushStreamingText(event.assistantMessageEvent.delta);
@@ -518,9 +512,8 @@ export async function runSubagent(
 						: JSON.stringify(lintMsg.content ?? "");
 
 					// Add lint result as a substep in the feed (visible in delegation step/substep view)
-					const lintCallId = `lint-${Date.now()}`;
-					feed = addSubstep(feed, lintContent.slice(0, 80), lintCallId);
-					feed = completeSubstepByToolCallId(feed, lintCallId);
+					feed = addSubstep(feed, lintContent.slice(0, 80));
+					feed = completeLastSubstep(feed);
 
 					// Forward lint content to the delegation output blob
 					output += "\n" + lintContent + "\n";
@@ -606,7 +599,7 @@ export async function runSubagent(
 						outputPreview = stripped.length > 80 ? stripped.slice(0, 77) + "..." : stripped || undefined;
 					}
 				} catch {}
-				const isError = event.isError === true;
+				const isError = (event as any).isError === true;
 				// For errors, extract actual error message from result structure
 				if (isError && rawResult != null) {
 					if (typeof rawResult === "string") {
@@ -632,7 +625,7 @@ export async function runSubagent(
 					}
 				}
 				if (!completedWithLabel) {
-					feed = completeSubstepByToolCallId(feed, event.toolCallId, outputPreview, isError);
+					feed = completeSubstepByToolCallId(feed, (event as any).toolCallId, outputPreview, isError);
 				}
 				// After edit/write tool completion, add lint indicator substep
 				if (!isError && (event.toolName === "edit" || event.toolName === "write")) {
@@ -727,7 +720,6 @@ export async function runSubagent(
 				? `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`
 				: `[error] ${errorMsg}`;
 		} finally {
-			_planParsed = false;  // Reset plan state only after session ends (RUN-001)
 			unsubscribe();
 			if (renderTimer) {
 				clearInterval(renderTimer);

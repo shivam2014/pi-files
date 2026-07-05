@@ -26,7 +26,7 @@ export function registerListSkillsTool(pi: ExtensionAPI): void {
 			"Useful for discovering what skills are available.",
 		parameters: Type.Object({}),
 		promptGuidelines: [
-			"List skills: list_skills() — returns all installed skills with descriptions",
+			"List skills: list_skills() — returns all installed skills with their names and descriptions",
 			"Use to discover available skills before delegating",
 		],
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
@@ -91,7 +91,7 @@ export function registerListToolsTool(pi: ExtensionAPI, cwd: string): void {
 			"Returns the actively registered tool set.",
 		parameters: Type.Object({}),
 		promptGuidelines: [
-			"List tools: list_tools() — returns all available orchestration tools",
+			"List tools: list_tools() — returns all available orchestration tools with their parameters and descriptions",
 			"Use to discover what tools are available",
 		],
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {

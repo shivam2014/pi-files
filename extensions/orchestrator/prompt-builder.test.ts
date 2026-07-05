@@ -15,6 +15,7 @@ vi.mock('./specialists', () => ({
 			tools: ['read', 'edit', 'write'],
 		},
 	},
+	TERSE_INSTRUCTION: '\n\nRespond with completeness but without verbosity (caveman). All technical substance stay. Only fluff die.\n\n## Auto-Clarity\nDrop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.\n',
 }));
 
 import { buildOrchestratorPrompt } from './prompt-builder';
@@ -111,12 +112,12 @@ describe("appendix slimming (#39)", () => {
 		vi.resetAllMocks();
 	});
 
-	it("does not duplicate caveman mode from base prompt", () => {
+	it("includes caveman mode in orchestrator prompt", () => {
 		const basePrompt = "Some base instructions without Orchestrator header";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
-		// The appendix should not include full caveman mode text
-		expect(systemPrompt).not.toContain("Respond terse like smart caveman");
-		expect(systemPrompt).not.toContain("Drop: articles");
+		// The appendix now includes the new caveman mode text
+		expect(systemPrompt).toContain("Respond with completeness but without verbosity (caveman)");
+		expect(systemPrompt).toContain("Drop caveman for: security warnings");
 	});
 
 	it("keeps orchestrator-specific sections", () => {
@@ -127,15 +128,15 @@ describe("appendix slimming (#39)", () => {
 		expect(systemPrompt).toContain("Specialist roster");
 		expect(systemPrompt).toContain("Scope requirement");
 		expect(systemPrompt).toContain("Execution Monitoring");
-		expect(systemPrompt).toContain("Audit Review");
+		expect(systemPrompt).toContain("Audit & Issues Review");
 	});
 
 	it("reduces appendix character count compared to before", () => {
 		const basePrompt = "Some base instructions";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
-		// The appended part should be reasonable (< 4500 chars — includes routing table)
+		// The appended part should be reasonable (< 6000 chars — includes routing table + caveman instruction + orchestrator intro)
 		const appendix = systemPrompt.replace(basePrompt, "").trim();
-		expect(appendix.length).toBeLessThan(4500);
+		expect(appendix.length).toBeLessThan(6000);
 	});
 });
 describe("clarification deduplication (#40)", () => {
@@ -186,5 +187,52 @@ describe("goal-achieved early stop (#45)", () => {
 		expect(STEPS_MANDATE).toContain("Goal-achieved early stop");
 		expect(STEPS_MANDATE).toContain("STOP and report back");
 		expect(STEPS_MANDATE).toContain("Do NOT execute remaining planned steps");
+	});
+});
+
+describe("intro replacement (#issue-1-3)", () => {
+	const OLD_PI_INTRO = `You are an expert coding assistant operating inside pi. You have access to read, bash, grep, find, edit, and write tools.
+
+Pi coding agent documentation (available on request):
+- Main: /path/to/readme.md
+- Additional docs: /path/to/docs
+- Examples: /path/to/examples
+`;
+
+	it("replaces old pi intro with orchestrator intro", () => {
+		const basePrompt = OLD_PI_INTRO + "\nSome additional instructions\n";
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
+		expect(systemPrompt).toContain("orchestrator mode");
+		expect(systemPrompt).not.toContain("You are an expert coding assistant operating inside pi");
+		expect(systemPrompt).toContain("Some additional instructions");
+	});
+
+	it("handles leading content before old pi intro (no ^ anchor)", () => {
+		const basePrompt = "\n  \n" + OLD_PI_INTRO + "\nRemaining content\n";
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
+		expect(systemPrompt).toContain("orchestrator mode");
+		expect(systemPrompt).not.toContain("You are an expert coding assistant operating inside pi");
+		expect(systemPrompt).toContain("Remaining content");
+	});
+
+	it("dedup returns early without calling getReadmePath/getDocsPath/getExamplesPath", () => {
+		const existingPrompt = "Some text\n## Orchestrator Mode\nmore text";
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt: existingPrompt });
+		expect(systemPrompt).toBe(existingPrompt);
+		expect(systemPrompt).not.toContain("DELEGATE ONLY");
+	});
+
+	it("returns basePrompt as-is when no old intro exists", () => {
+		const basePrompt = "Custom prompt without any pi intro";
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
+		expect(systemPrompt).toContain(basePrompt);
+		expect(systemPrompt).toContain("## Orchestrator Mode");
+		expect(systemPrompt).not.toContain("You are an expert coding assistant operating inside pi");
+	});
+
+	it("handles empty basePrompt", () => {
+		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt: "", fusionEnabled: false });
+		expect(systemPrompt).not.toContain("You are an expert coding assistant operating inside pi");
+		expect(systemPrompt).toContain("## Orchestrator Mode");
 	});
 });

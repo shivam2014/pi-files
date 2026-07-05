@@ -9,9 +9,28 @@ import { _batchLoadSubagent, isPlanParsed } from "./subagent-runner.ts";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { debugLog } from "./debug.ts";
+import { traceToolCallEntry, tracePathsExtracted, tracePathResolved, traceScopeCheck, traceDecision } from "./debug-path-trace.ts";
 import { resolve } from "node:path";
 
+/** Check if a bash call should be intercepted and replaced with a native tool. */
+function checkBashInterception(
+	event: any,
+	override: boolean,
+): { block: true; reason: string } | undefined {
+	if (event.toolName !== 'bash') return undefined;
+	const command = isToolCallEventType('bash', event) ? event.input.command : event.input?.command;
+	const replacement = getBashToolReplacement(command, override);
+	if (replacement) {
+		return {
+			block: true,
+			reason: `Use ${replacement} instead of bash (${command?.trim().split(/\s+/)[0]}). Set override:true to force bash.`,
+		};
+	}
+	return undefined;
+}
+
 export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true, ctx?: { cwd?: string }) {
+	traceToolCallEntry('handleSubagentToolCall', event, ctx);
 	if (!fusionEnabled && event.toolName === 'fusion') {
 		return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 	}
@@ -30,6 +49,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 			if (input.filePath) filePaths.push(input.filePath);
 			if (input.path) filePaths.push(input.path);
 			if (input.file) filePaths.push(input.file);
+			tracePathsExtracted('scope-guard', input, filePaths);
 
 			if (event.toolName === 'bash' && input.command) {
 				const cmd = input.command.trim();
@@ -93,7 +113,9 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 
 			for (const rawPath of filePaths) {
 				const absolutePath = resolve(cwd, rawPath);
+				tracePathResolved('scope-guard', rawPath, absolutePath, operation);
 				const pathAllowed = guard.isPathAllowed(absolutePath, operation);
+				traceScopeCheck('scope-guard', absolutePath, pathAllowed.allowed, pathAllowed.reason);
 				if (!pathAllowed.allowed) {
 					const expansion = guard.requestExpansion(rawPath);
 					debugLog("scope-guard: expansion request", expansion);
@@ -107,13 +129,13 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				}
 			}
 		}
+		// Bash-to-read enforcement for subagents
+		const interception = checkBashInterception(event, event.input?.override === true);
+		if (interception) { traceDecision('handleSubagentToolCall/subagent', event, interception); return interception; }
+		traceDecision('handleSubagentToolCall/subagent', event, { block: false });
 		return;
 	}
-	if (event.toolName !== "bash") return;
-	const command = isToolCallEventType("bash", event) ? event.input.command : event.input?.command;
-	const override = event.input?.override === true;
-	const replacement = getBashToolReplacement(command, override);
-	if (replacement) {
-		return { block: true, reason: `Use ${replacement} instead of bash (${command?.trim().split(/\s+/)[0]}). Set override:true to force bash.` };
-	}
+	const interception = checkBashInterception(event, event.input?.override === true);
+	if (interception) { traceDecision('handleSubagentToolCall', event, interception); return interception; }
+	traceDecision('handleSubagentToolCall', event, { block: false });
 }

@@ -3,7 +3,7 @@
  * Run: npx vitest run test-unit.test.ts
  */
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
-import { createActivityFeed, addStep, addSubstep, completeCurrentStep, completeActiveSubstepWithLabel, renderActivityFeed, renderProgress } from "./activity-feed";
+import { createActivityFeed, addStep, addSubstep, completeCurrentStep, completeLastSubstep, renderActivityFeed, renderProgress } from "./activity-feed";
 import { formatDuration } from "./ui-utils";
 
 // ============================================================================
@@ -92,6 +92,23 @@ describe("addStep — immutable", () => {
 	});
 });
 
+describe("completeLastSubstep — immutability", () => {
+	it("marks active substep complete without mutating prior state", () => {
+		let state = createActivityFeed();
+		state = addStep(state, "Step 1");
+		state = addSubstep(state, "Read file");
+		const updated = completeLastSubstep(state, "file content");
+
+		expect(updated.steps[0].substeps[0].completed).toBe(true);
+		expect(updated.steps[0].substeps[0].outputPreview).toBe("file content");
+		// original remains unchanged
+		expect(state.steps[0].substeps[0].completed).toBe(false);
+		expect(state.steps[0].substeps[0].outputPreview).toBeUndefined();
+		expect(updated).not.toBe(state);
+		expect(updated.steps).not.toBe(state.steps);
+		expect(updated.steps[0]).not.toBe(state.steps[0]);
+	});
+});
 
 // ============================================================================
 // Snapshot tests (render output)
@@ -125,9 +142,9 @@ describe("renderActivityFeed — snapshots", () => {
 		let state = createActivityFeed();
 		state = addStep(state, "Step 1");
 		state = addSubstep(state, "Read file");
-		state = completeActiveSubstepWithLabel(state, "Read file", "file content");
+		state = completeLastSubstep(state, "file content");
 		state = addSubstep(state, "Parse config");
-		state = completeActiveSubstepWithLabel(state, "Parse config", "config parsed");
+		state = completeLastSubstep(state, "config parsed");
 		state = completeCurrentStep(state);
 		const output = renderActivityFeed("scout", state);
 		expect(output).toMatchSnapshot();
@@ -205,9 +222,9 @@ describe("F1 regression — active substep renders", () => {
 		let feed = createActivityFeed();
 		feed = addStep(feed, "Step 1");
 		feed = addSubstep(feed, "Read file");
-		feed = completeActiveSubstepWithLabel(feed, "Read file", "file content");
+		feed = completeLastSubstep(feed, "file content");
 		feed = addSubstep(feed, "Parse config");
-		feed = completeActiveSubstepWithLabel(feed, "Parse config", "config parsed");
+		feed = completeLastSubstep(feed, "config parsed");
 		const output = renderActivityFeed("scout", feed);
 		expect(output).toContain("✓");
 		expect(output).toContain("Read file");

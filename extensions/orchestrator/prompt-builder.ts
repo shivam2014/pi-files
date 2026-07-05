@@ -6,9 +6,10 @@
  * fusion section, and delegation-specific instructions for orchestrator mode.
  */
 
-import { listSpecialists, SPECIALISTS } from "./specialists.ts";
+import { listSpecialists, SPECIALISTS, TERSE_INSTRUCTION } from "./specialists.ts";
 import { generateScopeDocumentation } from "./scope-manager.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getReadmePath, getDocsPath, getExamplesPath } from "@earendil-works/pi-coding-agent";
 
 const ROUTING_TABLE = `
 ### Task Routing
@@ -19,8 +20,6 @@ const ROUTING_TABLE = `
 | Review code / diff | reviewer | review |
 | Research docs / web | researcher | domain-modeling |
 | Create/edit docs | writer | agents-md-writer |
-| Triage issues | — (inline) | triage |
-| Plan refactor / design | — (inline) | grill-with-docs |
 `;
 
 /**
@@ -81,7 +80,7 @@ You are an expert coding assistant operating in **orchestrator mode**. In this m
 
 ### Your tool: delegate(specialist, task)
 
-You have ONE tool: \`delegate(specialist, task)\`.
+Your main tool: \`delegate(specialist, task)\`.
 Call it once per step. Review the output. Then call it again for the next step.
 
 You do NOT have read, bash, grep, find, edit, or write tools in this mode.
@@ -101,7 +100,9 @@ You CANNOT access files or run commands directly.
 
 NOTE: You MUST call plan() before delegate(). delegate() will reject if no active plan exists.
 
-{{FUSION}}### Scope requirement:
+{{FUSION}}
+
+### Scope requirement:
 When calling delegate(coder|writer|reviewer, ...), you MUST include a \`scope\` parameter with the files the specialist is allowed to modify/create and any boundaries.
 // Scout and researcher are read-only — scope optional
 
@@ -129,7 +130,9 @@ You decide next step AFTER seeing previous result. NOT before.
 
 ## Skill Routing
 
-At session start, call read_skill("ask-matt") to determine the workflow for this request. When you encounter /skill-name references in instructions or results, call read_skill("skill-name") to load and follow that skill's methodology.
+Load workflow: \`read_skill("ask-matt")\` at session start.
+When you see /skill-name references, call \`read_skill("skill-name")\` to load and follow that skill's methodology.
+If a skill references another skill internally, load that too via \`read_skill()\`. Skills form a graph, not a list.
 
 # Recalibration
 
@@ -159,14 +162,25 @@ When you see a message with customType 'lint', treat it as blocking feedback.
 If the lint failed, stop and fix the reported issues before calling any further tools.
 Do not proceed with edits or delegation until lint passes.
 
-# Audit Review
+# Audit & Issues Review
 
-After each delegation returns, check for [Audit: ...] prefix:
-- If problems reported: assess if they affect the plan. Adjust if needed.
-- If scope_deviation reported: this is critical. Review what the subagent did outside its scope. Decide if the deviation was acceptable or if you need to correct it.
-- If no audit issues: proceed normally.
+After each delegation returns, check for **\`\`## Issues\`\`** (under \`\`## Findings\`\`) and **\`\`## Audit\`\`** in its output.
 
-Scope deviations are serious. If a subagent wrote files it wasn't supposed to, or ran commands outside its task, you MUST flag this to the user.
+Every problem must be surfaced to the user — even if the subagent found a workaround:
+
+- **problems found in Issues or Audit?** Report as a dedicated message:
+  \`\`\`
+  ⚠️ Friction encountered:
+  - Problem: <what went wrong>
+  - Resolution: <how the subagent overcame it>
+  - Impact: <delays, scope changes, quality effects>
+  \`\`\`
+
+- **scope_stayed = no?** Critical. Show exactly what the subagent did outside scope. User must decide if it's acceptable.
+
+- **no problems + scope_stayed = yes?** No action needed.
+
+Never silently discard problems. Every tool error, permission issue, file-not-found, or workaround is data for improving the system.
 `;
 
 /**
@@ -182,9 +196,35 @@ export function buildOrchestratorPrompt(options: {
 }): { systemPrompt: string } {
 	const { basePrompt, skills, fusionEnabled, pi } = options;
 
-	// Dedup check
+	// Dedup guard: if already has orchestrator mode, return unchanged immediately
 	if (basePrompt.includes("## Orchestrator Mode")) {
 		return { systemPrompt: basePrompt };
+	}
+
+	// Build new intro replacing pi's hardcoded "You are an expert coding assistant..."
+	const ORCHESTRATOR_INTRO = `You are an expert AI assistant operating in **orchestrator mode** inside pi coding agent. In this mode, your role shifts from direct execution to delegation management — you direct specialist agents who do the hands-on work for you. You do not read files, edit code, or run commands yourself.
+
+Pi coding agent documentation (available on request):
+- Main: ${getReadmePath()}
+- Additional docs: ${getDocsPath()}
+- Examples: ${getExamplesPath()}`;
+
+	// Replace old pi intro with orchestrator intro using robust pattern with fallback
+	const OLD_INTRO_MARKER = "You are an expert coding assistant operating inside pi";
+	const oldIntroPattern = new RegExp(`[\\s\\S]*?${OLD_INTRO_MARKER}[\\s\\S]*?\\n- [A-Z]\\w+ [a-z]+: [^\\n]+\\n`, "m");
+
+	let baseWithNewIntro: string;
+	if (oldIntroPattern.test(basePrompt)) {
+		baseWithNewIntro = basePrompt.replace(oldIntroPattern, ORCHESTRATOR_INTRO + "\n\n");
+	} else if (basePrompt.includes(OLD_INTRO_MARKER)) {
+		// Pattern failed but marker exists — try simpler replacement (start to first blank line after docs)
+		const simplePattern = new RegExp(`[\\s\\S]*?${OLD_INTRO_MARKER}[\\s\\S]*?\\n\\n`, "m");
+		baseWithNewIntro = simplePattern.test(basePrompt)
+			? basePrompt.replace(simplePattern, ORCHESTRATOR_INTRO + "\n\n")
+			: basePrompt; // fallback: don't double-intro
+	} else {
+		// No old intro at all — use basePrompt as-is
+		baseWithNewIntro = basePrompt;
 	}
 
 	// Build dynamic specialist roster
@@ -219,7 +259,10 @@ export function buildOrchestratorPrompt(options: {
 		.replace("{{SKILLS}}", skillsSection)
 		.replace("{{FUSION}}", fusionSection);
 
+	// Token measurement: added ~500 chars (tool docs, scope shape), removed ~2300 chars
+	// (TERSE_INSTRUCTION trimmed from ~700 to ~280 × 5 specialists, bash sections removed).
+	// Net: approximately -1800 chars (token-negative).
 	return {
-		systemPrompt: basePrompt + "\n\n" + instructions + toolsSection,
+		systemPrompt: baseWithNewIntro + "\n\n" + instructions + toolsSection + TERSE_INSTRUCTION,
 	};
 }

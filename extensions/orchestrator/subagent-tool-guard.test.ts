@@ -328,6 +328,49 @@ describe("handleSubagentToolCall", () => {
 		});
 	});
 
+	describe("bash command interception (subagent context)", () => {
+		beforeEach(() => {
+			mockState.batchLoad = 1;
+			mockState.planParsed = true;
+		});
+
+		it("intercepts bash cat command and redirects to read when batchLoad > 0", () => {
+			vi.mocked(getBashToolReplacement).mockReturnValue("read");
+			vi.mocked(isToolCallEventType).mockReturnValue(true);
+
+			const result = handleSubagentToolCall({
+				toolName: "bash",
+				input: { command: "cat src/auth.ts" },
+			});
+			expect(result).toEqual({
+				block: true,
+				reason: "Use read instead of bash (cat). Set override:true to force bash.",
+			});
+		});
+
+		it("allows bash with no replacement when batchLoad > 0", () => {
+			vi.mocked(getBashToolReplacement).mockReturnValue(null);
+			vi.mocked(isToolCallEventType).mockReturnValue(true);
+
+			const result = handleSubagentToolCall({
+				toolName: "bash",
+				input: { command: "docker build ." },
+			});
+			expect(result).toBeUndefined();
+		});
+
+		it("respects override:true in subagent context", () => {
+			vi.mocked(getBashToolReplacement).mockReturnValue(null);
+			vi.mocked(isToolCallEventType).mockReturnValue(true);
+
+			const result = handleSubagentToolCall({
+				toolName: "bash",
+				input: { command: "cat file.txt", override: true },
+			});
+			expect(getBashToolReplacement).toHaveBeenCalledWith("cat file.txt", true);
+		});
+	});
+
 	describe("fusion allow-list enforcement", () => {
 		beforeEach(() => {
 			mockState.batchLoad = 0;

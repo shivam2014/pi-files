@@ -311,9 +311,19 @@ export function resolve(request: string, scope: ScopeForResolve | null): Resolve
 	// No scope defined → ask
 	if (s === null || s === undefined) return "ask";
 
-	// Concrete file specs → proceed (non-wildcard paths in filesToModify, or any filesToCreate)
+	// Explicit scope with all empty arrays → deliberate read-only choice, not vague
 	const fMod = s.filesToModify;
 	const fCre = s.filesToCreate;
+	const dirs = s.directories ?? [];
+	if (
+		Array.isArray(fMod) && fMod.length === 0 &&
+		Array.isArray(fCre) && fCre.length === 0 &&
+		(!dirs || dirs.length === 0)
+	) {
+		return "proceed";
+	}
+
+	// Concrete file specs → proceed (non-wildcard paths in filesToModify, or any filesToCreate)
 	const hasConcreteModify = Array.isArray(fMod) && fMod.length > 0 &&
 		fMod.some((f) => hasLiteralSegment(f) && f.toUpperCase() !== "ALL");
 	const hasConcreteCreate = Array.isArray(fCre) && fCre.length > 0 &&
@@ -325,7 +335,6 @@ export function resolve(request: string, scope: ScopeForResolve | null): Resolve
 	if (Array.isArray(fMod) && fMod.length > 0) return "ask";
 
 	// No file specs — check directories as fallback
-	const dirs = s.directories ?? [];
 	if (Array.isArray(dirs) && dirs.length > 0) {
 		const hasConcreteDirs = dirs.some((d) => hasLiteralSegment(d) && d.toUpperCase() !== "ALL");
 		if (hasConcreteDirs) return "proceed";

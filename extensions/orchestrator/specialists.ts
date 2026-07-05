@@ -1,6 +1,6 @@
 /**
  * Specialist roster for the orchestrator extension.
- * Extracted from orchestrator.ts during refugging.
+ * Extracted from orchestrator.ts during refactoring.
  * Design spec: ORCHESTRATION-UI-DESIGN.md
  */
 
@@ -9,10 +9,93 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-export function generateToolPrompt(tools: string[]): string {
-	const toolList = tools.join(", ");
-	return `\n\nYour available tools: ${toolList}.\nYou do NOT have bash. You do NOT have edit or write.`;
+export function generateToolDoc(tools: string[], constraints?: string): string {
+	const toolSyntax: Record<string, string> = {
+		read: "read({ path, offset?, limit? })",
+		grep: "grep({ pattern, path?, glob?, ignoreCase? })",
+		find: "find({ pattern, path? })",
+		ls: "ls({ path? })",
+		edit: "edit({ path, edits: [{ oldText, newText }] })",
+		write: "write({ path, content })",
+		bash: "bash({ command, timeout? })",
+		lint: "lint({ files? })",
+		"git-read": "git-read({ args })",
+		gh: "gh({ args })",
+		"web_search": "web_search({ query, numResults? })",
+		fetch_content: "fetch_content({ url })",
+	};
+
+	const toolOutputFormat: Record<string, string> = {
+		read: "Returns file content. Text files: content with line numbers. Images: sent as attachment. Truncated to 2000 lines or 50KB. If truncated, output shows '[...N lines truncated. Use offset=N to continue.]' — use offset to read more.",
+		grep: "Returns matching lines as 'path:lineNum: matched text'. Truncated to 100 matches or 50KB. Long lines truncated to 500 chars. When context param used, context lines prefixed with ':' or '-'.",
+		find: "Returns list of matching file paths, one per line. Truncated to 1000 results (or limit param). Respects .gitignore.",
+		ls: "Returns directory listing with file/directory names, sizes, and permissions.",
+		edit: "Returns success with unified diff showing changes applied, or error if oldText not found or not unique in file.",
+		write: "Returns success or error. Creates file and parent directories automatically.",
+		bash: "Returns { output, exitCode, cancelled, truncated, fullOutputPath? }. output = combined stdout+stderr. Truncated to 2000 lines or 50KB. If truncated, full output saved to temp file referenced by fullOutputPath.",
+		lint: "Returns per-file lint results: 'file:line:col severity ruleId message'. Severity: error | warning | info. Empty output = no issues.",
+		"git-read": "Returns file content at a specific git ref/commit. Use args like 'show HEAD:src/index.ts' or 'show main:README.md'.",
+		gh: "Returns raw GitHub CLI output. Use args like 'issue view 3' or 'pr list --state open'.",
+		"web_search": "Returns numbered search results: '1. Title\n   https://url\n   snippet text...'. Typically 10 results. May include AI-generated answer summary before results.",
+		fetch_content: "Returns full webpage content as extracted text/markdown. Output size varies by page. Truncated if very large.",
+	};
+
+	const lines = ["\n\nYour available tools:"];
+	for (const tool of tools) {
+		const syntax = toolSyntax[tool] || tool;
+		const outputFmt = toolOutputFormat[tool];
+		if (outputFmt) {
+			lines.push(`- \`${syntax}\`\n  Output: ${outputFmt}`);
+		} else {
+			lines.push(`- \`${syntax}\``);
+		}
+	}
+	if (constraints) {
+		lines.push(constraints);
+	}
+	return lines.join("\n");
 }
+
+/**
+ * Shared ## Findings + ## Audit template — used by ALL specialist output formats.
+ * Single source of truth for the post-work structured reporting sections.
+ */
+export const FINDINGS_AUDIT_TEMPLATE = `## Findings
+After completing work, output:
+
+## Findings
+- summary: one-line what you found/did
+- key_files: [important paths]
+- issues: [blocking problems or none]
+- recommendation: next step for orchestrator
+
+## Audit
+Before finishing, note any problems encountered and how you handled them:
+
+## Audit
+- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
+- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
+- scope_stayed: [yes/no — did you stay within the assigned task?]
+- scope_notes: [if no, what you deviated from and why]`;
+
+/** Scope violation guidance — injected into specialists with write/edit access. */
+export const SCOPE_VIOLATION_GUIDANCE = `
+
+## ══ Scope Guard ══
+
+Your writes/edits are enforced by a scope guard. If you attempt to modify a file outside the allowed scope:
+- The tool call is **blocked** (returns an error, does not execute)
+- You continue running — the subagent does **not** terminate
+- Error message: \`Scope violation: <path> is outside the allowed scope\`
+
+How to handle:
+1. Check your scope in the ## Scope section assigned to you
+2. If the file is genuinely needed, call \`ask_orchestrator\` to request scope expansion
+3. Do NOT retry the same blocked path — it will fail again
+4. If scope expansion is denied, complete your task within the allowed scope
+
+Metrics: each blocked call increments the \`scopeViolations\` counter in your delegation metrics.
+`;
 
 // Inlined minimal-action discipline (formerly in skill-packs.ts, now removed per issue #41)
 const MINIMAL_ACTION = `## Minimal action
@@ -55,19 +138,32 @@ export const STEPS_MANDATE = `
 
 CRITICAL: You MUST call planSteps() before doing any work. This is REQUIRED for the orchestrator to track your progress. You have access to four special tools:
 
-- \`planSteps(goal, steps)\`: Call ONCE at the start to register your plan. steps is an array of strings.
-- \`advanceStep()\`: Call after EACH step finishes to mark it complete and advance to the next step.
-- \`reportFinding(finding)\`: Call when you discover something noteworthy during execution. It appears as "✓ Report: <finding>" in the progress view.
-- \`ask_orchestrator({ question, context? })\`: Call when you need input from the orchestrator to continue. Use for clarification, scope ambiguity, or missing requirements.
+- \`planSteps(goal, steps)\` — Register your plan. Call ONCE before any other tool.
+  - args: goal (string, one-line description), steps (string[], ordered step descriptions)
+  - returns: "Plan registered with N steps"
+  - error: "Error: goal and steps are required"
+
+- \`advanceStep()\` — Mark current step complete, advance to next.
+  - args: none
+  - returns: "Step complete. Next: <label>" | "No active step to complete" | "Error: planSteps() must be called first"
+
+- \`reportFinding(finding)\` — Report a noteworthy discovery during execution.
+  - args: finding (string, concise description)
+  - returns: "✓ Reported: <finding>"
+  - error: "Error: planSteps() must be called first" | "No active step"
+
+- \`ask_orchestrator({ question, context? })\` — Request input from the orchestrator.
+  - args: question (string, specific answerable question), context? (string, extra context to help answer)
+  - returns: orchestrator's response (string) — answer, guidance, or escalation if it cannot answer directly
 
 Example workflow:
 1. planSteps("Investigate middleware", ["Find auth files", "Read and analyze", "Report back"])
 2. [use read/grep etc. to execute step 1]
 3. reportFinding("Found hardcoded JWT secret in config")
-4. advanceStep()
+4. advanceStep()  →  "Step complete. Next: Read and analyze"
 5. [use read/grep etc. to execute step 2]
 6. reportFinding("Token expiry check uses '<' not '<='")
-7. advanceStep()
+7. advanceStep()  →  "Step complete. Next: Report back"
 8. [output your findings]
 
 DO NOT output ## Goal / ## Steps sections. The planSteps() tool replaces them.
@@ -76,34 +172,33 @@ DO NOT output ## Goal / ## Steps sections. The planSteps() tool replaces them.
 Once you have achieved the task goal, STOP and report back to the orchestrator. Do NOT execute remaining planned steps just because they were listed. Example: if step 3 found the bug, report the finding — do not proceed to step 4 (fix) or step 5 (test) unless explicitly instructed.`;
 
 /**
- * Full caveman instruction — matches JuliusBrussee/caveman SKILL.md "full" intensity.
- * Injected into every specialist's system prompt for token-efficient replies.
+ * Subagent caveman instruction — completeness without verbosity. Injected into every specialist's system prompt for token-efficient replies.
  */
 export const TERSE_INSTRUCTION = `
 
-Respond terse like smart caveman. All technical substance stay. Only fluff die.
+Respond with completeness but without verbosity (caveman). All technical substance stay. Only fluff die.
 
 ## Persistence
-ACTIVE EVERY RESPONSE. No revert after many turns. No filler drift. Still active if unsure.
+ACTIVE EVERY RESPONSE.
 
-## Rules
-Drop: articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/of course/happy to), hedging. Fragments OK. Short synonyms (big not extensive, fix not "implement a solution for"). Technical terms exact. Code blocks unchanged. Errors quoted exact.
-Pattern: [thing] [action] [reason]. [next step].
+## Completeness Without Verbosity
+Include all technical details: code, paths, errors, metrics, decisions. Skip obvious explanations and filler.
 
-Bad: "Sure! I'd be happy to help you with that..."
+Bad: "Sure! I'd be happy to help..."
 Good: "Bug in auth middleware. Token expiry check use '<' not '<='. Fix:"
 
 ## Auto-Clarity
-Drop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after clear part done.
+Drop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.
 
 ## Boundaries
-Code/commits/PRs: write normal. "stop caveman" or "normal mode": revert. Think short too. No verbose CoT.`;
+Code/commits/PRs: write normal. "stop caveman" / "normal mode": revert.
+`;
 
 const SCOUT_TOOLS = ["read", "grep", "find", "ls", "git-read", "gh"] as const;
 const RESEARCHER_TOOLS = ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "find"] as const;
 
-const _scoutToolPrompt = generateToolPrompt([...SCOUT_TOOLS]);
-const _researcherToolPrompt = generateToolPrompt([...RESEARCHER_TOOLS]);
+const _scoutToolDoc = generateToolDoc([...SCOUT_TOOLS], "You do NOT have bash, edit, or write.");
+const _researcherToolDoc = generateToolDoc([...RESEARCHER_TOOLS], "You do NOT have bash, edit, or write.");
 
 /**
  * Specialist roster: 5 built-in specialists.
@@ -161,31 +256,7 @@ Be realistic about changeType:
 ## Recommendation
 <suggest next steps>
 
-## Findings
-After completing work, output:
-
-## Findings
-- summary: one-line what you found/did
-- key_files: [important paths]
-- issues: [blocking problems or none]
-- recommendation: next step for orchestrator
-
-## Audit
-Before finishing, note any problems encountered and how you handled them:
-
-## Audit
-- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
-- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
-- scope_stayed: [yes/no — did you stay within the assigned task?]
-- scope_notes: [if no, what you deviated from and why]
-${_scoutToolPrompt}
-
-Common read-only operations:
-- Count lines in a file → use \`read\` and count in your reasoning
-- Check if a file exists → use \`ls\` or \`find\`
-- List files in a directory → use \`ls\`
-- Search for a pattern → use \`grep\`
-- Read a git commit → use \`git-read\`
+${FINDINGS_AUDIT_TEMPLATE}
 
 ${TERSE_INSTRUCTION}`,
 	},
@@ -208,25 +279,6 @@ Rules:
 - The \`lint\` tool is available for checking file syntax after edits. It auto-runs after \`edit\`/\`write\`, but you can also call it explicitly.
 - If the task is ambiguous, scope is unclear, or requirements are missing, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info". Self-serve from CONTEXT.md/docs/adr/code before asking.
 
-Bash usage restrictions:
-- ALWAYS use \`edit\` or \`write\` to modify files — NEVER \`bash\`+sed/awk/perl/python for file modifications
-- Use \`bash\` ONLY for: running tests, compilation, running patch scripts, GitHub CLI operations, verification commands
-- Use \`read\` tool (NOT \`bash\`+\`cat\`) to read files
-- Use the \`grep\` tool (which wraps ripgrep) to search code — NOT \`bash\`+\`rg\` or \`bash\`+\`grep\`
-- Bash interceptor: common read-only commands (cat, grep, rg, find, ls) invoked through \`bash\` may be blocked and replaced with their dedicated tools. Always prefer the dedicated tool directly.
-
-## Tool Usage — SDK First
-
-Use pi SDK tools (read/edit/write) for file operations. These are:
-- Cache-efficient: pi caches tool results, reducing token usage
-- Prompt-optimized: structured output, not raw terminal text
-- Deterministic: consistent format across models
-
-Bash is for: spawning processes, environment setup (getShellEnv()), 
-commands without tool equivalents (npx, npm, git operations).
-
-Override: If bash is truly required, pass override:true in tool input.
-
 Output format:
 ## Completed
 <what was done>
@@ -237,25 +289,9 @@ Output format:
 ## Verification
 <confirm changes work>
 
-## Findings
-After completing work, output:
+${FINDINGS_AUDIT_TEMPLATE}
 
-## Findings
-- summary: one-line what you found/did
-- key_files: [important paths]
-- issues: [blocking problems or none]
-- recommendation: next step for orchestrator
-
-## Audit
-Before finishing, note any problems encountered and how you handled them:
-
-## Audit
-- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
-- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
-- scope_stayed: [yes/no — did you stay within the assigned task?]
-- scope_notes: [if no, what you deviated from and why]
-
-${TERSE_INSTRUCTION}`,
+${TERSE_INSTRUCTION}${generateToolDoc(["read", "bash", "edit", "write", "grep", "lint"], "Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.")}${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 	reviewer: {
 		name: "reviewer",
@@ -287,25 +323,12 @@ Output format:
 ## Summary
 <overall assessment>
 
-## Findings
-After completing work, output:
-
-## Findings
 - summary: one-line what you found/did
 - key_files: [important paths]
 - issues: [blocking problems or none]
 - recommendation: next step for orchestrator
 
-## Audit
-Before finishing, note any problems encountered and how you handled them:
-
-## Audit
-- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
-- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
-- scope_stayed: [yes/no — did you stay within the assigned task?]
-- scope_notes: [if no, what you deviated from and why]
-
-${TERSE_INSTRUCTION}`,
+${TERSE_INSTRUCTION}${generateToolDoc(["read", "bash", "grep"], "You do NOT have edit or write. You cannot modify files.")}${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 	researcher: {
 		name: "researcher",
@@ -353,24 +376,8 @@ Be realistic about changeType:
 - "single-file": change touches only one file, trivial edit
 - "multi-file": change spans multiple files, architectural impact
 
-## Findings
-After completing work, output:
-
-## Findings
-- summary: one-line what you found/did
-- key_files: [important paths]
-- issues: [blocking problems or none]
-- recommendation: next step for orchestrator
-
-## Audit
-Before finishing, note any problems encountered and how you handled them:
-
-## Audit
-- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
-- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
-- scope_stayed: [yes/no — did you stay within the assigned task?]
-- scope_notes: [if no, what you deviated from and why]
-${_researcherToolPrompt}
+${FINDINGS_AUDIT_TEMPLATE}
+${_researcherToolDoc}
 
 ${TERSE_INSTRUCTION}`,
 	},
@@ -401,25 +408,9 @@ Output format:
 ## Notes
 <any important context>
 
-## Findings
-After completing work, output:
+${FINDINGS_AUDIT_TEMPLATE}
 
-## Findings
-- summary: one-line what you found/did
-- key_files: [important paths]
-- issues: [blocking problems or none]
-- recommendation: next step for orchestrator
-
-## Audit
-Before finishing, note any problems encountered and how you handled them:
-
-## Audit
-- problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
-- resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
-- scope_stayed: [yes/no — did you stay within the assigned task?]
-- scope_notes: [if no, what you deviated from and why]
-
-${TERSE_INSTRUCTION}`,
+${TERSE_INSTRUCTION}${generateToolDoc(["read", "write", "edit", "ls", "find", "git-read"], "You do NOT have bash.")}${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 };
 

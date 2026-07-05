@@ -1,8 +1,12 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, isAbsolute, resolve, posix } from 'path';
 import picomatch from 'picomatch';
-import type { ResolvedScope } from './scope-manager';
+import { parseScopeFile, type ResolvedScope } from './scope-manager';
 
+/**
+ * Scope expansion request emitted when a subagent tries to write/edit outside scope.
+ * Sent to the orchestrator, which decides whether to expand scope based on conversation context.
+ * The subagent continues running — this does NOT terminate it.
+ */
 export interface ScopeExpansionRequest {
   path: string;
   reason: string;
@@ -23,26 +27,56 @@ function hasGlobChars(s: string): boolean {
   return /[*?[!{]/.test(s);
 }
 
+/**
+ * Thin enforcement adapter for scope boundaries.
+ *
+ * Reads `.pi/scope.json` directly (raw JSON). Zero coupling to orchestrator modules —
+ * the file path and schema are the shared contract.
+ *
+ * ## Blocking behavior
+ * When a write/edit targets a path outside the allowed scope:
+ * - `isPathAllowed()` returns `{ allowed: false, reason }`
+ * - The subagent tool guard returns `{ block: true, reason: "Scope violation: <path> is outside the allowed scope" }`
+ * - The subagent **continues running** — it does NOT terminate
+ * - The blocked operation simply does not execute
+ *
+ * ## Expansion flow
+ * If scope.json exists but the path is not in it, `requestExpansion()` emits a
+ * `ScopeExpansionRequest` with the blocked path and current scope manifest.
+ * The orchestrator (not the subagent) decides whether to expand.
+ *
+ * ## Metrics
+ * Each blocked call increments `scopeViolations` in the delegation metrics,
+ * surfaced in the subagent's diagnostic output.
+ *
+ * ## Fail-closed
+ * Missing, malformed, or stale scope.json → all writes blocked.
+ * Reads are always allowed (scope only enforces mutations).
+ */
 export class ScopeGuard {
   constructor(private cwd: string) {}
 
+  /**
+   * Read and validate `.pi/scope.json`. Returns null if missing, malformed,
+   * or wrong version/schema (fail-closed: null → all writes blocked).
+   */
   private _readScope(): ResolvedScope | null {
     const path = join(this.cwd, '.pi', 'scope.json');
-    try {
-      if (!existsSync(path)) return null;
-      const raw = JSON.parse(readFileSync(path, 'utf-8'));
-      if (!raw.version || !raw.schema || !raw.scope) return null;
-      if (raw.version !== 1 || raw.schema !== 'scope-file-contract-v1') return null;
-      return raw.scope as ResolvedScope;
-    } catch {
-      return null;
-    }
+    return parseScopeFile(path);
   }
 
+  /**
+   * Check if the scope file exists and is well-formed.
+   */
   isScopeValid(): boolean {
     return this._readScope() !== null;
   }
 
+  /**
+   * Build a ScopeExpansionRequest for a blocked path.
+   * Returns null if no scope file exists (nothing to expand from).
+   * The orchestrator uses this to decide whether scope should be widened.
+   */
   requestExpansion(filePath: string): ScopeExpansionRequest | null {
     const manifest = this._readScope();
     if (!manifest) return null;
@@ -56,6 +90,13 @@ export class ScopeGuard {
     };
   }
 
+  /**
+   * Core enforcement: check if a path is within the allowed scope.
+   *
+   * Reads always pass (scope only enforces mutations).
+   * For writes/edits, checks: exact file match → glob pattern → directory prefix.
+   * Returns `{ allowed: false, reason }` on violation — subagent continues running.
+   */
   isPathAllowed(filePath: string, operation: 'write' | 'edit' | 'read'): { allowed: boolean; reason?: string } {
     // Reads are always safe — only enforce scope for mutations
     if (operation === 'read') return { allowed: true };
@@ -78,9 +119,9 @@ export class ScopeGuard {
       if (approvedRel === normalized) return { allowed: true };
     }
 
-    // 2. Glob pattern match — check operation-appropriate list
-    const relevantPatterns = operation === 'write' ? filesToCreate : filesToModify;
-    for (const pattern of relevantPatterns) {
+    // 2. Glob pattern match — check both lists regardless of operation
+    const allGlobs = [...filesToModify, ...filesToCreate];
+    for (const pattern of allGlobs) {
       if (hasGlobChars(pattern)) {
         // Block .. traversal in glob patterns
         if (pattern.split('/').includes('..')) continue;
@@ -102,6 +143,10 @@ export class ScopeGuard {
     return { allowed: false, reason: `File not in approved scope: ${filePath}` };
   }
 
+  /**
+   * Check if file content exceeds maxLinesPerFile limit.
+   * Skipped when gateMode is 'relaxed' or maxLines <= 0.
+   */
   checkFileSize(filePath: string, content: string): { allowed: boolean; reason?: string } {
     const scope = this._readScope();
     if (!scope) return { allowed: false, reason: 'No scope file found' };
