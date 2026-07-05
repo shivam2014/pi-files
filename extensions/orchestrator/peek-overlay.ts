@@ -49,6 +49,8 @@ let _peekAbort: AbortController | null = null;
 let _lastXPress: number = 0;
 let _spinnerTimer: ReturnType<typeof setInterval> | null = null;
 let _streamingBuffer: string = "";
+/** Timer for debouncing pushStreamingText re-renders */
+let _pushRenderTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Stored refs for controlling the live overlay */
 let _peekHandle: OverlayHandle | null = null;
@@ -310,10 +312,6 @@ export function startSpinnerTimer(): void {
     stopSpinnerTimer();
     _spinnerTimer = setInterval(() => {
         advanceSpinner();
-        if (_peekHandle && !_peekHandle.isHidden()) {
-            _peekComponent?.invalidate();
-            _peekTui?.requestRender();
-        }
     }, 250);
 }
 
@@ -482,8 +480,14 @@ export function updatePeek(text: string): void {
 export function pushStreamingText(text: string): void {
     if (!_peekHandle || _peekHandle.isHidden()) return;
     _streamingBuffer += text;
-    _peekComponent?.invalidate();
-    _peekTui?.requestRender();
+    
+    // Debounce re-renders during rapid streaming — max ~5fps
+    if (_pushRenderTimer) clearTimeout(_pushRenderTimer);
+    _pushRenderTimer = setTimeout(() => {
+        _pushRenderTimer = null;
+        _peekComponent?.invalidate();
+        _peekTui?.requestRender();
+    }, 200);
 }
 
 /**
@@ -500,6 +504,10 @@ export function setPeekGoal(goal: string): void {
  */
 export function hidePeek(): void {
     stopSpinnerTimer();
+    if (_pushRenderTimer) {
+        clearTimeout(_pushRenderTimer);
+        _pushRenderTimer = null;
+    }
     if (_peekHandle) {
         try { _peekHandle.hide(); } catch (err: unknown) { console.error('[peek] hide error:', err); }
     }
