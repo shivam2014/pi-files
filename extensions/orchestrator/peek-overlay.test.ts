@@ -82,7 +82,7 @@ describe("PeekComponent.handleInput — closes on escape", () => {
 		// Start spinner timer so there's something to clean up
 		startSpinnerTimer();
 
-		comp.handleInput("escape");
+		comp.handleInput("\x1b");
 
 		// hidePeek → stopSpinnerTimer → clearInterval(spinnerTimer)
 		// Spinner timer should be stopped
@@ -95,7 +95,7 @@ describe("PeekComponent.handleInput — closes on escape", () => {
 		const hideSpy = vi.spyOn(globalThis, "clearInterval");
 
 		startSpinnerTimer();
-		comp.handleInput("esc");
+		comp.handleInput("\x1b");
 
 		expect(hideSpy).toHaveBeenCalled();
 		hideSpy.mockRestore();
@@ -117,7 +117,7 @@ describe("PeekComponent.handleInput — closes on escape", () => {
 		const hideSpy = vi.spyOn(globalThis, "clearInterval");
 
 		startSpinnerTimer();
-		comp.handleInput("\\x1b");
+		comp.handleInput("");
 
 		expect(hideSpy).toHaveBeenCalled();
 		hideSpy.mockRestore();
@@ -128,7 +128,7 @@ describe("PeekComponent.handleInput — closes on escape", () => {
 		const hideSpy = vi.spyOn(globalThis, "clearInterval");
 
 		startSpinnerTimer();
-		comp.handleInput("ctrl+q");
+		comp.handleInput("");
 
 		expect(hideSpy).toHaveBeenCalled();
 		hideSpy.mockRestore();
