@@ -313,7 +313,7 @@ export function startSpinnerTimer(): void {
     stopSpinnerTimer();
     _spinnerTimer = setInterval(() => {
         advanceSpinner();
-    }, 250);
+    }, 80);
 }
 
 export function stopSpinnerTimer(): void {
@@ -337,6 +337,7 @@ function clearPeekState(): void {
     _viewerTask = "";
     _viewerOutput = "";
     _viewerStatus = "idle";
+    _pushRenderTimer = null;
     resetSpinner();
     stopSpinnerTimer();
 }

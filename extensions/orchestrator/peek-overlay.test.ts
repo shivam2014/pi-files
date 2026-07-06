@@ -45,7 +45,7 @@ describe("PeekComponent.render — minimum height", () => {
 		const comp = createTestComponent();
 		const lines = comp.render(80);
 		expect(lines.length).toBeGreaterThanOrEqual(MIN_HEIGHT);
-		expect(MIN_HEIGHT).toBe(9);
+		expect(MIN_HEIGHT).toBe(15);
 	});
 
 	it("pads with empty lines when content is short", () => {
@@ -204,7 +204,7 @@ describe("startSpinnerTimer — sets interval", () => {
 
 		startSpinnerTimer();
 
-		expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 250);
+		expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 80);
 
 		stopSpinnerTimer();
 		intervalSpy.mockRestore();
@@ -270,15 +270,11 @@ describe("streaming flickering regression", () => {
 		const callback = setIntervalSpy.mock.calls[0][0];
 		const interval = setIntervalSpy.mock.calls[0][1];
 		
-		expect(interval).toBe(250);
+		expect(interval).toBe(80);
 		
-		// The callback should NOT call invalidate/requestRender
-		// It should only advanceSpinner()
-		// To verify, we'd need to spy on _peekComponent.invalidate
-		// Since that's not easily accessible, check that callback runs without error
-		
-		// Invoke the callback
+		const invalidateSpy = vi.spyOn(PeekComponent.prototype, "invalidate");
 		callback();
+		expect(invalidateSpy).not.toHaveBeenCalled();
 		
 		stopSpinnerTimer();
 		vi.useRealTimers();
