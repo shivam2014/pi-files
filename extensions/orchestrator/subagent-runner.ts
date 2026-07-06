@@ -433,7 +433,7 @@ export async function runSubagent(
 		});
 
 		// Merge tools with planSteps, advanceStep, reportFinding, and ask_orchestrator
-		const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding", "ask_orchestrator", "read_skill"];
+		const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding", "ask_orchestrator", "read_skill", "vision_query"];
 
 		const askOrchestratorTool = createAskOrchestratorTool(
 			parentCtx?.onAskOrchestrator,

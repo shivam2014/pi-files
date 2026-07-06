@@ -77,6 +77,7 @@ export default function (pi: ExtensionAPI) {
 		activeTools.push("read_skill");
 		activeTools.push("list_skills");
 		activeTools.push("list_tools");
+		activeTools.push("vision_query");
 		pi.setActiveTools(activeTools);
 	});
 
@@ -122,7 +123,7 @@ export default function (pi: ExtensionAPI) {
 		if (event.toolName === "fusion" && !pi.getAllTools().some((t: any) => t.name === "fusion")) {
 			return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 		}
-		if (event.toolName !== "delegate" && event.toolName !== "plan" && event.toolName !== "plan_add_steps" && event.toolName !== "fusion" && event.toolName !== "read_skill" && event.toolName !== "list_skills" && event.toolName !== "list_tools") {
+		if (event.toolName !== "delegate" && event.toolName !== "plan" && event.toolName !== "plan_add_steps" && event.toolName !== "fusion" && event.toolName !== "read_skill" && event.toolName !== "list_skills" && event.toolName !== "list_tools" && event.toolName !== "vision_query") {
 			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
 		}
 	});

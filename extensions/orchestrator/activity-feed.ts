@@ -556,6 +556,9 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 						? formatDuration(Date.now() - step.startTime)
 						: "";
 					errorLines.push(`  ✗ Step ${i + 1}: ${step.label}${duration ? ` (${duration})` : ""}`);
+					if (step.overflowCount && step.overflowCount > 0) {
+						errorLines.push(`    … +${step.overflowCount} more`);
+					}
 					let foundActive = false;
 					for (const sub of step.substeps) {
 						if (sub.completed) {
@@ -649,6 +652,9 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 			// Active step:  <spinner> Step N: <label> (no duration)
 			lines.push(`  ${spinner} Step ${i + 1}: ${step.label}`);
 			// Render substeps: completed first, then active, then pending
+			if (step.overflowCount && step.overflowCount > 0) {
+				lines.push(`    … +${step.overflowCount} more`);
+			}
 			let foundActive = false;
 			for (const sub of step.substeps) {
 				if (sub.completed) {
@@ -681,9 +687,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 					lines.push(`    ○ ${sub.label}`);
 				}
 			}
-			if (step.overflowCount && step.overflowCount > 0) {
-				lines.push(`    … +${step.overflowCount} more`);
-			}
+
 		} else if (isPending) {
 			// Pending step:  ○ Step N: <label>
 			lines.push(`  ○ Step ${i + 1}: ${step.label}`);
