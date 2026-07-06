@@ -42,7 +42,7 @@ import {
 	appendWebSearchResults,
 } from "./activity-feed.ts";
 import { compressOutput, inspectFeedState, snapshotFeedRender } from "./activity-feed.ts";
-import { _spinnerIndex, resetSpinner } from "./spinner-state.ts";
+import { _spinnerIndex, advanceSpinner, resetSpinner } from "./spinner-state.ts";
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 
 import { debugLog } from "./debug.ts";
@@ -661,6 +661,7 @@ export async function runSubagent(
 		let _lastSpinnerIndex = -1;
 		const startRenderTimer = () => {
 			renderTimer = setInterval(() => {
+				advanceSpinner(); // ✓ ensure spinner ticks even without plan-panel
 				if (feed.steps.length > 0 || output.length > 0) {
 					const text = renderActivityFeed(specialist.name, feed);
 					// Always emit if spinner frame changed or content changed

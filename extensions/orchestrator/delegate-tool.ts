@@ -11,7 +11,7 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export { createAskOrchestratorResolver } from "./ask-resolver.ts";
-import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
+import { SPINNER_FRAMES, advanceSpinner, getSpinnerIndex } from "./spinner-state.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { executeDelegate } from "./delegate-controller.ts";
 
@@ -93,7 +93,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			if (isPartial && !state.interval) {
 					context.invalidate(); // first paint so spinner shows before ✓
 					state.interval = setInterval(() => {
-						getSpinnerIndex(); // tick shared spinner
+						advanceSpinner(); // tick shared spinner
 						context.invalidate();
 					}, 80);
 			}

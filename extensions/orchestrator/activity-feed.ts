@@ -12,7 +12,7 @@
 
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { formatDuration } from "./ui-utils.ts";
-import { SPINNER_FRAMES, advanceSpinner, getSpinnerIndex } from "./spinner-state.ts";
+import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
 
 // ============================================================================
 // Constants
