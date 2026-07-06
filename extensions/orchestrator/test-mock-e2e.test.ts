@@ -16,9 +16,11 @@ import type { ActivityFeedState, Step, Substep } from "./types.ts";
 // ============================================================================
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-let _spinnerIndex = 0;
-function advanceSpinner(): number { _spinnerIndex++; return _spinnerIndex; }
-function getSpinnerIdx(): number { return _spinnerIndex; }
+let _spinnerStartTime = Date.now();
+function currentFrame(): string {
+	return SPINNER_FRAMES[Math.floor((Date.now() - _spinnerStartTime) / 80) % SPINNER_FRAMES.length];
+}
+
 
 function formatDuration(ms: number): string {
 	if (ms < 1000) return `${ms}ms`;
@@ -236,11 +238,10 @@ function stubUpdateActiveSubstepOutput(state: ActivityFeedState, outputPreview: 
 }
 
 function stubRenderActivityFeed(_name: string, state: ActivityFeedState): string {
-	advanceSpinner();
 	const lines: string[] = [];
 	const total = state.steps.length;
 	const completed = state.steps.filter((s) => s.completed).length;
-	const spinner = SPINNER_FRAMES[getSpinnerIdx() % SPINNER_FRAMES.length];
+	const spinner = currentFrame();
 
 	if (state.goal) lines.push(`◆ ${state.goal}`);
 	if (total === 0) {
@@ -251,7 +252,7 @@ function stubRenderActivityFeed(_name: string, state: ActivityFeedState): string
 	let dots = "";
 	for (let i = 0; i < total; i++) {
 		if (state.steps[i].completed) dots += "●";
-		else if (i === state.currentStep) dots += (getSpinnerIdx() % 2 === 0) ? "○" : "●";
+		else if (i === state.currentStep) dots += (Math.floor(Date.now() / 1000) % 2 === 0) ? "○" : "●";
 		else dots += "○";
 	}
 	lines.push(`${dots} ${completed}/${total}`);

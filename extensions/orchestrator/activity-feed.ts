@@ -12,7 +12,8 @@
 
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { formatDuration } from "./ui-utils.ts";
-import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
+import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
+
 
 // ============================================================================
 // Constants
@@ -485,7 +486,7 @@ export function renderSubstepLines(substeps: Substep[], maxLines: number = 3): s
 			}
 		} else {
 			const label = sub.label.startsWith("Running: ") ? sub.label.slice(9) : sub.label;
-			lines.push(`    ${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} ${label}`);
+			lines.push(`    ${currentFrame()} ${label}`);
 		}
 	}
 	return lines;
@@ -599,8 +600,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 	const lines: string[] = [];
 	const total = state.steps.length;
 	const completed = state.steps.filter((s) => s.completed).length;
-	const spinnerIdx = getSpinnerIndex();
-	const spinner = SPINNER_FRAMES[spinnerIdx % SPINNER_FRAMES.length];
+	const spinner = currentFrame();
 
 	// Goal line — use goalOverride if provided
 	const displayGoal = goalOverride ?? state.goal;

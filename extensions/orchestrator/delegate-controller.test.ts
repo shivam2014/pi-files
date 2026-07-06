@@ -64,7 +64,7 @@ vi.mock("./delegate-output-formatter.ts", () => ({
 vi.mock("./peek-overlay.ts", () => ({ hidePeek: vi.fn(), clearViewerState: vi.fn() }));
 vi.mock("./spinner-state.ts", () => ({
   SPINNER_FRAMES: ["⠋", "⠙", "⠹"],
-  getSpinnerIndex: vi.fn(() => 0),
+  currentFrame: vi.fn(() => "⠋"),
 }));
 
 function createMockCtx(overrides: Record<string, unknown> = {}) {

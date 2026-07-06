@@ -10,7 +10,7 @@
  * Auto-scrolls, caps at ~50 lines, Escape to close, double-press x to abort.
  */
 
-import { SPINNER_FRAMES, getSpinnerIndex, advanceSpinner, resetSpinner } from "./spinner-state.ts";
+import { SPINNER_FRAMES, resetSpinner } from "./spinner-state.ts";
 import { formatDuration } from "./ui-utils.ts";
 import { matchesKey, Key } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -48,7 +48,6 @@ let _peekLines: string[] = [];
 let _peekGoal: string = "";
 let _peekAbort: AbortController | null = null;
 let _lastXPress: number = 0;
-let _spinnerTimer: ReturnType<typeof setInterval> | null = null;
 let _streamingBuffer: string = "";
 /** Timer for debouncing pushStreamingText re-renders */
 let _pushRenderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -309,19 +308,6 @@ function wrapText(text: string, width: number): string[] {
     return lines;
 }
 
-export function startSpinnerTimer(): void {
-    stopSpinnerTimer();
-    _spinnerTimer = setInterval(() => {
-        advanceSpinner();
-    }, 80);
-}
-
-export function stopSpinnerTimer(): void {
-    if (_spinnerTimer !== null) {
-        clearInterval(_spinnerTimer);
-        _spinnerTimer = null;
-    }
-}
 
 function clearPeekState(): void {
     _peekLines = [];
@@ -339,7 +325,6 @@ function clearPeekState(): void {
     _viewerStatus = "idle";
     _pushRenderTimer = null;
     resetSpinner();
-    stopSpinnerTimer();
 }
 
 // ============================================================================
@@ -440,7 +425,6 @@ export function showPeek(
             _peekTui = tui;
             component._theme = theme;
             _peekDone = done;
-            startSpinnerTimer();
             return component;
         },
         {
@@ -516,7 +500,6 @@ export function setPeekGoal(goal: string): void {
  * Close the peek overlay and clean up all state.
  */
 export function hidePeek(): void {
-    stopSpinnerTimer();
     if (_pushRenderTimer) {
         clearTimeout(_pushRenderTimer);
         _pushRenderTimer = null;

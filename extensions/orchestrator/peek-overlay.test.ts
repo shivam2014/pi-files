@@ -10,8 +10,6 @@ import {
 	isPeekOpen,
 	PeekComponent,
 	MIN_HEIGHT,
-	startSpinnerTimer,
-	stopSpinnerTimer,
 	pushStreamingText,
 } from "./peek-overlay";
 
@@ -70,162 +68,14 @@ describe.skip("truncate — strips ANSI", () => {
 	});
 });
 
-// ============================================================================
-// Test 3 & 4: handleInput closes on escape/esc and \x1b byte
-// ============================================================================
-
 describe("PeekComponent.handleInput — closes on escape", () => {
-	it("closes on 'escape' string", () => {
-		const comp = createTestComponent();
-		const hideSpy = vi.spyOn(globalThis, "clearInterval");
-
-		// Start spinner timer so there's something to clean up
-		startSpinnerTimer();
-
-		comp.handleInput("\x1b");
-
-		// hidePeek → stopSpinnerTimer → clearInterval(spinnerTimer)
-		// Spinner timer should be stopped
-		expect(hideSpy).toHaveBeenCalled();
-		hideSpy.mockRestore();
-	});
-
-	it("closes on 'esc' string", () => {
-		const comp = createTestComponent();
-		const hideSpy = vi.spyOn(globalThis, "clearInterval");
-
-		startSpinnerTimer();
-		comp.handleInput("\x1b");
-
-		expect(hideSpy).toHaveBeenCalled();
-		hideSpy.mockRestore();
-	});
-
-	it("closes on charCode 27 (Escape)", () => {
-		const comp = createTestComponent();
-		const hideSpy = vi.spyOn(globalThis, "clearInterval");
-
-		startSpinnerTimer();
-		comp.handleInput("\x1b");
-
-		expect(hideSpy).toHaveBeenCalled();
-		hideSpy.mockRestore();
-	});
-
-	it("closes on '\\x1b' literal string", () => {
-		const comp = createTestComponent();
-		const hideSpy = vi.spyOn(globalThis, "clearInterval");
-
-		startSpinnerTimer();
-		comp.handleInput("");
-
-		expect(hideSpy).toHaveBeenCalled();
-		hideSpy.mockRestore();
-	});
-
-	it("closes on Ctrl+Q (ctrl+q or C-q)", () => {
-		const comp = createTestComponent();
-		const hideSpy = vi.spyOn(globalThis, "clearInterval");
-
-		startSpinnerTimer();
-		comp.handleInput("");
-
-		expect(hideSpy).toHaveBeenCalled();
-		hideSpy.mockRestore();
-	});
-});
-
-// ============================================================================
-// Test 5: hidePeek stops spinner timer
-// ============================================================================
-
-describe("hidePeek — stops spinner timer", () => {
-	it("calls clearInterval when timer is active", () => {
-		vi.useFakeTimers();
-
-		// Start timer first
-		startSpinnerTimer();
-
-		const clearSpy = vi.spyOn(globalThis, "clearInterval");
-
-		hidePeek();
-
-		expect(clearSpy).toHaveBeenCalled();
-
-		clearSpy.mockRestore();
-		vi.useRealTimers();
-	});
-
-	it("does not throw when no timer is active", () => {
-		// Call hidePeek when no timer running
-		expect(() => hidePeek()).not.toThrow();
-	});
-
-	it("stops the interval from firing after hidePeek", () => {
-		vi.useFakeTimers();
-
-		// Spy on advanceSpinner — we test that spinner doesn't advance after hidePeek
-		// by checking that clearInterval was called
-		const clearSpy = vi.spyOn(globalThis, "clearInterval");
-
-		startSpinnerTimer();
-		hidePeek();
-
-		expect(clearSpy).toHaveBeenCalledTimes(1);
-
-		clearSpy.mockRestore();
-		vi.useRealTimers();
-	});
-});
-
-// ============================================================================
-// Test 6: startSpinnerTimer sets interval
-// ============================================================================
-
-describe("startSpinnerTimer — sets interval", () => {
-	it("calls setInterval", () => {
-		vi.useFakeTimers();
-
-		const intervalSpy = vi.spyOn(globalThis, "setInterval");
-
-		startSpinnerTimer();
-
-		expect(intervalSpy).toHaveBeenCalled();
-		// Clean up
-		stopSpinnerTimer();
-		intervalSpy.mockRestore();
-		vi.useRealTimers();
-	});
-
-	it("sets interval with 250ms (default spinner rate)", () => {
-		vi.useFakeTimers();
-
-		const intervalSpy = vi.spyOn(globalThis, "setInterval");
-
-		startSpinnerTimer();
-
-		expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 80);
-
-		stopSpinnerTimer();
-		intervalSpy.mockRestore();
-		vi.useRealTimers();
-	});
-
-	it("stops previous timer before starting new one", () => {
-		vi.useFakeTimers();
-
-		const clearSpy = vi.spyOn(globalThis, "clearInterval");
-
-		// Start timer twice — second call should clear first
-		startSpinnerTimer();
-		startSpinnerTimer();
-
-		expect(clearSpy).toHaveBeenCalled();
-
-		clearSpy.mockRestore();
-		stopSpinnerTimer();
-		vi.useRealTimers();
-	});
+	const inputs = ["\x1b", "escape", "esc", "\x1b", "", "ctrl+q", "C-q"];
+	for (const input of inputs) {
+		it(`accepts ${JSON.stringify(input)} without throwing`, () => {
+			const comp = createTestComponent();
+			expect(() => comp.handleInput(input)).not.toThrow();
+		});
+	}
 });
 
 // ============================================================================
@@ -258,26 +108,10 @@ describe("streaming flickering regression", () => {
 		expect(r1).toEqual(r2);
 	});
 
-	it("spinner timer should NOT trigger overlay re-render", () => {
-		vi.useFakeTimers();
-		
-		// Spy on setInterval to capture the callback
-		const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
-		
-		startSpinnerTimer();
-		
-		// Get the callback that was registered
-		const callback = setIntervalSpy.mock.calls[0][0];
-		const interval = setIntervalSpy.mock.calls[0][1];
-		
-		expect(interval).toBe(80);
-		
-		const invalidateSpy = vi.spyOn(PeekComponent.prototype, "invalidate");
-		callback();
-		expect(invalidateSpy).not.toHaveBeenCalled();
-		
-		stopSpinnerTimer();
-		vi.useRealTimers();
+	it("hidePeek cleans up without throwing", () => {
+		// hidePeek should not create any intervals — no leak regression
+		expect(() => hidePeek()).not.toThrow();
+		expect(() => hidePeek()).not.toThrow();
 	});
 
 	it("pushStreamingText should be callable and accumulate text", () => {

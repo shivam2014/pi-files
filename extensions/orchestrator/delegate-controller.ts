@@ -12,7 +12,8 @@ import { hasActivePlan, startDelegationStep, finalizePlanStep, errorPlanStep, in
 import { debugLog } from "./debug.ts";
 import { hidePeek, clearViewerState } from "./peek-overlay.ts";
 import { ScopeManager } from "./scope-manager.ts";
-import { SPINNER_FRAMES, getSpinnerIndex } from "./spinner-state.ts";
+import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
+
 import { resolveScope } from "./resolve-delegation-scope.ts";
 import { applyScope } from "./apply-scope.ts";
 import { handleDiagnostics } from "./handle-diagnostics.ts";
@@ -113,7 +114,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 	startDelegationStep(stepLabel, ctx);
 
 	onUpdate?.({
-		content: [{ type: "text", text: `${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} ${specialist.name}...` }],
+		content: [{ type: "text", text: `${currentFrame()} ${specialist.name}...` }],
 		details: { status: "running", specialist: specialist.name },
 	});
 

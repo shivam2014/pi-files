@@ -5,7 +5,8 @@ import { formatDuration } from "./ui-utils.ts";
 import type { PlanStep } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
-import { advanceSpinner, resetSpinner } from "./spinner-state.ts";
+import { SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
+
 import { debugLog } from "./debug.ts";
 
 export interface TimelineEntry {
@@ -181,8 +182,8 @@ export class PlanPanel {
 		const self = this;
 		this._spinnerTimer = setInterval(() => {
 			if (self._spinnerTimer === null) return;
-			if (self.planState) { advanceSpinner(); self._renderWidget(); } else { self.stopPlanTimer(); }
-		}, 80);
+			if (self.planState) { self._renderWidget(); } else { self.stopPlanTimer(); }
+		}, SPINNER_INTERVAL_MS);
 		this._planTimer = setInterval(() => {
 			if (self._planTimer === null) return;
 			if (self.planState) { self._renderWidget(); } else { self.stopPlanTimer(); }

@@ -4,6 +4,8 @@
  */
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { createActivityFeed, addStep, addSubstep, completeCurrentStep, completeLastSubstep, renderActivityFeed, renderProgress } from "./activity-feed";
+import { resetSpinner } from "./spinner-state";
+
 import { formatDuration } from "./ui-utils";
 
 // ============================================================================
@@ -118,6 +120,7 @@ describe("completeLastSubstep — immutability", () => {
 describe("renderActivityFeed — snapshots", () => {
 	beforeAll(() => {
 		vi.spyOn(Date, "now").mockReturnValue(1_000_000_000);
+		resetSpinner(); // sync spinner start time with mocked clock
 	});
 
 	afterAll(() => {

@@ -11,7 +11,8 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export { createAskOrchestratorResolver } from "./ask-resolver.ts";
-import { SPINNER_FRAMES, advanceSpinner, getSpinnerIndex } from "./spinner-state.ts";
+import { SPINNER_FRAMES, SPINNER_INTERVAL_MS, currentFrame } from "./spinner-state.ts";
+
 import { Text } from "@earendil-works/pi-tui";
 import { executeDelegate } from "./delegate-controller.ts";
 
@@ -93,9 +94,9 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			if (isPartial && !state.interval) {
 					context.invalidate(); // first paint so spinner shows before ✓
 					state.interval = setInterval(() => {
-						advanceSpinner(); // tick shared spinner
 						context.invalidate();
-					}, 80);
+					}, SPINNER_INTERVAL_MS);
+
 			}
 			if (!isPartial && state.interval) {
 				clearInterval(state.interval);
@@ -118,7 +119,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				if (text) state.lastFeedText = text;
 				const feedText = text
 					? theme.fg("warning", text)
-					: theme.fg("warning", `${SPINNER_FRAMES[getSpinnerIndex() % SPINNER_FRAMES.length]} working...`);
+					: theme.fg("warning", `${currentFrame()} working...`);
 				comp.setText(prefix ? `${prefix}\n${feedText}` : feedText);
 			} else {
 				const feedText = state.lastFeedText || text || "✓ done";

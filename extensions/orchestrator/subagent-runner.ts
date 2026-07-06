@@ -42,7 +42,8 @@ import {
 	appendWebSearchResults,
 } from "./activity-feed.ts";
 import { compressOutput, inspectFeedState, snapshotFeedRender } from "./activity-feed.ts";
-import { _spinnerIndex, advanceSpinner, resetSpinner } from "./spinner-state.ts";
+import { currentFrame, SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
+
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 
 import { debugLog } from "./debug.ts";
@@ -658,23 +659,24 @@ export async function runSubagent(
 		// Periodic re-render timer — animates spinner between events
 		let renderTimer: ReturnType<typeof setInterval> | null = null;
 		let _lastRenderText: string | null = null;
-		let _lastSpinnerIndex = -1;
+		let _lastFrame: string = "";
+
 		const startRenderTimer = () => {
 			renderTimer = setInterval(() => {
-				advanceSpinner(); // ✓ ensure spinner ticks even without plan-panel
 				if (feed.steps.length > 0 || output.length > 0) {
 					const text = renderActivityFeed(specialist.name, feed);
+					const frame = currentFrame();
 					// Always emit if spinner frame changed or content changed
-					if (_spinnerIndex !== _lastSpinnerIndex || text !== _lastRenderText) {
+					if (frame !== _lastFrame || text !== _lastRenderText) {
 						_lastRenderText = text;
-						_lastSpinnerIndex = _spinnerIndex;
+						_lastFrame = frame;
 						onUpdate?.({
 							content: [{ type: "text", text }],
 							details: { specialist: specialist.name, status: "running" },
 						});
 					}
 				}
-			}, 80);
+			}, SPINNER_INTERVAL_MS);
 		};
 		startRenderTimer();
 
