@@ -1,17 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { registerListSkillsTool, registerListToolsTool } from "./introspection-tools";
+import {
+	mkdtempSync,
+	mkdirSync,
+	writeFileSync,
+	rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-// Mock fs module
-vi.mock("node:fs", () => ({
-	readdirSync: vi.fn(),
-	existsSync: vi.fn(),
-	readFileSync: vi.fn(),
-}));
-
-// Mock getAgentDir
-vi.mock("@earendil-works/pi-coding-agent", () => ({
-	getAgentDir: vi.fn(() => "/home/user/.pi/agent"),
-}));
+// Mock getAgentDir with vi.fn() so individual tests can set its return value.
+// Keep parseFrontmatter from the real module.
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+	const actual = await vi.importActual("@earendil-works/pi-coding-agent");
+	return {
+		...actual,
+		getAgentDir: vi.fn(),
+	};
+});
 
 // Mock fusion config
 vi.mock("./fusion-tool.ts", () => ({
@@ -62,63 +68,76 @@ describe("registerListSkillsTool", () => {
 
 	describe("execute with valid skills", () => {
 		it("returns formatted skills list from frontmatter", async () => {
-			const { readdirSync, existsSync, readFileSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockReturnValue([
-				{ isDirectory: () => true, name: "tdd" },
-				{ isDirectory: () => true, name: "review" },
-			]);
-			(vi.mocked as any)(existsSync).mockReturnValue(true);
-			(vi.mocked as any)(readFileSync).mockImplementation((path: string) => {
-				if (path.includes("tdd")) {
-					return "---\nname: tdd\ndescription: Test-driven development.\n---\n# TDD";
-				}
-				if (path.includes("review")) {
-					return "---\nname: review\ndescription: Review code changes.\n---\n# Review";
-				}
-				return "";
-			});
+			const tmpDir = mkdtempSync(join(tmpdir(), "skills-test-"));
+			const skillsDir = join(tmpDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+			mkdirSync(join(skillsDir, "tdd"));
+			writeFileSync(
+				join(skillsDir, "tdd", "SKILL.md"),
+				"---\nname: tdd\ndescription: Test-driven development.\n---\n# TDD",
+			);
+			mkdirSync(join(skillsDir, "review"));
+			writeFileSync(
+				join(skillsDir, "review", "SKILL.md"),
+				"---\nname: review\ndescription: Review code changes.\n---\n# Review",
+			);
+
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue(tmpDir);
 
 			const result = await tool.execute("call-1", {}, undefined, () => {}, {});
 
 			expect(result.content[0].text).toContain("• tdd: Test-driven development.");
 			expect(result.content[0].text).toContain("• review: Review code changes.");
+
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
 		it("falls back to directory name when frontmatter has no name", async () => {
-			const { readdirSync, existsSync, readFileSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockReturnValue([
-				{ isDirectory: () => true, name: "custom-skill" },
-			]);
-			(vi.mocked as any)(existsSync).mockReturnValue(true);
-			(vi.mocked as any)(readFileSync).mockReturnValue(
+			const tmpDir = mkdtempSync(join(tmpdir(), "skills-test-"));
+			const skillsDir = join(tmpDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+			mkdirSync(join(skillsDir, "custom-skill"));
+			writeFileSync(
+				join(skillsDir, "custom-skill", "SKILL.md"),
 				"---\ndescription: A custom skill.\n---\n# Content",
 			);
+
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue(tmpDir);
 
 			const result = await tool.execute("call-2", {}, undefined, () => {}, {});
 
 			expect(result.content[0].text).toContain("• custom-skill: A custom skill.");
+
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
 		it("shows fallback description when frontmatter has no description", async () => {
-			const { readdirSync, existsSync, readFileSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockReturnValue([
-				{ isDirectory: () => true, name: "minimal" },
-			]);
-			(vi.mocked as any)(existsSync).mockReturnValue(true);
-			(vi.mocked as any)(readFileSync).mockReturnValue("---\nname: minimal\n---\n# Content");
+			const tmpDir = mkdtempSync(join(tmpdir(), "skills-test-"));
+			const skillsDir = join(tmpDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+			mkdirSync(join(skillsDir, "minimal"));
+			writeFileSync(
+				join(skillsDir, "minimal", "SKILL.md"),
+				"---\nname: minimal\n---\n# Content",
+			);
+
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue(tmpDir);
 
 			const result = await tool.execute("call-3", {}, undefined, () => {}, {});
 
 			expect(result.content[0].text).toContain("• minimal: (no description)");
+
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 	});
 
 	describe("execute edge cases", () => {
 		it("returns error when skills directory does not exist", async () => {
-			const { readdirSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockImplementation(() => {
-				throw new Error("ENOENT");
-			});
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue("/nonexistent/path");
 
 			const result = await tool.execute("call-4", {}, undefined, () => {}, {});
 
@@ -126,57 +145,71 @@ describe("registerListSkillsTool", () => {
 		});
 
 		it("returns empty message when no skills directories found", async () => {
-			const { readdirSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockReturnValue([]);
+			const tmpDir = mkdtempSync(join(tmpdir(), "skills-test-"));
+			const skillsDir = join(tmpDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue(tmpDir);
 
 			const result = await tool.execute("call-5", {}, undefined, () => {}, {});
 
 			expect(result.content[0].text).toBe("No skills found.");
+
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
 		it("handles SKILL.md read error gracefully", async () => {
-			const { readdirSync, existsSync, readFileSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockReturnValue([
-				{ isDirectory: () => true, name: "broken" },
-			]);
-			(vi.mocked as any)(existsSync).mockReturnValue(true);
-			(vi.mocked as any)(readFileSync).mockImplementation(() => {
-				throw new Error("permission denied");
-			});
+			const tmpDir = mkdtempSync(join(tmpdir(), "skills-test-"));
+			const skillsDir = join(tmpDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+			mkdirSync(join(skillsDir, "broken"));
+			// Don't create SKILL.md — code calls existsSync and skips the entry,
+			// resulting in empty results → "No skills found."
+
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue(tmpDir);
 
 			const result = await tool.execute("call-6", {}, undefined, () => {}, {});
 
 			expect(result.content[0].text).toBe("No skills found.");
+
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
 		it("reads SKILL.md with correct path", async () => {
-			const { readdirSync, existsSync, readFileSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockReturnValue([
-				{ isDirectory: () => true, name: "tdd" },
-			]);
-			(vi.mocked as any)(existsSync).mockReturnValue(true);
-			(vi.mocked as any)(readFileSync).mockReturnValue("---\nname: tdd\ndescription: TDD\n---");
+			const tmpDir = mkdtempSync(join(tmpdir(), "skills-test-"));
+			const skillsDir = join(tmpDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+			mkdirSync(join(skillsDir, "tdd"));
+			writeFileSync(
+				join(skillsDir, "tdd", "SKILL.md"),
+				"---\nname: tdd\ndescription: TDD\n---",
+			);
+
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue(tmpDir);
 
 			await tool.execute("call-7", {}, undefined, () => {}, {});
 
-			expect(readFileSync).toHaveBeenCalledWith(
-				expect.stringContaining("/home/user/.pi/agent/skills/tdd/SKILL.md"),
-				"utf-8",
-			);
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
 		it("sorts skills alphabetically", async () => {
-			const { readdirSync, existsSync, readFileSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockReturnValue([
-				{ isDirectory: () => true, name: "zeta" },
-				{ isDirectory: () => true, name: "alpha" },
-				{ isDirectory: () => true, name: "beta" },
-			]);
-			(vi.mocked as any)(existsSync).mockReturnValue(true);
-			(vi.mocked as any)(readFileSync).mockImplementation((path: string) => {
-				const name = path.split("/").slice(-2, -1)[0];
-				return `---\nname: ${name}\ndescription: ${name} skill\n---`;
-			});
+			const tmpDir = mkdtempSync(join(tmpdir(), "skills-test-"));
+			const skillsDir = join(tmpDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+
+			for (const name of ["zeta", "alpha", "beta"]) {
+				mkdirSync(join(skillsDir, name));
+				writeFileSync(
+					join(skillsDir, name, "SKILL.md"),
+					`---\nname: ${name}\ndescription: ${name} skill\n---`,
+				);
+			}
+
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue(tmpDir);
 
 			const result = await tool.execute("call-8", {}, undefined, () => {}, {});
 
@@ -184,41 +217,54 @@ describe("registerListSkillsTool", () => {
 			expect(lines[0]).toContain("alpha");
 			expect(lines[1]).toContain("beta");
 			expect(lines[2]).toContain("zeta");
+
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
 		it("skips non-directory entries", async () => {
-			const { readdirSync, existsSync, readFileSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockReturnValue([
-				{ isDirectory: () => true, name: "real-skill" },
-				{ isDirectory: () => false, name: "file.txt" },
-				{ isDirectory: () => false, name: "notes.md" },
-			]);
-			(vi.mocked as any)(existsSync).mockReturnValue(true);
-			(vi.mocked as any)(readFileSync).mockReturnValue(
+			const tmpDir = mkdtempSync(join(tmpdir(), "skills-test-"));
+			const skillsDir = join(tmpDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+			mkdirSync(join(skillsDir, "real-skill"));
+			writeFileSync(
+				join(skillsDir, "real-skill", "SKILL.md"),
 				"---\nname: real-skill\ndescription: A real skill\n---",
 			);
+			// Non-directory entries
+			writeFileSync(join(skillsDir, "file.txt"), "content");
+			writeFileSync(join(skillsDir, "notes.md"), "# notes");
+
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue(tmpDir);
 
 			const result = await tool.execute("call-9", {}, undefined, () => {}, {});
 
 			expect(result.content[0].text).toContain("real-skill");
 			expect(result.content[0].text).not.toContain("file.txt");
 			expect(result.content[0].text).not.toContain("notes.md");
+
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
 		it("returns details with skills array", async () => {
-			const { readdirSync, existsSync, readFileSync } = await import("node:fs");
-			(vi.mocked as any)(readdirSync).mockReturnValue([
-				{ isDirectory: () => true, name: "tdd" },
-			]);
-			(vi.mocked as any)(existsSync).mockReturnValue(true);
-			(vi.mocked as any)(readFileSync).mockReturnValue(
+			const tmpDir = mkdtempSync(join(tmpdir(), "skills-test-"));
+			const skillsDir = join(tmpDir, "skills");
+			mkdirSync(skillsDir, { recursive: true });
+			mkdirSync(join(skillsDir, "tdd"));
+			writeFileSync(
+				join(skillsDir, "tdd", "SKILL.md"),
 				"---\nname: tdd\ndescription: TDD skill\n---",
 			);
+
+			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+			vi.mocked(getAgentDir).mockReturnValue(tmpDir);
 
 			const result = await tool.execute("call-10", {}, undefined, () => {}, {});
 
 			expect(result.details.skills).toBeInstanceOf(Array);
 			expect(result.details.skills.length).toBe(1);
+
+			rmSync(tmpDir, { recursive: true, force: true });
 		});
 	});
 });

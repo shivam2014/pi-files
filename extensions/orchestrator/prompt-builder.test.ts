@@ -150,7 +150,7 @@ describe("clarification deduplication (#40)", () => {
 
 		// Sanity: STEPS_MANDATE covers ask_orchestrator
 		expect(STEPS_MANDATE).toContain("ask_orchestrator");
-		expect(STEPS_MANDATE).toContain("need input from the orchestrator");
+		expect(STEPS_MANDATE).toContain("Request input from the orchestrator");
 
 		// Read subagent-runner source to detect duplicate clarification inline
 		const { readFileSync } = await import("node:fs");

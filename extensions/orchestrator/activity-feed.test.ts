@@ -7,8 +7,7 @@
  * Fix: completeSubstepByToolCallId() targets substep by toolCallId instead.
  */
 
-import { describe, it } from "node:test";
-import assert from "node:assert/strict";
+import { describe, it, assert } from "vitest";
 import type { ActivityFeedState, Step } from "./types.ts";
 import {
 	addSubstep,

@@ -9,10 +9,11 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-// Legacy tool doc generator — used for module-load-time initialization.
-// The toolSyntax/toolOutputFormat maps are the source of truth for SDK built-in tools
-// whose promptGuidelines do not include "Output:" lines by SDK design.
-// @deprecated Prefer generateToolDocFromApi for dynamic construction from pi.getAllTools().
+// Legacy tool doc generator — used for module-load-time bootstrap BEFORE pi instance exists.
+// The toolSyntax/toolOutputFormat maps are hand-maintained for SDK built-in tools whose
+// promptGuidelines don't include "Output:" lines by SDK design.
+// Called by _initToolDocs() at module load; replaced at runtime by updateToolDocs(pi).
+// @deprecated Use generateToolDocFromApi after pi is available (from index.ts).
 export function generateToolDoc(tools: string[], constraints?: string): string {
 	const toolSyntax: Record<string, string> = {
 		read: "read({ path, offset?, limit? })",
