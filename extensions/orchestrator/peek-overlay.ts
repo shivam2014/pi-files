@@ -10,7 +10,7 @@
  * Auto-scrolls, caps at ~50 lines, Escape to close, double-press x to abort.
  */
 
-import { SPINNER_FRAMES, resetSpinner } from "./spinner-state.ts";
+import { SPINNER_FRAMES, resetSpinner, currentFrame } from "./spinner-state.ts";
 import { formatDuration } from "./ui-utils.ts";
 import { matchesKey, Key } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -107,7 +107,7 @@ export class PeekComponent implements Component {
 
         // Status line
         let statusText = "";
-        if (_viewerStatus === "running") statusText = accent("● Running");
+        if (_viewerStatus === "running") statusText = accent(currentFrame() + " Running");
         else if (_viewerStatus === "completed") statusText = success("✓ Completed");
         else if (_viewerStatus === "error") statusText = errCol("✗ Error");
         if (statusText) lines.push(box(statusText));
@@ -381,6 +381,26 @@ function scheduleRender(): void {
         _peekComponent?.invalidate();
         _peekTui?.requestRender();
     });
+}
+
+// ============================================================================
+// Spinner timer — drives re-renders so time-based spinner frames update visually
+// ============================================================================
+
+let _spinnerTimer: ReturnType<typeof setInterval> | null = null;
+
+export function stopSpinnerTimer(): void {
+    if (_spinnerTimer !== null) {
+        clearInterval(_spinnerTimer);
+        _spinnerTimer = null;
+    }
+}
+
+export function startSpinnerTimer(): void {
+    stopSpinnerTimer();
+    _spinnerTimer = setInterval(() => {
+        scheduleRender();
+    }, 80);
 }
 
 // ============================================================================
