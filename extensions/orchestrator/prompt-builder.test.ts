@@ -27,9 +27,9 @@ describe('buildOrchestratorPrompt', () => {
 
 	it('includes delegation instructions in output', () => {
 		const result = buildOrchestratorPrompt({ basePrompt: '' });
-		expect(result.systemPrompt).toContain('## Orchestrator Mode');
-		expect(result.systemPrompt).toContain('DELEGATE ONLY');
-		expect(result.systemPrompt).toContain('delegate(specialist, task)');
+		expect(result.systemPrompt).toContain('## Capabilities');
+		expect(result.systemPrompt).toContain('Delegate only');
+		expect(result.systemPrompt).toContain('delegate(specialist, task, scope?)');
 	});
 
 	it('includes specialist roster built from mock data', () => {
@@ -49,7 +49,7 @@ describe('buildOrchestratorPrompt', () => {
 	it('omits fusion section when fusionEnabled is false', () => {
 		const result = buildOrchestratorPrompt({ basePrompt: '', fusionEnabled: false });
 		expect(result.systemPrompt).not.toContain('Fusion Tool');
-		expect(result.systemPrompt).not.toContain('multi-model advice');
+		// "multi-model advice" is in the static intro, not fusion section — skip that check
 	});
 
 	it('omits fusion section when fusionEnabled is undefined', () => {
@@ -82,14 +82,14 @@ describe('buildOrchestratorPrompt', () => {
 		const existingPrompt = 'Some text\n## Orchestrator Mode\nmore text';
 		const result = buildOrchestratorPrompt({ basePrompt: existingPrompt });
 		expect(result.systemPrompt).toBe(existingPrompt);
-		expect(result.systemPrompt).not.toContain('DELEGATE ONLY');
+		expect(result.systemPrompt).not.toContain('## Capabilities');
 	});
 
 	it('appends instructions after existing basePrompt content', () => {
 		const basePrompt = 'Existing system prompt content';
 		const result = buildOrchestratorPrompt({ basePrompt });
 		expect(result.systemPrompt).toContain(basePrompt);
-		expect(result.systemPrompt).toContain('## Orchestrator Mode');
+		expect(result.systemPrompt).toContain('## Capabilities');
 	});
 
 	it('handles skills with missing description field gracefully', () => {
@@ -124,7 +124,7 @@ describe("appendix slimming (#39)", () => {
 		const basePrompt = "Some base instructions";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
 		// Must still contain delegation workflow
-		expect(systemPrompt).toContain("delegate(specialist, task)");
+		expect(systemPrompt).toContain("delegate(specialist, task, scope?)");
 		expect(systemPrompt).toContain("Specialist roster");
 		expect(systemPrompt).toContain("Scope requirement");
 		expect(systemPrompt).toContain("Execution Monitoring");
@@ -202,7 +202,7 @@ Pi coding agent documentation (available on request):
 	it("replaces old pi intro with orchestrator intro", () => {
 		const basePrompt = OLD_PI_INTRO + "\nSome additional instructions\n";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
-		expect(systemPrompt).toContain("orchestrator mode");
+		expect(systemPrompt).toContain("You are an orchestrator");
 		expect(systemPrompt).not.toContain("You are an expert coding assistant operating inside pi");
 		expect(systemPrompt).toContain("Some additional instructions");
 	});
@@ -210,7 +210,7 @@ Pi coding agent documentation (available on request):
 	it("handles leading content before old pi intro (no ^ anchor)", () => {
 		const basePrompt = "\n  \n" + OLD_PI_INTRO + "\nRemaining content\n";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
-		expect(systemPrompt).toContain("orchestrator mode");
+		expect(systemPrompt).toContain("You are an orchestrator");
 		expect(systemPrompt).not.toContain("You are an expert coding assistant operating inside pi");
 		expect(systemPrompt).toContain("Remaining content");
 	});
@@ -226,13 +226,13 @@ Pi coding agent documentation (available on request):
 		const basePrompt = "Custom prompt without any pi intro";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
 		expect(systemPrompt).toContain(basePrompt);
-		expect(systemPrompt).toContain("## Orchestrator Mode");
+		expect(systemPrompt).toContain("## Capabilities");
 		expect(systemPrompt).not.toContain("You are an expert coding assistant operating inside pi");
 	});
 
 	it("handles empty basePrompt", () => {
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt: "", fusionEnabled: false });
 		expect(systemPrompt).not.toContain("You are an expert coding assistant operating inside pi");
-		expect(systemPrompt).toContain("## Orchestrator Mode");
+		expect(systemPrompt).toContain("## Capabilities");
 	});
 });

@@ -27,7 +27,7 @@ import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
 import { buildOrchestratorPrompt } from "./prompt-builder.ts";
 import { registerAllTools } from "./registration-hub.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
-import { SPECIALISTS } from "./specialists.ts";
+import { SPECIALISTS, updateToolDocs } from "./specialists.ts";
 import { join } from "node:path";
 
 export { getBashToolReplacement } from "./bash-interceptor.ts";
@@ -152,6 +152,7 @@ export default function (pi: ExtensionAPI) {
 	// ── Register tools, commands, and shortcuts ──
 	registerAllTools(pi, resolveCwd());
 	pi.registerTool(createReadSkillTool());
+	updateToolDocs(pi);
 
 	// ── Ctrl+Q: Peek overlay (Layer 3, mnemonic "quick peek") ──
 	pi.registerShortcut("ctrl+q", {

@@ -71,6 +71,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			"Spawns a subagent specialist to do the work",
 			"Scope required for coder, writer, reviewer — optional for scout, researcher",
 			"Optional skills: delegate({ specialist: 'coder', task: '...', skills: ['tdd'] })",
+            "Output: Returns specialist output with findings, audit trail, and completion status; may include partial streaming updates during execution",
 		],
 
 		// ── Render: what shows when tool is invoked ──

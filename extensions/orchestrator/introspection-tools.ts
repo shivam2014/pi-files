@@ -28,6 +28,7 @@ export function registerListSkillsTool(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"List skills: list_skills() — returns all installed skills with their names and descriptions",
 			"Use to discover available skills before delegating",
+            "Output: Returns bulleted list of installed skills as '• name: description' text, or 'No skills found' if empty",
 		],
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
 			const agentDir = getAgentDir();
@@ -93,6 +94,7 @@ export function registerListToolsTool(pi: ExtensionAPI, cwd: string): void {
 		promptGuidelines: [
 			"List tools: list_tools() — returns all available orchestration tools with their parameters and descriptions",
 			"Use to discover what tools are available",
+            "Output: Returns 'Available tools (N):' header followed by bulleted tool names, or '(none)' if empty",
 		],
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
 			const activeTools = pi.getActiveTools() as string[] || [];

@@ -74,25 +74,22 @@ ${rows}
 const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error (destructive operations, broad file changes)\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n`;
 
 const DELEGATION_INSTRUCTIONS_TEMPLATE = `
-## Orchestrator Mode — DELEGATE ONLY
-
-You are an expert coding assistant operating in **orchestrator mode**. In this mode, your role shifts from direct execution to delegation management — you direct specialist agents who do the hands-on work.
-
-### Your tool: delegate(specialist, task)
-
-Your main tool: \`delegate(specialist, task)\`.
-Call it once per step. Review the output. Then call it again for the next step.
-
-You do NOT have read, bash, grep, find, edit, or write tools in this mode.
-You CANNOT access files or run commands directly.
-
-### Specialist roster:
-{{ROSTER}}
-{{ROUTING}}{{SKILLS}}
+## Capabilities
+| Tool | Purpose |
+|------|---------|
+| plan(goal, steps) | Declare a plan before delegating |
+| plan_add_steps(steps) | Add steps mid-workflow |
+| delegate(specialist, task, scope?) | Delegate to a specialist |
+| fusion(context, task, draft_plan?) | Multi-model analysis |
+| read_skill(name) | Load skill instructions |
+| list_skills | List available skills |
+| list_tools | List available tools |
 
 ### Workflow:
-1. FIRST: Call plan(goal, steps) to declare the overall plan. The goal is a one-line summary. The steps are the actions you will delegate. Example:
-   plan("Fix auth bug", ["Read auth middleware", "Fix token validation", "Write tests", "Verify"])
+1. FIRST: Call plan(goal, steps) to declare the overall plan. The goal is a one-line summary. The steps are the actions you will delegate. Examples:
+   plan("Fix login bug", ["diagnose", "implement fix", "test"])
+   plan("Research auth options", ["search docs", "read findings", "summarize"])
+   plan("Write API docs", ["read source", "draft", "review"])
 
 2. SECOND: For each step, call delegate(specialist, task, scope) to execute work. Optionally pass skills: string[] to override the specialist's default skill pack(s) for this delegation.
 
@@ -128,11 +125,17 @@ delegate("coder", "fix the token expiry", {
 
 You decide next step AFTER seeing previous result. NOT before.
 
-## Skill Routing
+### Specialist roster:
+{{ROSTER}}
+{{ROUTING}}{{SKILLS}}
 
-Load workflow: \`read_skill("ask-matt")\` at session start.
-When you see /skill-name references, call \`read_skill("skill-name")\` to load and follow that skill's methodology.
-If a skill references another skill internally, load that too via \`read_skill()\`. Skills form a graph, not a list.
+## Skills
+| Condition | Action |
+|-----------|--------|
+| Task matches a skill's description | read_skill("matching-skill") for full instructions |
+| Task explicitly names a skill | read_skill("named-skill") |
+| Loaded skill references another | read_skill() to load that too |
+| No match | Proceed without |
 
 # Recalibration
 
@@ -156,11 +159,10 @@ Use this to decide:
 
 No automatic retries. Each retry uses modified task based on what failed.
 
-# Auto-lint Feedback
+# Blocking Feedback
 
-When you see a message with customType 'lint', treat it as blocking feedback.
-If the lint failed, stop and fix the reported issues before calling any further tools.
-Do not proceed with edits or delegation until lint passes.
+Messages with customType 'lint'|'error'|'block' are blocking feedback.
+STOP, fix reported issues, then proceed. Do not continue until resolved.
 
 # Audit & Issues Review
 
@@ -185,7 +187,7 @@ Never silently discard problems. Every tool error, permission issue, file-not-fo
 
 /**
  * Build the orchestrator system prompt with delegation instructions.
- * Deduplicates: if basePrompt already contains `## Orchestrator Mode`, returns it unchanged.
+ * Deduplicates: if basePrompt already contains the orchestrator prompt, returns it unchanged.
  */
 export function buildOrchestratorPrompt(options: {
 	basePrompt: string;
@@ -196,17 +198,18 @@ export function buildOrchestratorPrompt(options: {
 }): { systemPrompt: string } {
 	const { basePrompt, skills, fusionEnabled, pi } = options;
 
-	// Dedup guard: if already has orchestrator mode, return unchanged immediately
-	if (basePrompt.includes("## Orchestrator Mode")) {
+	// Dedup guard: if already has orchestrator prompt (new or old format), return unchanged immediately
+	if (basePrompt.includes("You are an orchestrator") || basePrompt.includes("## Orchestrator Mode")) {
 		return { systemPrompt: basePrompt };
 	}
 
 	// Build new intro replacing pi's hardcoded "You are an expert coding assistant..."
-	const ORCHESTRATOR_INTRO = `You are an expert AI assistant operating in **orchestrator mode** inside pi coding agent. In this mode, your role shifts from direct execution to delegation management — you direct specialist agents who do the hands-on work for you. You do not read files, edit code, or run commands yourself.
+	const ORCHESTRATOR_INTRO = `You are an orchestrator. Delegate only — you do NOT have read/bash/grep/find/edit/write.
+Plan steps with plan(), delegate to specialists, get multi-model advice with fusion().
 
-Pi coding agent documentation (available on request):
+Pi SDK docs (read with read() tool):
 - Main: ${getReadmePath()}
-- Additional docs: ${getDocsPath()}
+- Docs: ${getDocsPath()}
 - Examples: ${getExamplesPath()}`;
 
 	// Replace old pi intro with orchestrator intro using robust pattern with fallback
@@ -223,8 +226,10 @@ Pi coding agent documentation (available on request):
 			? basePrompt.replace(simplePattern, ORCHESTRATOR_INTRO + "\n\n")
 			: basePrompt; // fallback: don't double-intro
 	} else {
-		// No old intro at all — use basePrompt as-is
-		baseWithNewIntro = basePrompt;
+		// No old intro at all — prepend orchestrator intro so the model knows its role
+		baseWithNewIntro = basePrompt
+			? basePrompt
+			: ORCHESTRATOR_INTRO;
 	}
 
 	// Build dynamic specialist roster

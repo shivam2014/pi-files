@@ -25,6 +25,11 @@ export function createReadSkillTool() {
 				description: "Name of the skill to read (e.g., 'tdd', 'implement', 'review')",
 			}),
 		}),
+		promptGuidelines: [
+			"Read skill file: read_skill({ name: 'tdd' }) — returns full SKILL.md contents for the named skill",
+			"Use to load skill instructions before executing a task that references one",
+			"Output: Returns full skill file content as text, or an error message if skill not found or path traversal blocked",
+		],
 		async execute(
 			toolCallId: string,
 			params: ReadSkillParams,

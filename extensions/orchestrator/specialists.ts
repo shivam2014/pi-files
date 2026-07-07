@@ -9,6 +9,10 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+// Legacy tool doc generator — used for module-load-time initialization.
+// The toolSyntax/toolOutputFormat maps are the source of truth for SDK built-in tools
+// whose promptGuidelines do not include "Output:" lines by SDK design.
+// @deprecated Prefer generateToolDocFromApi for dynamic construction from pi.getAllTools().
 export function generateToolDoc(tools: string[], constraints?: string): string {
 	const toolSyntax: Record<string, string> = {
 		read: "read({ path, offset?, limit? })",
@@ -53,6 +57,37 @@ export function generateToolDoc(tools: string[], constraints?: string): string {
 	if (constraints) {
 		lines.push(constraints);
 	}
+	return lines.join("\n");
+}
+
+/**
+ * Dynamic tool doc generator sourced from pi.getAllTools().
+ * Reads tool syntax from parameters schema and output format from promptGuidelines.
+ *
+ * For each tool, emits:
+ *   - `toolName({ param1, param2 })`
+ *   -   Output: <text from promptGuidelines line starting with "Output:">
+ *
+ * Tools without promptGuidelines (or without an "Output:" line) get syntax-only.
+ */
+export function generateToolDocFromApi(
+	toolInfos: { name: string; parameters?: any; promptGuidelines?: string[] }[],
+	constraints?: string,
+): string {
+	const lines = ["\n\nYour available tools:"];
+	for (const tool of toolInfos) {
+		const params = tool.parameters?.properties
+			? Object.keys(tool.parameters.properties).join(", ")
+			: "";
+		const syntax = params ? `${tool.name}({ ${params} })` : `${tool.name}()`;
+		lines.push(`- \`${syntax}\``);
+		// Find the Output: line in promptGuidelines
+		const outputLine = tool.promptGuidelines?.find(g => g.startsWith("Output:"));
+		if (outputLine) {
+			lines.push(`  ${outputLine}`);
+		}
+	}
+	if (constraints) lines.push(constraints);
 	return lines.join("\n");
 }
 
@@ -117,7 +152,7 @@ When given a task, follow this workflow:
    - goal: one-line description of what you're doing
    - steps: ordered array of step descriptions (what you'll do, NOT tool commands)
    
-   Good: planSteps("Read auth middleware", ["Find auth files", "Read each file", "Summarize findings"])
+   Good: planSteps("Investigate issue", ["Find relevant files/docs", "Read and analyze", "Summarize findings"])
    Bad:  Don't call planSteps with generic tool names like ["grep", "cat", "report"]
 
 2. **Execute each step** — Use your available tools (read, grep, bash, etc.) to do the work.
@@ -191,14 +226,69 @@ Good: "Bug in auth middleware. Token expiry check use '<' not '<='. Fix:"
 Drop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.
 
 ## Boundaries
-Code/commits/PRs: write normal. "stop caveman" / "normal mode": revert.
+Code/docs/data/PRs: write normal. "stop caveman" / "normal mode": revert.
 `;
 
 const SCOUT_TOOLS = ["read", "grep", "find", "ls", "git-read", "gh"] as const;
 const RESEARCHER_TOOLS = ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "find"] as const;
+const CODER_TOOLS = ["read", "bash", "edit", "write", "grep", "lint"] as const;
+const REVIEWER_TOOLS = ["read", "bash", "grep"] as const;
+const WRITER_TOOLS = ["read", "write", "edit", "ls", "find", "git-read"] as const;
 
-const _scoutToolDoc = generateToolDoc([...SCOUT_TOOLS], "You do NOT have bash, edit, or write.");
-const _researcherToolDoc = generateToolDoc([...RESEARCHER_TOOLS], "You do NOT have bash, edit, or write.");
+// :raw usage hint for specialists that have the read tool
+const RAW_HINT = "For complete file reads, use :raw suffix: read({ path: 'file.ts:raw' })";
+
+// Exported let bindings — populated at module load via _initToolDocs(),
+// then refreshable at runtime via updateToolDocs(pi).
+export let _scoutToolDoc = "";
+export let _coderToolDoc = "";
+export let _reviewerToolDoc = "";
+export let _researcherToolDoc = "";
+export let _writerToolDoc = "";
+
+/**
+ * Initialize tool doc variables at module load using legacy generateToolDoc (hardcoded maps).
+ * Called synchronously before SPECIALISTS is evaluated so template literals capture correct values.
+ * Callers may later refresh via updateToolDocs(pi) when a pi instance is available.
+ */
+function _initToolDocs(): void {
+	_scoutToolDoc = generateToolDoc([...SCOUT_TOOLS], `You do NOT have bash, edit, or write.\n${RAW_HINT}`);
+	_coderToolDoc = generateToolDoc([...CODER_TOOLS], `Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.\n${RAW_HINT}`);
+	_reviewerToolDoc = generateToolDoc([...REVIEWER_TOOLS], `You do NOT have edit or write. You cannot modify files.\n${RAW_HINT}`);
+	_researcherToolDoc = generateToolDoc([...RESEARCHER_TOOLS], `You do NOT have bash, edit, or write.\n${RAW_HINT}`);
+	_writerToolDoc = generateToolDoc([...WRITER_TOOLS], "You do NOT have bash.");
+}
+_initToolDocs();
+
+/**
+ * Refresh tool doc variables from the live pi.getAllTools() registry.
+ * Uses generateToolDocFromApi which sources output format from each tool's promptGuidelines.
+ */
+export function updateToolDocs(pi: { getAllTools: () => { name: string; parameters?: any; promptGuidelines?: string[] }[] }): void {
+	const allTools = pi.getAllTools();
+	const byName = new Map(allTools.map(t => [t.name, t]));
+
+	_scoutToolDoc = generateToolDocFromApi(
+		[...SCOUT_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
+		`You do NOT have bash, edit, or write.\n${RAW_HINT}`,
+	);
+	_coderToolDoc = generateToolDocFromApi(
+		[...CODER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
+		`Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.\n${RAW_HINT}`,
+	);
+	_reviewerToolDoc = generateToolDocFromApi(
+		[...REVIEWER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
+		`You do NOT have edit or write. You cannot modify files.\n${RAW_HINT}`,
+	);
+	_researcherToolDoc = generateToolDocFromApi(
+		[...RESEARCHER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
+		`You do NOT have bash, edit, or write.\n${RAW_HINT}`,
+	);
+	_writerToolDoc = generateToolDocFromApi(
+		[...WRITER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
+		"You do NOT have bash.",
+	);
+}
 
 /**
  * Specialist roster: 5 built-in specialists.
@@ -217,7 +307,7 @@ planSteps("Investigate codebase", ["Locate relevant files", "Read and analyze ea
 
 Then after each step, call advanceStep() to mark it complete.
 
-You are a read-only codebase investigator. You NEVER write or edit files.
+You are a read-only investigator (inspects code, docs, data, configs - whatever the task requires). You NEVER write or edit files.
 
 ${MINIMAL_ACTION}
 
@@ -232,7 +322,7 @@ Output format:
 ## Files Found
 <list key files with paths>
 
-## Key Code
+## Key Findings
 <essential code snippets>
 
 ## Dependencies
@@ -258,6 +348,8 @@ Be realistic about changeType:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
+${_scoutToolDoc}
+
 ${TERSE_INSTRUCTION}`,
 	},
 	coder: {
@@ -270,7 +362,7 @@ ${TERSE_INSTRUCTION}`,
 You are an implementation specialist. You write and edit code.
 
 Rules:
-- Make exactly the described changes, nothing extra
+- Focus on making exactly the described changes, unless the task explicitly asks for restructuring or you discover dead code or critical information/flow that changes the defined task. Adapt then and report it to the orchestrator without fail.
 - ALWAYS use \`edit\` or \`write\` to modify files — NEVER \`bash\`+sed/awk
 - Use the \`grep\` tool (which wraps ripgrep) to search code — NOT \`bash\`+\`rg\` or \`bash\`+\`grep\`
 - Use \`bash\` to run \`gh\` (GitHub CLI) for GitHub operations instead of \`git commit/push/branch\`
@@ -291,7 +383,7 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}${generateToolDoc(["read", "bash", "edit", "write", "grep", "lint"], "Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.")}${SCOPE_VIOLATION_GUIDANCE}`,
+${TERSE_INSTRUCTION}${_coderToolDoc}${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 	reviewer: {
 		name: "reviewer",
@@ -300,12 +392,13 @@ ${TERSE_INSTRUCTION}${generateToolDoc(["read", "bash", "edit", "write", "grep", 
 		suggestedSkills: ["review"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
-You are a code reviewer. You NEVER make changes.
+You are a reviewer. You review code, documents, data — whatever the task requires. You NEVER make changes.
 
 Your job:
 - Read the changed files
 - Use the \`grep\` tool (which wraps ripgrep) to search code — NOT \`bash\`+\`rg\` or \`bash\`+\`grep\`
-- Check for: bugs, security issues, performance problems, style violations
+- Check code: bugs, security, performance, style, correctness
+- Check docs/data: accuracy, completeness, clarity, structure, consistency
 - Compare against the design spec if provided
 - Be thorough but concise
 - If the review scope or acceptance criteria are unclear, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info"
@@ -328,7 +421,7 @@ Output format:
 - issues: [blocking problems or none]
 - recommendation: next step for orchestrator
 
-${TERSE_INSTRUCTION}${generateToolDoc(["read", "bash", "grep"], "You do NOT have edit or write. You cannot modify files.")}${SCOPE_VIOLATION_GUIDANCE}`,
+${TERSE_INSTRUCTION}${_reviewerToolDoc}${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 	researcher: {
 		name: "researcher",
@@ -344,7 +437,6 @@ Your job:
 - Use \`ls\` to list directory contents when exploring local files
 - Use \`grep\` to search file contents for patterns
 - Use \`find\` to locate files by name or glob pattern
-- Trace code paths and find evidence
 - Provide evidence-based answers with sources
 - Use web_search to find relevant web results — it returns 10 results with titles, URLs, and snippets
 - Use fetch_content to fetch the full content of a webpage after finding relevant URLs
@@ -388,7 +480,7 @@ ${TERSE_INSTRUCTION}`,
 		suggestedSkills: ["agents-md-writer"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
 
-You are a documentation writer. You create and edit docs.
+You are a writer. You create and edit docs, reports, and data files.
 
 Your job:
 - Read existing docs to understand current state
@@ -410,7 +502,7 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}${generateToolDoc(["read", "write", "edit", "ls", "find", "git-read"], "You do NOT have bash.")}${SCOPE_VIOLATION_GUIDANCE}`,
+${TERSE_INSTRUCTION}${_writerToolDoc}${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 };
 

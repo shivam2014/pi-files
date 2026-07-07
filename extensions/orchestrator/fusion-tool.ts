@@ -248,6 +248,7 @@ export function registerFusionTool(pi: ExtensionAPI, cwd: string): void {
 			"Panel (2-3 models) critiques your plan, judge identifies contradictions",
 			"Use before high-cost delegations (destructive ops, broad changes)",
 			"Skip for simple tactical tasks",
+            "Output: Returns structured JSON analysis with consensus, contradictions, unique insights, blind spots, and synthesized recommendations; may include partial streaming updates during panel execution",
 		],
 
 		async execute(toolCallId: string, params: FusionParams, signal: AbortSignal | undefined, onUpdate: any, ctx: ExtensionContext) {
