@@ -10,7 +10,7 @@
  * - Output compression (ANSI strip, blank collapse)
  */
 
-import type { ActivityFeedState, Step, Substep } from "./types.ts";
+import type { ActivityFeedState, Step, Substep, PlanStep } from "./types.ts";
 import { formatDuration } from "./ui-utils.ts";
 import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
 
@@ -750,4 +750,161 @@ export function compressOutput(output: string): string {
 	result = result.replace(/\n{3,}/g, "\n\n");
 	result = result.trim();
 	return result;
+}
+
+// ============================================================================
+// ActivityFeed class — encapsulates mutable feed state
+// ============================================================================
+
+/**
+ * ActivityFeed — instance-based wrapper around the feed state machine.
+ * All mutating methods return `this` for chaining.
+ * Replaces module-level mutable state and AskOrchestratorFeedApi pattern.
+ */
+export class ActivityFeed {
+	private state: ActivityFeedState;
+	private snapshot: string | null = null;
+
+	constructor() {
+		this.state = createActivityFeed();
+	}
+
+	addStep(label: string): this {
+		this.state = addStep(this.state, label);
+		return this;
+	}
+
+	addSubstep(label: string, toolCallId?: string): this {
+		this.state = addSubstep(this.state, label, toolCallId);
+		return this;
+	}
+
+	setToolDetail(detail: string): this {
+		this.state = setToolDetail(this.state, detail);
+		return this;
+	}
+
+	clearToolDetail(): this {
+		this.state = clearToolDetail(this.state);
+		return this;
+	}
+
+	completeLastSubstep(outputPreview?: string, isError?: boolean): this {
+		this.state = completeLastSubstep(this.state, outputPreview, isError);
+		return this;
+	}
+
+	completeSubstepByToolCallId(toolCallId: string, outputPreview?: string, isError?: boolean): this {
+		this.state = completeSubstepByToolCallId(this.state, toolCallId, outputPreview, isError);
+		return this;
+	}
+
+	completeActiveSubstepWithLabel(label: string, outputPreview?: string, isError?: boolean, isReport?: boolean): this {
+		this.state = completeActiveSubstepWithLabel(this.state, label, outputPreview, isError, isReport);
+		return this;
+	}
+
+	completeCurrentStep(): this {
+		this.state = completeCurrentStep(this.state);
+		return this;
+	}
+
+	markFeedError(message: string): this {
+		this.state = markFeedError(this.state, message);
+		return this;
+	}
+
+	updateActiveSubstepOutput(outputPreview: string): this {
+		this.state = updateActiveSubstepOutput(this.state, outputPreview);
+		return this;
+	}
+
+	render(specialistName?: string, goalOverride?: string): string {
+		return renderActivityFeed(specialistName ?? "", this.state, goalOverride);
+	}
+
+	inspectState(): Record<string, unknown> | null {
+		return inspectFeedState(this.state);
+	}
+
+	snapshotRender(): string {
+		return snapshotFeedRender(this.state);
+	}
+
+	appendWebSearchResults(results: any[]): this {
+		for (const step of this.state.steps) {
+			for (const sub of step.substeps) {
+				if (!sub.completed && sub.label && results?.length) {
+					const total = results.length;
+					this.state = completeActiveSubstepWithLabel(
+						this.state,
+						appendWebSearchResults(sub.label, total),
+						undefined,
+						false,
+					);
+					break;
+				}
+			}
+		}
+		return this;
+	}
+
+	compressOutput(output: string): string {
+		return compressOutput(output);
+	}
+
+	static fromPlanSteps(steps: PlanStep[], goal: string): ActivityFeed {
+		const feed = new ActivityFeed();
+		feed.state = {
+			...feed.state,
+			goal,
+			steps: steps.map((s) => ({
+				label: s.label,
+				completed: s.completed,
+				substeps: [],
+				startTime: s.startTime ?? Date.now(),
+				endTime: s.endTime,
+			})),
+			currentStep: steps.length > 0 ? 0 : -1,
+			planParsed: true,
+		};
+		return feed;
+	}
+
+	/** Convenience read-only accessors for common state properties. */
+	get steps(): Step[] {
+		return this.state.steps;
+	}
+
+	get currentStep(): number {
+		return this.state.currentStep;
+	}
+
+	get goal(): string {
+		return this.state.goal;
+	}
+
+	get errored(): boolean | undefined {
+		return this.state.errored;
+	}
+
+	get errorMessage(): string | undefined {
+		return this.state.errorMessage;
+	}
+
+	get feedState(): ActivityFeedState {
+		return this.state;
+	}
+
+	set feedState(val: ActivityFeedState) {
+		this.state = val;
+	}
+
+	get planParsed(): boolean {
+		return this.state.planParsed ?? false;
+	}
+
+	set planParsed(val: boolean) {
+		this.state = { ...this.state, planParsed: val };
+	}
 }

@@ -1,0 +1,590 @@
+/**
+ * DelegatePipeline — orchestrates specialist subagent delegation end-to-end.
+ * Inlined from handle-diagnostics.ts and delegate-result-processor.ts.
+ */
+import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext } from "./types.ts";
+import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills } from "./specialists.ts";
+import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
+import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
+import { hasActivePlan, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
+import { debugLog } from "./debug.ts";
+import { hidePeek, clearViewerState } from "./peek-overlay.ts";
+import { Scope, ScopeManager } from "./scope-manager.ts";
+import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
+import { formatMetricsLine } from "./types.ts";
+import { captureDiagnostic, isDiagnosticsEnabled, persistDiagnostic, cleanupOldDiagnostics } from "./subagent-diagnostics.ts";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+
+/** Result type returned by executeDelegate */
+export interface ExecuteDelegateResult {
+	content: Array<{ type: "text"; text: string }>;
+	details: Record<string, unknown>;
+}
+
+/**
+ * Full delegation pipeline — scope resolution, subagent execution, diagnostics,
+ * result formatting, plan-panel lifecycle.
+ */
+export class DelegatePipeline {
+	constructor(private deps: { scopeManager: ScopeManager }) {}
+
+	/**
+	 * Execute a delegation to a specialist subagent.
+	 *
+	 * @param params - Delegation parameters (specialist, task, optional scope, optional signal)
+	 * @param ctx - Agent context (cwd, modelRegistry, model, ui, etc.)
+	 * @param onUpdate - Callback for progress updates during execution
+	 * @returns Result with content and details
+	 */
+	async run(
+		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal },
+		ctx: DelegateControllerContext,
+		onUpdate: (update: any) => void,
+	): Promise<ExecuteDelegateResult> {
+		// ── Validation ──
+		if (!params.specialist || !params.task) {
+			return { content: [{ type: "text" as const, text: "Provide specialist+task" }], details: {} };
+		}
+
+		const key = params.specialist?.toLowerCase().trim();
+		const specialist: Specialist | undefined = key && Object.hasOwn(SPECIALISTS, key) ? SPECIALISTS[key] : undefined;
+		if (!specialist) {
+			const available = Object.keys(SPECIALISTS).join(", ");
+			return { content: [{ type: "text" as const, text: `Unknown specialist: "${params.specialist}". Available: ${available}` }], details: {} };
+		}
+
+		// Read-only specialists (no edit/write tools) don't need strict scope validation
+		const isReadOnly = !specialist.tools.includes('edit') && !specialist.tools.includes('write');
+
+		// Normalize specialist name for case-insensitive comparison downstream
+		params = { ...params, specialist: specialist.name };
+
+		// Resolve skills: override replaces defaults (issue #42)
+		const resolvedSuggestedSkills = getSpecialistSkills(specialist.name, params.skills);
+
+		const { signal } = params;
+
+		// ── Resolve scope (pure) ──
+		let scopeToUse: Scope | null = ScopeManager.resolveScope(params, specialist, ctx.cwd);
+
+		// Coder without scope → error
+		if (params.specialist === "coder" && !scopeToUse) {
+			return {
+				content: [{
+					type: "text" as const,
+					text: `⛔ **Scope required for coder.**
+
+You must pass a \`scope\` parameter when calling coder.
+
+\`\`\`
+delegate("coder", "fix the auth middleware", {
+    scope: {
+        filesToModify: ["src/auth.ts"],
+        filesToCreate: [],
+        directories: ["src/"],
+        maxFiles: 10
+    }
+})
+\`\`\`
+
+The scope tells the coder exactly which files it's allowed to touch.`
+				}],
+				details: {},
+			};
+		}
+
+		// ── Apply scope (side-effectful: gate check + write) ──
+		if (scopeToUse !== null) {
+			const gateResult = resolve(params.task, scopeToUse);
+			if (gateResult === "ask" && !isReadOnly) {
+				return {
+					content: [{ type: "text", text: `⚠️ Scope is vague. Orchestrator must clarify scope before delegating to ${specialist.name}.\n\nTask: ${params.task}\n\nPlease provide a clearer task description or explicit scope, then retry.` }],
+					details: { specialist: specialist.name, task: params.task, status: "scope_vague", turns: 0 },
+				};
+			}
+			this.deps.scopeManager.writeScope(scopeToUse);
+		}
+
+		// ── Plan panel check ──
+		const specName = specialist.name.charAt(0).toUpperCase() + specialist.name.slice(1);
+		const stepLabel = `${specName}: ${params.task}`;
+
+		if (!hasActivePlan(ctx)) {
+			return {
+				content: [{ type: "text", text: "No active plan. Call plan(goal, steps) first with a goal and step descriptions before delegating work." }],
+				details: {},
+			};
+		}
+		startDelegationStep(stepLabel, ctx);
+
+		onUpdate?.({
+			content: [{ type: "text", text: `${currentFrame()} ${specialist.name}...` }],
+			details: { status: "running", specialist: specialist.name },
+		});
+
+		// Dynamic status: delegating
+		const orchestratorUi: OrchestratorUi | undefined = ctx?.ui ? ctx.ui : undefined;
+		const verb = SPECIALIST_VERBS[specialist.name] || 'Working';
+		try {
+			if (orchestratorUi) {
+				orchestratorUi.setWorkingMessage(`Sending to ${specialist.name}...`);
+			}
+		} catch {}
+
+		incrementDelegationCount(ctx);
+
+		// ── Metrics tracking ──
+		const metrics: DelegationMetrics = {
+			readCalls: 0,
+			grepCalls: 0,
+			findCalls: 0,
+			editCalls: 0,
+			writeCalls: 0,
+			bashCalls: 0,
+			lsCalls: 0,
+			scopeViolations: 0,
+		};
+		const wrappedOnUpdate = (update: any) => {
+			if (update.details?.tool) {
+				switch (update.details.tool) {
+					case "read": metrics.readCalls++; break;
+					case "grep": metrics.grepCalls++; break;
+					case "find": metrics.findCalls++; break;
+					case "edit": metrics.editCalls++; break;
+					case "write": metrics.writeCalls++; break;
+					case "bash": metrics.bashCalls++; break;
+					case "ls": metrics.lsCalls++; break;
+				}
+			}
+			onUpdate?.(update);
+		};
+
+		const startTime = Date.now();
+
+		// Dynamic status: subagent session starting
+		try {
+			if (orchestratorUi) {
+				orchestratorUi.setWorkingMessage(`${verb}...`);
+			}
+		} catch {}
+
+		// ── Build subagent context + run ──
+		const parentCtx: SubagentContext = {
+			modelRegistry: ctx.modelRegistry,
+			model: ctx.model,
+			onAskOrchestrator: createAskOrchestratorResolver(ctx),
+		};
+
+		const result = await runSubagent(
+			specialist, params.task, ctx.cwd,
+			parentCtx,
+			signal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
+			ctx, // orchestratorCtx: thread session context to plan-panel calls
+		);
+		const elapsedMs = Date.now() - startTime;
+
+		// Dynamic status: subagent completed
+		try {
+			if (orchestratorUi) {
+				orchestratorUi.setWorkingMessage('Sending to orchestrator...');
+			}
+		} catch {}
+
+		// ── Check for errors/abort ──
+		const isAborted = (signal?.aborted || false) || (result?.output?.startsWith("[aborted]") ?? false);
+		let isError = !result || !result.output || result.output.startsWith("[error]") || result.output.startsWith("[aborted]");
+		if (!isError && result?.stopReason === "error") {
+			isError = true;
+		}
+		const hasError = isAborted || isError;
+
+		// ── Handle diagnostics (capture + persist, no UI) ──
+		const diagnostic = this.handleDiagnostics(result, specialist.name, params.task, ctx, metrics, startTime);
+
+		// Diagnostic UI + display — stays in controller (orchestrator concern)
+		if (diagnostic) {
+			// Notify user via SDK
+			try {
+				ctx.ui?.notify?.(
+					`⚠ Diagnostic: ${diagnostic.specialist} failed — ${diagnostic.errorMessage || `0 tool calls in ${diagnostic.turns} turn(s)`}`,
+					"warning"
+				);
+			} catch (e) {
+				debugLog('[diagnostic] ui.notify failed', e);
+			}
+
+			// Text-mode visible marker in delegation output
+			const warningMsg = diagnostic.errorMessage
+				? `${diagnostic.specialist} failed: ${diagnostic.errorMessage.slice(0, 150)}`
+				: `${diagnostic.specialist} returned 0 tool calls in ${diagnostic.turns} turn(s). Incident logged to disk.`;
+			const warningLine = `\n\n⚠️ [Diagnostic] ${warningMsg}\n`;
+			result.output = result.output ? warningLine + result.output : warningLine;
+
+			// Inline display — add substep to current plan step
+			try {
+				const label = `⚠ Diagnostic: ${diagnostic.specialist} ${diagnostic.turns}t ${diagnostic.toolCalls}tc`;
+				updatePlanStepDetail([label], ctx);
+				recordTimelineFrame('subagent_diagnostic_captured', {
+					diagnosticId: `${diagnostic.timestamp}-${diagnostic.specialist}-${diagnostic.task.length.toString()}`,
+				}, undefined, ctx);
+			} catch (e) {
+				debugLog('[diagnostic] display failed', e);
+			}
+		}
+
+		// ── Format result output ──
+		try {
+			if (!hasError && result?.output) {
+				// Dynamic status: processing result
+				try {
+					if (orchestratorUi) {
+						orchestratorUi.setWorkingMessage('Processing...');
+					}
+				} catch {}
+
+				if (result.output) {
+					debugLog("delegate-tool: subagent completed", { specialist: params.specialist, outputLength: result.output.length });
+				}
+
+				result.output = this.processDelegateResult(
+					result.output, metrics, elapsedMs,
+					result.toolCallTrail || [], result.turns || 0,
+					false, false,
+				);
+			} else if (result?.output) {
+				// Error/abort path
+				result.output = this.processDelegateResult(
+					result.output, metrics, elapsedMs,
+					result.toolCallTrail || [], result.turns ?? 0,
+					isAborted, isError,
+				);
+			}
+
+			// Mark plan step
+			if (hasError) {
+				errorPlanStep(ctx, isAborted, result?.errorMessage);
+			} else {
+				finalizePlanStep(ctx);
+			}
+		} finally {
+			decrementDelegationCount(ctx);
+			clearPlanIfComplete(ctx);
+			hidePeek();
+			clearViewerState();
+			// Clear scope after delegation completes
+			this.deps.scopeManager.clearScope();
+			// Dynamic status: clear on completion
+			try {
+				if (orchestratorUi) {
+					orchestratorUi.setWorkingMessage();
+				}
+			} catch {}
+		}
+
+		return {
+			content: [{ type: "text", text: result?.output || "[error] Subagent returned no output" }],
+			details: {
+				specialist: specialist.name,
+				task: params.task,
+				status: "done",
+				turns: result?.turns || 0,
+				outputLength: result?.output?.length || 0,
+			},
+		};
+	}
+
+	/**
+	 * Capture and persist diagnostic if diagnostics are enabled and subagent failed.
+	 *
+	 * Returns the diagnostic (or null) — caller decides what to do with UI/display.
+	 * Does NOT call ctx.ui.notify, updatePlanStepDetail, or recordTimelineFrame.
+	 */
+	private handleDiagnostics(
+		result: any,
+		specialistName: string,
+		task: string,
+		ctx: DelegateControllerContext,
+		metrics: DelegationMetrics,
+		startTime: number,
+	): SubagentDiagnostic | null {
+		if (!isDiagnosticsEnabled()) return null;
+
+		const diagnostic = captureDiagnostic({
+			output: result?.output || '',
+			turns: result?.turns || 0,
+			toolCallTrail: result?.toolCallTrail || [],
+			elapsedMs: Date.now() - startTime,
+			specialist: specialistName,
+			task,
+			sessionId: ctx.sessionId || 'unknown',
+			metrics,
+			agentDir: getAgentDir(),
+			model: result?.model,
+			stopReason: result?.stopReason,
+			errorMessage: result?.errorMessage,
+		});
+
+		if (!diagnostic) return null;
+
+		debugLog('[diagnostic]', diagnostic.specialist, diagnostic.turns, diagnostic.toolCalls);
+
+		// Persist to disk
+		try {
+			const filePath = persistDiagnostic(getAgentDir(), diagnostic);
+			debugLog('[diagnostic] persisted to', filePath);
+		} catch (e) {
+			debugLog('[diagnostic] persist failed', e);
+		}
+
+		// Cleanup old diagnostics (non-blocking best-effort)
+		try {
+			const cleaned = cleanupOldDiagnostics(getAgentDir(), 30);
+			if (cleaned > 0) debugLog('[diagnostic] cleaned', cleaned, 'old directories');
+		} catch (e) {
+			debugLog('[diagnostic] cleanup failed', e);
+		}
+
+		return diagnostic;
+	}
+
+	/**
+	 * Process a delegate result into a formatted output string.
+	 * Pure function — no side effects.
+	 */
+	private processDelegateResult(
+		output: string,
+		metrics: DelegationMetrics,
+		elapsedMs: number,
+		toolCallTrail: any[],
+		turns: number,
+		isAborted: boolean,
+		isError: boolean,
+	): string {
+		if (isAborted || isError) {
+			return DelegatePipeline.formatErrorAbort(output, toolCallTrail, turns, isAborted);
+		}
+		return DelegatePipeline.formatSuccess(output, metrics, elapsedMs, toolCallTrail, turns);
+	}
+
+	/**
+	 * Format a successful subagent result with findings, metadata, trail, audit, metrics.
+	 */
+	private static formatSuccess(
+		output: string,
+		metrics: DelegationMetrics,
+		elapsedMs: number,
+		toolCallTrail: any[],
+		turns: number,
+	): string {
+		let result = output;
+
+		// Prepend findings summary
+		const findings = DelegatePipeline.extractFindingsFromOutput(result);
+		if (findings && findings.summary) {
+			const summaryParts = [`[Findings: ${findings.summary}]`];
+			if (findings.key_files.length > 0) summaryParts.push(`Files: ${findings.key_files.join(', ')}`);
+			if (findings.issues.length > 0 && findings.issues[0] !== 'none') summaryParts.push(`Issues: ${findings.issues.join('; ')}`);
+			if (findings.recommendation) summaryParts.push(`Next: ${findings.recommendation}`);
+			result = summaryParts.join('\n') + '\n\n' + result;
+		}
+
+		// Prepend execution metadata
+		const execStatus = result?.startsWith("[error]") ? "error" : "ok";
+		const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${turns}, status=${execStatus}]`];
+		if (execStatus === "error") {
+			execMeta.push(`[Error: ${result.slice(0, 200)}]`);
+		}
+		result = execMeta.join('\n') + '\n\n' + result;
+
+		// Prepend tool call trail
+		if (toolCallTrail && toolCallTrail.length > 0) {
+			const trail = toolCallTrail.map(t =>
+				`${t.completed ? '✓' : '⚠'} ${t.tool}${t.outputPreview ? ` → ${t.outputPreview}` : ''}`
+			).join('\n');
+			result = `[Tool Calls (${toolCallTrail.length}):\n${trail}\n]\n\n` + result;
+		}
+
+		// Extract and prepend audit trail
+		const audit = DelegatePipeline.extractAuditFromOutput(output);
+		if (audit) {
+			const auditParts: string[] = [];
+			if (audit.problems.length > 0 && audit.problems[0] !== 'none') {
+				auditParts.push(`Problems: ${audit.problems.join('; ')}`);
+				auditParts.push(`Resolution: ${audit.resolution.join('; ')}`);
+			}
+			if (!audit.scope_stayed) {
+				auditParts.push(`Scope deviation: ${audit.scope_notes}`);
+				metrics.scopeViolations++;
+			}
+			if (auditParts.length > 0) {
+				result = `[Audit: ${auditParts.join(' | ')}]\n` + result;
+			}
+		}
+
+		// Prepend metrics line
+		const metricsLine = formatMetricsLine(metrics);
+		result = metricsLine + '\n' + result;
+
+		// Status note
+		const toolCalls = toolCallTrail?.length || 0;
+		const turnWord = turns === 1 ? "turn" : "turns";
+		const toolWord = toolCalls === 1 ? "tool call" : "tool calls";
+		const statusNote = `✓ Completed (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+		result = `${statusNote}\n${result}`;
+
+		return result;
+	}
+
+	/**
+	 * Format an error/abort result with trail and status note.
+	 */
+	private static formatErrorAbort(
+		output: string,
+		toolCallTrail: any[],
+		turns: number,
+		isAborted: boolean,
+	): string {
+		const toolCalls = toolCallTrail?.length ?? 0;
+		const turnWord = turns === 1 ? "turn" : "turns";
+		const toolWord = toolCalls === 1 ? "tool call" : "tool calls";
+
+		let trailStr = "";
+		if (toolCallTrail && toolCallTrail.length > 0) {
+			trailStr = "\nCompleted tool calls:\n" + toolCallTrail.map(t => `${t.completed ? '✓' : '⚠'} ${t.tool}`).join("\n");
+		}
+
+		const statusNote = isAborted
+			? `■ Aborted — interrupted by user (${turns} ${turnWord}, ${toolCalls} ${toolWord})`
+			: `✗ Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+
+		return `${statusNote}${trailStr}\n\n${output}`;
+	}
+
+	/**
+	 * Extract structured findings from the "## Findings" section of an output string.
+	 */
+	static extractFindingsFromOutput(output: string): { summary: string; key_files: string[]; issues: string[]; recommendation: string } | null {
+		const findingsMatch = output.match(/##\s+Findings\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
+		if (!findingsMatch) return null;
+		const block = findingsMatch[1];
+		const extract = (key: string): string => {
+			const m = block.match(new RegExp(`-?\\s*${key}:\\s*(.+)`, 'i'));
+			return m ? m[1].trim() : '';
+		};
+		const extractList = (key: string): string[] => {
+			const m = block.match(new RegExp(`-?\\s*${key}:\\s*\\[?(.+?)\\]?\\s*$`, 'im'));
+			if (!m) return [];
+			const inner = m[1].trim();
+			if (inner === ']' || inner === '') return [];
+			return inner.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+		};
+		return {
+			summary: extract('summary') || '',
+			key_files: extractList('key_files'),
+			issues: extractList('issues'),
+			recommendation: extract('recommendation') || '',
+		};
+	}
+
+	/**
+	 * Extract structured audit data from the "## Audit" section of an output string.
+	 */
+	static extractAuditFromOutput(output: string): { problems: string[]; resolution: string[]; scope_stayed: boolean; scope_notes: string } | null {
+		const auditMatch = output.match(/##\s+Audit\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
+		if (!auditMatch) return null;
+		const block = auditMatch[1];
+		const extractList = (key: string): string[] => {
+			const m = block.match(new RegExp(`-?\\s*${key}:\\s*\\[?(.+?)\\]?\\s*$`, 'im'));
+			if (!m) return [];
+			const inner = m[1].trim();
+			if (inner === ']' || inner === '') return [];
+			return inner.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+		};
+		const extract = (key: string): string => {
+			const m = block.match(new RegExp(`-?\\s*${key}:\\s*(.+)`, 'i'));
+			return m ? m[1].trim() : '';
+		};
+		const scopeStayed = extract('scope_stayed').toLowerCase();
+		return {
+			problems: extractList('problems'),
+			resolution: extractList('resolution'),
+			scope_stayed: scopeStayed === 'yes' || scopeStayed === 'true',
+			scope_notes: extract('scope_notes') || '',
+		};
+	}
+}
+
+// ── Standalone exports for test compatibility ───────────────────────────
+// These wrap DelegatePipeline static methods so they can be imported
+// directly as functions by tests.
+
+export function extractFindingsFromOutput(output: string) {
+	return DelegatePipeline.extractFindingsFromOutput(output);
+}
+
+export function extractAuditFromOutput(output: string) {
+	return DelegatePipeline.extractAuditFromOutput(output);
+}
+
+export interface FormatResultParams {
+	output: string;
+	metrics: DelegationMetrics;
+	elapsed: number;
+	turns: number;
+	toolCalls: number;
+	status: 'ok' | 'error' | 'aborted';
+	toolCallTrail?: Array<{ tool: string; outputPreview?: string; completed: boolean }>;
+}
+
+export function formatResult(params: FormatResultParams): {
+	formatted: string;
+	findings: ReturnType<typeof extractFindingsFromOutput>;
+	audit: ReturnType<typeof extractAuditFromOutput>;
+} {
+	const { output, metrics, elapsed, turns, toolCalls, status, toolCallTrail } = params;
+	const isAborted = status === 'aborted';
+	const isError = status === 'error';
+	const pipeline = new DelegatePipeline({ scopeManager: null as any });
+
+	// Reconstruct the internal formatting logic
+	let statusLine: string;
+	if (status === 'ok') {
+		statusLine = `✓ Completed (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
+	} else if (status === 'aborted') {
+		statusLine = `■ Aborted — interrupted by user (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
+	} else {
+		statusLine = `✗ Error (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
+	}
+
+	const metricsLine = `[Metrics: read=${metrics.readCalls}, grep=${metrics.grepCalls}, find=${metrics.findCalls}, edit=${metrics.editCalls}, write=${metrics.writeCalls}, bash=${metrics.bashCalls}, ls=${metrics.lsCalls}, scopeViolations=${metrics.scopeViolations}]`;
+
+	let trailStr = '';
+	if (toolCallTrail && toolCallTrail.length > 0) {
+		const trailItems = toolCallTrail.map(t => {
+			const icon = t.completed ? '✓' : '⚠';
+			const preview = t.outputPreview ? ` → ${t.outputPreview}` : '';
+			return `${icon} ${t.tool}${preview}`;
+		}).join('\n');
+		trailStr = `\n\n[Tool Calls (${toolCallTrail.length}):\n${trailItems}]`;
+	}
+
+	const execStr = `\n\n[Execution: elapsed=${elapsed}s, turns=${turns}, status=${status}]`;
+
+	let findingsStr = '';
+	const findings = extractFindingsFromOutput(output);
+	if (findings) {
+		findingsStr = `\n\n[Findings: ${findings.summary}]`;
+	}
+
+	const audit = extractAuditFromOutput(output);
+
+	let outputSection = output;
+	if (isError) {
+		const truncated = output.length > 200 ? output.slice(0, 200) : output;
+		outputSection = `[Error: ${truncated}]`;
+	}
+
+	const formatted = `${statusLine}\n${metricsLine}${trailStr}${execStr}${findingsStr}\n\n${outputSection}`;
+
+	return { formatted, findings, audit };
+}

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerDelegateTool } from "./delegate-tool.ts";
 import { runSubagent } from "./subagent-runner.ts";
-import type { Scope } from "./types.ts";
+import type { Scope } from "./scope-manager.ts";
 
 const mockHasActivePlan = vi.hoisted(() => vi.fn());
 const mockSetupPlanPanel = vi.hoisted(() => vi.fn());

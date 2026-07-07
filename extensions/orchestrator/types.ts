@@ -93,7 +93,6 @@ export interface PlanStep {
 	endTime?: number;
 }
 
-export { Scope, ScopeGateMode } from './scope-manager.ts';
 /** Per-delegation tool usage metrics */
 export interface DelegationMetrics {
 	readCalls: number;

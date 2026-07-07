@@ -1,5 +1,6 @@
 import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { getDefaultWriterScope, getReadOnlyDefaultScope } from './scope-policy.ts';
 
 /** ScopeGateMode type */
 export type ScopeGateMode = 'strict' | 'relaxed';
@@ -129,4 +130,57 @@ export class ScopeManager {
       // noop
     }
   }
+
+  /** Normalize an explicit scope by filling in defaults for missing fields */
+  private static normalizeExplicitScope(scope: Scope): Scope {
+    return {
+      ...scope,
+      filesToModify: scope.filesToModify ?? [],
+      filesToCreate: scope.filesToCreate ?? [],
+      directories: scope.directories ?? [],
+      maxFiles: scope.maxFiles ?? 10,
+      requiresApprovalBeyondScope: scope.requiresApprovalBeyondScope ?? true,
+      changeType: scope.changeType ?? "multi-file",
+      maxLinesPerFile: scope.maxLinesPerFile ?? 400,
+      gateMode: scope.gateMode ?? (scope.changeType === 'single-file' ? 'relaxed' as const : 'strict' as const),
+      boundaries: scope.boundaries,
+    };
+  }
+
+  /**
+   * Resolve scope for a delegation. Pure function — no side effects.
+   *
+   * Returns:
+   * - null → caller should trigger error (e.g. coder without scope)
+   * - Scope object → use this scope
+   */
+  static resolveScope(
+    params: { specialist: string; scope?: Scope },
+    specialistDef: { name: string; tools: string[] },
+    cwd: string,
+  ): Scope | null {
+    const specialist = params.specialist;
+    const isReadOnly = !specialistDef.tools.includes('edit') && !specialistDef.tools.includes('write');
+
+    // Explicit scope provided → normalize and use
+    if (params.scope) {
+      return ScopeManager.normalizeExplicitScope(params.scope);
+    }
+
+    // Per-specialist defaults when no explicit scope
+    if (specialist === "coder") {
+      return null; // coder requires explicit scope
+    }
+
+    if (specialist === "writer") {
+      return getDefaultWriterScope(cwd);
+    }
+
+    if (isReadOnly) {
+      return getReadOnlyDefaultScope();
+    }
+
+    return null; // other specialists require explicit scope
+  }
+
 }

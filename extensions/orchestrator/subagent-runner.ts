@@ -22,26 +22,17 @@ import { existsSync } from "fs";
 import { join } from "path";
 
 import { shortenLabel } from "../token-saver.ts";
-import type { Specialist, SubagentContext, Scope, Substep, DelegateControllerContext } from "./types.ts";
+import type { Specialist, SubagentContext, Substep, DelegateControllerContext } from "./types.ts";
+import type { Scope } from "./scope-manager.ts";
 import { buildSkillSection } from "./specialists.ts";
 import {
-	addSubstep,
-	createActivityFeed,
-	setToolDetail,
-	clearToolDetail,
-	completeLastSubstep,
-	completeSubstepByToolCallId,
-	completeActiveSubstepWithLabel,
-	completeCurrentStep,
-	markFeedError,
-	renderActivityFeed,
+	ActivityFeed,
 	toolCallToSubstep,
-	updateActiveSubstepOutput,
-	renderSubstepLines,
 	substepToolDetail,
+	renderSubstepLines,
 	appendWebSearchResults,
+	compressOutput,
 } from "./activity-feed.ts";
-import { compressOutput, inspectFeedState, snapshotFeedRender } from "./activity-feed.ts";
 import { currentFrame, SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
 
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
@@ -134,10 +125,7 @@ export function isSubagentContext(): boolean {
 	return process.env[SUBAGENT_ENV_KEY] === "1";
 }
 
-export interface AskOrchestratorFeedApi {
-	get(): import("./types.ts").ActivityFeedState;
-	set(feed: import("./types.ts").ActivityFeedState): void;
-}
+
 
 /**
  * Create the ask_orchestrator tool that only subagents see.
@@ -147,7 +135,7 @@ export function createAskOrchestratorTool(
 	resolve: ((question: string, context?: string) => Promise<string>) | undefined,
 	onUpdate: ((update: any) => void) | undefined,
 	specialistName: string,
-	feedApi: AskOrchestratorFeedApi,
+	feed: ActivityFeed,
 ) {
 	return defineTool({
 		name: "ask_orchestrator",
@@ -166,21 +154,17 @@ export function createAskOrchestratorTool(
 			}
 
 			const label = toolCallToSubstep("ask_orchestrator", params);
-			let feed = feedApi.get();
-			feed = updateActiveSubstepOutput(feed, "Waiting for orchestrator...");
-			feedApi.set(feed);
+			feed.updateActiveSubstepOutput("Waiting for orchestrator...");
 			onUpdate?.({
-				content: [{ type: "text", text: renderActivityFeed(specialistName, feed) }],
+				content: [{ type: "text", text: feed.render(specialistName) }],
 				details: { status: "clarifying", label },
 			});
 
 			const answer = await resolve(params.question, params.context);
 			const answerPreview = answer.slice(0, 80);
 
-			feed = feedApi.get();
-			feed = completeActiveSubstepWithLabel(feed, `Clarified: ${answerPreview}`, answerPreview, false, true);
-			feedApi.set(feed);
-			const text = renderActivityFeed(specialistName, feed);
+			feed.completeActiveSubstepWithLabel(`Clarified: ${answerPreview}`, answerPreview, false, true);
+			const text = feed.render(specialistName);
 			onUpdate?.({
 				content: [{ type: "text", text }],
 				details: { status: "clarified", answer },
@@ -223,6 +207,574 @@ export function installSubagentEnv(env: NodeJS.ProcessEnv): void {
 	}
 	Object.assign(process.env, env);
 }
+/**
+ * Configuration options for SubagentRunner.
+ * All config properties are immutable after construction.
+ */
+export interface SubagentRunnerConfig {
+	cwd: string;
+	modelRegistry: ModelRegistry;
+	agentDir: string;
+	signal?: AbortSignal;
+	onUpdate?: (update: any) => void;
+	agentSessionFactory?: (options: {
+		cwd: string;
+		model: any;
+		tools: string[];
+		customTools: any[];
+		excludeTools: string[] | undefined;
+		resourceLoader: any;
+		sessionManager: any;
+		authStorage: any;
+		modelRegistry: any;
+	}) => Promise<{ session: any }>;
+}
+
+export type SubagentResult = {
+	output: string;
+	turns: number;
+	elapsed_ms?: number;
+	toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[];
+	stopReason?: string;
+	errorMessage?: string;
+	model?: string;
+};
+/**
+ * SubagentRunner — creates isolated subagent sessions for specialist delegation.
+ *
+ * Owns an ActivityFeed instance for the run duration.
+ * Module-level coordination state (_batchLoadSubagent, _planParsed) is set
+ * during run() so external guards (registration, tool-call handler) still work.
+ */
+export class SubagentRunner {
+	private config: SubagentRunnerConfig;
+	private feed: ActivityFeed;
+
+	constructor(config: SubagentRunnerConfig) {
+		this.config = config;
+		this.feed = new ActivityFeed();
+	}
+
+	private snapshotEnv(): NodeJS.ProcessEnv {
+		return { ...process.env };
+	}
+
+	private cleanEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+		const cleaned: NodeJS.ProcessEnv = {};
+		for (const [key, value] of Object.entries(env)) {
+			if (key === SUBAGENT_ENV_KEY || key.startsWith("PI_")) continue;
+			cleaned[key] = value;
+		}
+		return cleaned;
+	}
+
+	private installEnv(env: NodeJS.ProcessEnv): void {
+		for (const key of Object.keys(process.env)) {
+			delete process.env[key];
+		}
+		Object.assign(process.env, env);
+	}
+
+	async run(
+		task: string,
+		specialist: Specialist,
+		scope?: Scope,
+		suggestedSkills?: string[],
+		parentCtx?: SubagentContext,
+		orchestratorCtx?: DelegateControllerContext,
+		orchestratorUi?: OrchestratorUi,
+	): Promise<SubagentResult> {
+		const startTime = Date.now();
+		let envSnapshot: NodeJS.ProcessEnv;
+		const { config } = this;
+		const feed = this.feed;
+
+		try {
+			const authStorage = AuthStorage.create();
+			const modelRegistry = config.modelRegistry;
+
+			// Resolve model: specialist.model > parent's model > registry fallback
+			let model;
+			if (specialist.model) {
+				const slashIdx = specialist.model.indexOf("/");
+				if (slashIdx > 0) {
+					const provider = specialist.model.slice(0, slashIdx);
+					const id = specialist.model.slice(slashIdx + 1);
+					model = getModel(provider as any, id);
+				}
+			} else if (parentCtx?.model) {
+				model = parentCtx.model;
+			}
+
+			if (!model) {
+				const available = modelRegistry.getAvailable();
+				if (available.length > 0) {
+					model = available[0];
+				}
+			}
+
+			if (!model) {
+				return { output: "[error] No model available for subagent. Check API key configuration.", turns: 0 };
+			}
+
+			// Snapshot, clean, and install isolated env for the subagent session.
+			envSnapshot = this.snapshotEnv();
+			this.installEnv(this.cleanEnv(envSnapshot));
+
+			// Resolve skill names to paths for DefaultResourceLoader, filtering to existing files
+			const resolvedSkillPaths = (suggestedSkills ?? [])
+				.map(s => join(config.agentDir, 'skills', s, 'SKILL.md'))
+				.filter(existsSync);
+
+			// Load extensions for subagent, flag context so orchestrator skips re-registration
+			_batchLoadSubagent++;
+			process.env[SUBAGENT_ENV_KEY] = "1";
+			let loader: DefaultResourceLoader | undefined;
+			try {
+				loader = new DefaultResourceLoader({
+					cwd: config.cwd,
+					agentDir: config.agentDir,
+					additionalSkillPaths: resolvedSkillPaths,
+					systemPromptOverride: () => {
+						let prompt = specialist.systemPrompt;
+						if (scope) {
+							const filesToModify = Array.isArray(scope.filesToModify) ? scope.filesToModify : [];
+							const filesToCreate = Array.isArray(scope.filesToCreate) ? scope.filesToCreate : [];
+							const modFiles = filesToModify.length > 0 ? filesToModify.map(f => `  - ${f}`).join('\n') : '  - (none)';
+							const createFiles = filesToCreate.length > 0 ? filesToCreate.map(f => `  - ${f}`).join('\n') : '  - (none)';
+							const dirs = Array.isArray(scope.directories) && scope.directories.length > 0 ? scope.directories.join(', ') : '(none)';
+							prompt += `\n\n## Scope Restrictions\nYou may ONLY modify/create files within this scope:\n- Files to modify:\n${modFiles}\n- Files to create:\n${createFiles}\n- Allowed directories: ${dirs}\n- Max files: ${scope.maxFiles ?? 10}\n- Changes beyond scope require approval: ${scope.requiresApprovalBeyondScope ?? true}\n`;
+							if (scope.changeType) {
+								prompt += `- Change type: ${scope.changeType} (${scope.changeType === 'single-file' ? 'edit one file' : 'may edit multiple files'})\n`;
+							}
+							if (scope.maxLinesPerFile) {
+								prompt += `- Max lines per file: ${scope.maxLinesPerFile}\n`;
+							}
+							if (scope.boundaries) {
+								prompt += `- Boundaries: ${scope.boundaries}\n`;
+							}
+						}
+						if (suggestedSkills && suggestedSkills.length > 0) {
+							prompt += buildSkillSection(specialist.name, suggestedSkills);
+						}
+						return prompt;
+					},
+					noContextFiles: true,
+				});
+				await loader.reload();
+			} finally {
+				_batchLoadSubagent--;
+				_planParsed = false;
+				delete process.env[SUBAGENT_ENV_KEY];
+			}
+
+			const excludeTools = (specialist.name === "writer" || specialist.name === "researcher" || specialist.name === "scout")
+				? ["bash"]
+				: undefined;
+
+			let output = "";
+			let turns = 0;
+			let _lastFeedSnapshot: string | null = null;
+			const goal = shortenLabel(task);
+			feed.feedState = { ...feed.feedState, goal };
+
+			// Define planSteps tool
+			const planStepsTool = defineTool({
+				name: "planSteps",
+				label: "Plan Steps",
+				description: "Register your plan for this task. Call this ONCE at the start before making any tool calls.",
+				parameters: Type.Object({
+					goal: Type.String({ description: "One-line goal for this task" }),
+					steps: Type.Array(Type.String(), { description: "Ordered list of step descriptions (what you'll do, not tool commands)" })
+				}),
+				execute: async (_toolCallId: string, params: { goal: string; steps: string[] }) => {
+					if (!feed.planParsed) {
+						feed.feedState = {
+							...feed.feedState,
+							goal: params.goal,
+							steps: params.steps.map((label: string) => ({
+								label,
+								completed: false,
+								substeps: [],
+								startTime: Date.now()
+							})),
+							currentStep: 0,
+							planParsed: true
+						};
+						_planParsed = true;
+						const text = feed.render(specialist.name);
+						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "plan_set" } });
+					}
+					return { content: [{ type: "text", text: `Plan registered with ${params.steps.length} steps` }], details: {} };
+				}
+			});
+
+			// Define advanceStep tool
+			const advanceStepTool = defineTool({
+				name: "advanceStep",
+				label: "Advance Step",
+				description: "Mark the current step as complete and advance to the next step. Call this after each step finishes.",
+				parameters: Type.Object({}),
+				execute: async (_toolCallId: string, _params: Record<string, never>) => {
+					if (!feed.planParsed) {
+						return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
+					}
+					if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
+						feed.completeCurrentStep();
+						const nextLabel = feed.currentStep < feed.steps.length
+							? feed.steps[feed.currentStep].label
+							: "All steps complete";
+						const text = feed.render(specialist.name);
+						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "step_advanced" } });
+						return { content: [{ type: "text", text: `Step complete. Next: ${nextLabel}` }], details: {} };
+					}
+					return { content: [{ type: "text", text: "No active step to complete" }], details: {} };
+				}
+			});
+
+			// Define reportFinding tool
+			const reportFindingTool = defineTool({
+				name: "reportFinding",
+				label: "Report Finding",
+				description: "Report an important finding discovered during execution. Call this when you discover something noteworthy.",
+				parameters: Type.Object({
+					finding: Type.String({ description: "What you discovered" }),
+				}),
+				execute: async (_toolCallId: string, params: { finding: string }) => {
+					if (!feed.planParsed) {
+						return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
+					}
+					if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
+						const step = feed.steps[feed.currentStep];
+						const newSubstep: Substep = {
+							label: params.finding,
+							completed: true,
+							isReport: true,
+							startTime: Date.now(),
+							endTime: Date.now(),
+						};
+						const newSubsteps = [...step.substeps, newSubstep];
+						const newSteps = feed.steps.map((s, i) =>
+							i === feed.currentStep ? { ...s, substeps: newSubsteps } : s
+						);
+						feed.feedState = { ...feed.feedState, steps: newSteps };
+						const text = feed.render(specialist.name);
+						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "report" } });
+						return { content: [{ type: "text", text: `✓ Reported: ${params.finding}` }], details: {} };
+					}
+					return { content: [{ type: "text", text: "No active step" }], details: {} };
+				},
+			});
+
+			const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding", "ask_orchestrator", "read_skill", "vision_query"];
+
+			const askOrchestratorTool = createAskOrchestratorTool(
+				parentCtx?.onAskOrchestrator,
+				config.onUpdate,
+				specialist.name,
+				feed,
+			);
+
+			const createSession = config.agentSessionFactory ?? createAgentSession;
+			const { session } = await createSession({
+				cwd: config.cwd,
+				model,
+				tools: allTools,
+				customTools: [
+					planStepsTool,
+					advanceStepTool,
+					reportFindingTool,
+					askOrchestratorTool,
+					createReadSkillTool(),
+					...(specialist.name === "scout" ? [gitReadTool, ghTool] : []),
+				],
+				excludeTools,
+				resourceLoader: loader!,
+				sessionManager: SessionManager.inMemory(config.cwd),
+				authStorage,
+				modelRegistry,
+			});
+
+			const { signal } = config;
+
+			// Register feed for peek overlay
+			const peekAbort = new AbortController();
+			setViewerSession(session, task.length > 60 ? task.slice(0, 57) + "..." : task);
+			signal?.addEventListener("abort", () => peekAbort.abort(), { once: true });
+			peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
+
+			let lastStopReason: string | undefined;
+			let lastErrorMessage: string | undefined;
+
+			const unsubscribe = session.subscribe((event) => {
+				if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+					output += event.assistantMessageEvent.delta;
+					const snapshot = JSON.stringify(feed.inspectState());
+					if (snapshot !== _lastFeedSnapshot) {
+						_lastFeedSnapshot = snapshot;
+						resetSpinner();
+						updatePlanStepDetail(feed.goal || "", orchestratorCtx);
+						recordTimelineFrame("step_started", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
+					}
+					pushStreamingText(event.assistantMessageEvent.delta);
+					const textDelta = feed.render(specialist.name);
+					config.onUpdate?.({
+						content: [{ type: "text", text: textDelta }],
+						details: { status: "running", streaming: true },
+					});
+				}
+
+				if (event.type === "message_end") {
+					if (event.message?.role === "assistant") {
+						turns++;
+						const assistantMsg = event.message as any;
+						lastStopReason = assistantMsg.stopReason;
+						lastErrorMessage = assistantMsg.errorMessage;
+						const text = feed.render(specialist.name);
+						config.onUpdate?.({
+							content: [{ type: "text", text }],
+							details: { specialist: specialist.name, status: "running", turns },
+						});
+					}
+
+					const lintMsg = (event as any).message;
+					if (lintMsg?.role === "tool" && lintMsg?.toolName === "lint") {
+						const lintContent = typeof lintMsg.content === "string"
+							? lintMsg.content
+							: JSON.stringify(lintMsg.content ?? "");
+						feed.addSubstep(lintContent.slice(0, 80));
+						feed.completeLastSubstep();
+						output += "\n" + lintContent + "\n";
+						config.onUpdate?.({
+							content: typeof lintMsg.content === "string"
+								? [{ type: "text", text: lintMsg.content }]
+								: (lintMsg.content ?? []),
+							details: { specialist: specialist.name, status: "lint", ...(lintMsg.details ?? {}) },
+						});
+					}
+				}
+
+				if (event.type === "tool_execution_start") {
+					if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") return;
+					const substepLabel = toolCallToSubstep(event.toolName, event.args);
+					feed.addSubstep(substepLabel, event.toolCallId);
+					const extraDetail = substepToolDetail(event.toolName, event.args);
+					feed.setToolDetail(extraDetail ?? substepLabel);
+					recordTimelineFrame("tool_start", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
+					_lastFeedSnapshot = null;
+					updatePeek(`\u2192 ${event.toolName}\n`);
+					const activeStep = feed.steps[feed.currentStep];
+					if (activeStep) {
+						updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
+					} else {
+						updatePlanStepDetail(substepLabel, orchestratorCtx);
+					}
+					const text = feed.render(specialist.name);
+					config.onUpdate?.({
+						content: [{ type: "text", text }],
+						details: { specialist: specialist.name, status: "running", tool: event.toolName },
+					});
+				}
+
+				if (event.type === "tool_execution_update") {
+					try {
+						if (event.partialResult && feed.steps.length > 0) {
+							const activeStep = feed.steps[feed.currentStep];
+							if (activeStep && activeStep.substeps.length > 0) {
+								if (!activeStep.substeps[activeStep.substeps.length - 1].completed) {
+									const preview = event.partialResult.length > 80
+										? event.partialResult.slice(0, 77) + "..."
+										: event.partialResult;
+									feed.updateActiveSubstepOutput(preview);
+									const newActiveStep = feed.steps[feed.currentStep];
+									if (newActiveStep) {
+										updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps), orchestratorCtx);
+									}
+									const text = feed.render(specialist.name);
+									config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", tool: event.toolName } })
+								}
+							}
+						}
+					} catch (e) { debugLog("[subagent] update failed:", e); }
+				}
+
+				if (event.type === "tool_execution_end") {
+					if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") {
+						const text = feed.render(specialist.name);
+						config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running" } });
+						return;
+					}
+					let outputPreview: string | undefined;
+					let rawResult: any;
+					try {
+						rawResult = event.result ?? (event as any).output;
+						if (rawResult != null) {
+							const raw = typeof rawResult === "string" ? rawResult : JSON.stringify(rawResult);
+							const stripped = compressOutput(raw);
+							outputPreview = stripped.length > 80 ? stripped.slice(0, 77) + "..." : stripped || undefined;
+						}
+					} catch {}
+					const isError = (event as any).isError === true;
+					if (isError && rawResult != null) {
+						if (typeof rawResult === "string") {
+							outputPreview = rawResult;
+						} else if (rawResult.content && Array.isArray(rawResult.content) && rawResult.content[0]?.text) {
+							outputPreview = rawResult.content[0].text;
+						} else {
+							outputPreview = JSON.stringify(rawResult);
+						}
+					}
+					feed.clearToolDetail();
+					let completedWithLabel = false;
+					if (event.toolName === "web_search" && !isError) {
+						const totalResults = (event.result as any)?.details?.totalResults;
+						if (typeof totalResults === "number") {
+							const step = feed.steps[feed.currentStep];
+							const sub = step?.substeps?.find(s => !s.completed);
+							if (sub?.label) {
+								feed.completeActiveSubstepWithLabel(appendWebSearchResults(sub.label, totalResults), outputPreview, isError);
+								completedWithLabel = true;
+							}
+						}
+					}
+					if (!completedWithLabel) {
+						feed.completeSubstepByToolCallId((event as any).toolCallId, outputPreview, isError);
+					}
+					if (!isError && (event.toolName === "edit" || event.toolName === "write")) {
+						feed.addSubstep(`lint: checking ${(event as any).arguments?.filePath ?? (event as any).arguments?.path ?? "files"}...`);
+					}
+					recordTimelineFrame("tool_end", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
+					_lastFeedSnapshot = null;
+					updatePeek(`\u2713 ${event.toolName}\n`);
+					const activeStep = feed.steps[feed.currentStep];
+					if (activeStep && activeStep.substeps.length > 0) {
+						updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
+					}
+					const text = feed.render(specialist.name);
+					config.onUpdate?.({
+						content: [{ type: "text", text }],
+						details: { specialist: specialist.name, status: "running" },
+					});
+				}
+
+				if (event.type === "turn_end") {
+					const results = (event as any).toolResults;
+				}
+			});
+
+			// Periodic re-render timer
+			let renderTimer: ReturnType<typeof setInterval> | null = null;
+			let _lastRenderText: string | null = null;
+			let _lastFrame: string = "";
+
+			const startRenderTimer = () => {
+				renderTimer = setInterval(() => {
+					if (feed.steps.length > 0 || output.length > 0) {
+						const text = feed.render(specialist.name);
+						const frame = currentFrame();
+						if (frame !== _lastFrame || text !== _lastRenderText) {
+							_lastRenderText = text;
+							_lastFrame = frame;
+							config.onUpdate?.({
+								content: [{ type: "text", text }],
+								details: { specialist: specialist.name, status: "running" },
+							});
+						}
+					}
+				}, SPINNER_INTERVAL_MS);
+			};
+			startRenderTimer();
+
+			// Abort handler
+			const abortHandler = () => { session.abort(); };
+			if (signal) {
+				if (signal.aborted) abortHandler();
+				signal.addEventListener("abort", abortHandler, { once: true });
+			}
+
+			let finalStatus = "completed";
+
+			try {
+				await session.prompt(task);
+
+				if (lastStopReason === "error") {
+					const errorMsg = lastErrorMessage || "Unknown model error";
+					finalStatus = "error";
+					output = `[error] ${errorMsg}`;
+					feed.markFeedError(errorMsg);
+					setViewerError(errorMsg);
+					const errorText = feed.render(specialist.name) ?? errorMsg;
+					config.onUpdate?.({content: [{ type: "text", text: errorText }],
+						details: { specialist: specialist.name, status: "error", error: errorMsg },
+					});
+				} else {
+					finalStatus = "completed";
+				}
+			} catch (error) {
+				const isAborted = signal?.aborted || (error instanceof Error && error.name === "AbortError");
+				const errorMsg = lastErrorMessage && typeof lastErrorMessage === 'string' && lastErrorMessage.length > 0
+					? lastErrorMessage
+					: error instanceof Error ? error.message : String(error);
+				finalStatus = isAborted ? "aborted" : "error";
+				feed.markFeedError(errorMsg);
+				setViewerError(errorMsg);
+				const errorText = feed.render(specialist.name) ?? errorMsg;
+				config.onUpdate?.({content: [{ type: "text", text: errorText }],
+					details: { specialist: specialist.name, status: isAborted ? "aborted" : "error", error: errorMsg },
+				});
+				output = isAborted
+					? `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`
+					: `[error] ${errorMsg}`;
+			} finally {
+				unsubscribe();
+				if (renderTimer) {
+					clearInterval(renderTimer);
+					renderTimer = null;
+				}
+				_lastRenderText = null;
+				if (signal) signal.removeEventListener("abort", abortHandler);
+				session.dispose();
+				clearViewerState();
+			}
+
+			if (finalStatus !== "error" && finalStatus !== "aborted") {
+				while (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
+					feed.completeCurrentStep();
+				}
+			}
+
+			const finalText = feed.render(specialist.name);
+			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus } });
+			recordTimelineFrame("step_finalized", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
+
+			const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);
+
+			setViewerOutput(output);
+
+			const toolCallTrail: { tool: string; outputPreview?: string; completed: boolean }[] = [];
+			for (const step of feed.steps) {
+				for (const sub of step.substeps) {
+					toolCallTrail.push({
+						tool: sub.label,
+						outputPreview: sub.outputPreview,
+						completed: sub.completed,
+					});
+				}
+			}
+
+			return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime, toolCallTrail, stopReason: lastStopReason, errorMessage: lastErrorMessage, model: (model as any)?.id ?? (model as any)?.model ?? undefined };
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			const stack = error instanceof Error ? error.stack : "";
+			return {
+				output: `[error] Subagent init failed: ${msg}${stack ? "\n" + stack.split("\n").slice(0, 5).join("\n") : ""}`,
+				turns: 0,
+			};
+		} finally {
+			this.installEnv(envSnapshot!);
+		}
+	}
+}
 
 /**
  * Run a specialist subagent with isolated session.
@@ -246,536 +798,14 @@ export async function runSubagent(
 	orchestratorUi?: OrchestratorUi,
 	suggestedSkills?: string[],
 	orchestratorCtx?: DelegateControllerContext,
-): Promise<{ output: string; turns: number; elapsed_ms?: number; toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[]; stopReason?: string; errorMessage?: string; model?: string }> {
-	const startTime = Date.now();
-	let envSnapshot = snapshotSubagentEnv();
-
-	try {
-		const authStorage = AuthStorage.create();
-		const modelRegistry = parentCtx?.modelRegistry ?? ModelRegistry.create(authStorage);
-
-		// Resolve model: specialist.model > parent's model > registry fallback
-		let model;
-		if (specialist.model) {
-			const slashIdx = specialist.model.indexOf("/");
-			if (slashIdx > 0) {
-				const provider = specialist.model.slice(0, slashIdx);
-				const id = specialist.model.slice(slashIdx + 1);
-				model = getModel(provider as any, id);
-			}
-		} else if (parentCtx?.model) {
-			model = parentCtx.model;
-		}
-
-		if (!model) {
-			const available = modelRegistry.getAvailable();
-			if (available.length > 0) {
-				model = available[0];
-			}
-		}
-
-		if (!model) {
-			return { output: "[error] No model available for subagent. Check API key configuration.", turns: 0 };
-		}
-
-		// Snapshot, clean, and install isolated env for the subagent session.
-		// The SUBAGENT_ENV_KEY is only set during extension loading so the
-		// orchestrator extension can detect the subagent context; it is removed
-		// before the session runs so child bash processes see a cleaned env.
-		envSnapshot = snapshotSubagentEnv();
-		installSubagentEnv(cleanSubagentEnv(envSnapshot));
-
-		// Resolve skill names to paths for DefaultResourceLoader, filtering to existing files
-		const resolvedSkillPaths = (suggestedSkills ?? [])
-			.map(s => join(getAgentDir(), 'skills', s, 'SKILL.md'))
-			.filter(existsSync);
-
-		// Load extensions for subagent, flag context so orchestrator skips re-registration
-		_batchLoadSubagent++;
-		process.env[SUBAGENT_ENV_KEY] = "1";
-		let loader: DefaultResourceLoader | undefined;
-		try {
-			loader = new DefaultResourceLoader({
-				cwd,
-				agentDir: getAgentDir(),
-				additionalSkillPaths: resolvedSkillPaths,
-				systemPromptOverride: () => {
-				let prompt = specialist.systemPrompt;
-				if (scope) {
-					const filesToModify = Array.isArray(scope.filesToModify) ? scope.filesToModify : [];
-					const filesToCreate = Array.isArray(scope.filesToCreate) ? scope.filesToCreate : [];
-					const modFiles = filesToModify.length > 0 ? filesToModify.map(f => `  - ${f}`).join('\n') : '  - (none)';
-					const createFiles = filesToCreate.length > 0 ? filesToCreate.map(f => `  - ${f}`).join('\n') : '  - (none)';
-					const dirs = Array.isArray(scope.directories) && scope.directories.length > 0 ? scope.directories.join(', ') : '(none)';
-					prompt += `\n\n## Scope Restrictions\nYou may ONLY modify/create files within this scope:\n- Files to modify:\n${modFiles}\n- Files to create:\n${createFiles}\n- Allowed directories: ${dirs}\n- Max files: ${scope.maxFiles ?? 10}\n- Changes beyond scope require approval: ${scope.requiresApprovalBeyondScope ?? true}\n`;
-					if (scope.changeType) {
-						prompt += `- Change type: ${scope.changeType} (${scope.changeType === 'single-file' ? 'edit one file' : 'may edit multiple files'})\n`;
-					}
-					if (scope.maxLinesPerFile) {
-						prompt += `- Max lines per file: ${scope.maxLinesPerFile}\n`;
-					}
-					if (scope.boundaries) {
-						prompt += `- Boundaries: ${scope.boundaries}\n`;
-					}
-				}
-				// Skill section: task-driven skill selection
-				if (suggestedSkills && suggestedSkills.length > 0) {
-					prompt += buildSkillSection(specialist.name, suggestedSkills);
-				}
-				return prompt;
-			},
-				noContextFiles: true, // Don't load parent's AGENTS.md/context into subagent
-			});
-			await loader.reload();
-		} finally {
-			_batchLoadSubagent--;
-			_planParsed = false;  // Reset for next subagent session
-			delete process.env[SUBAGENT_ENV_KEY];
-		}
-
-		const excludeTools = (specialist.name === "writer" || specialist.name === "researcher" || specialist.name === "scout")
-			? ["bash"]
-			: undefined;
-
-		let output = "";
-		let turns = 0;
-		let feed = createActivityFeed();
-		const feedApi: AskOrchestratorFeedApi = { get: () => feed, set: (f) => { feed = f; } };
-		let _lastFeedSnapshot: string | null = null;
-		const goal = shortenLabel(task);
-		feed.goal = goal;
-
-		// Define planSteps tool — subagent calls this ONCE to register its plan
-		const planStepsTool = defineTool({
-			name: "planSteps",
-			label: "Plan Steps",
-			description: "Register your plan for this task. Call this ONCE at the start before making any tool calls.",
-			parameters: Type.Object({
-				goal: Type.String({ description: "One-line goal for this task" }),
-				steps: Type.Array(Type.String(), { description: "Ordered list of step descriptions (what you'll do, not tool commands)" })
-			}),
-			execute: async (_toolCallId: string, params: { goal: string; steps: string[] }) => {
-				if (!feed.planParsed) {
-					feed = {
-						...feed,
-						goal: params.goal,
-						steps: params.steps.map((label: string) => ({
-							label,
-							completed: false,
-							substeps: [],
-							startTime: Date.now()
-						})),
-						currentStep: 0,
-						planParsed: true
-					};
-					_planParsed = true;  // Sync module-level flag
-					const text = renderActivityFeed(specialist.name, feed);
-					onUpdate?.({ content: [{ type: "text", text }], details: { status: "plan_set" } });
-				}
-				return { content: [{ type: "text", text: `Plan registered with ${params.steps.length} steps` }], details: {} };
-			}
-		});
-
-		// Define advanceStep tool — subagent calls this after each step completes
-		const advanceStepTool = defineTool({
-			name: "advanceStep",
-			label: "Advance Step",
-			description: "Mark the current step as complete and advance to the next step. Call this after each step finishes.",
-			parameters: Type.Object({}),
-			execute: async (_toolCallId: string, _params: Record<string, never>) => {
-				if (!feed.planParsed) {
-					return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
-				}
-				if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
-					feed = completeCurrentStep(feed);
-					const nextLabel = feed.currentStep < feed.steps.length
-						? feed.steps[feed.currentStep].label
-						: "All steps complete";
-					const text = renderActivityFeed(specialist.name, feed);
-					onUpdate?.({ content: [{ type: "text", text }], details: { status: "step_advanced" } });
-					return { content: [{ type: "text", text: `Step complete. Next: ${nextLabel}` }], details: {} };
-				}
-				return { content: [{ type: "text", text: "No active step to complete" }], details: {} };
-			}
-		});
-
-		// Define reportFinding tool — subagent calls this to report noteworthy findings
-		const reportFindingTool = defineTool({
-			name: "reportFinding",
-			label: "Report Finding",
-			description: "Report an important finding discovered during execution. Call this when you discover something noteworthy.",
-			parameters: Type.Object({
-				finding: Type.String({ description: "What you discovered" }),
-			}),
-			execute: async (_toolCallId: string, params: { finding: string }) => {
-				if (!feed.planParsed) {
-					return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
-				}
-				if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
-					const step = feed.steps[feed.currentStep];
-					const newSubstep: Substep = {
-						label: params.finding,
-						completed: true,
-						isReport: true,
-						startTime: Date.now(),
-						endTime: Date.now(),
-					};
-					const newSubsteps = [...step.substeps, newSubstep];
-					const newSteps = feed.steps.map((s, i) =>
-						i === feed.currentStep ? { ...s, substeps: newSubsteps } : s
-					);
-					feed = { ...feed, steps: newSteps };
-					const text = renderActivityFeed(specialist.name, feed);
-					onUpdate?.({ content: [{ type: "text", text }], details: { status: "report" } });
-					return { content: [{ type: "text", text: `✓ Reported: ${params.finding}` }], details: {} };
-				}
-				return { content: [{ type: "text", text: "No active step" }], details: {} };
-			},
-		});
-
-		// Merge tools with planSteps, advanceStep, reportFinding, and ask_orchestrator
-		const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding", "ask_orchestrator", "read_skill", "vision_query"];
-
-		const askOrchestratorTool = createAskOrchestratorTool(
-			parentCtx?.onAskOrchestrator,
-			onUpdate,
-			specialist.name,
-			feedApi,
-		);
-
-		const { session } = await createAgentSession({
-			cwd,
-			model,
-			tools: allTools,
-			customTools: [
-				planStepsTool,
-				advanceStepTool,
-				reportFindingTool,
-				askOrchestratorTool,
-				createReadSkillTool(),
-				...(specialist.name === "scout" ? [gitReadTool, ghTool] : []),
-			],
-			excludeTools,
-			resourceLoader: loader!,
-			sessionManager: SessionManager.inMemory(cwd),
-			authStorage,
-			modelRegistry,
-		});
-
-		// Register feed for peek overlay (Layer 3)
-		const peekAbort = new AbortController();
-		setViewerSession(session, task.length > 60 ? task.slice(0, 57) + "..." : task);
-		signal?.addEventListener("abort", () => peekAbort.abort(), { once: true });
-		peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
-
-		let lastStopReason: string | undefined;
-		let lastErrorMessage: string | undefined;
-
-		const unsubscribe = session.subscribe((event) => {
-			// Standard assistant message delta
-			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-				output += event.assistantMessageEvent.delta;
-				const snapshot = JSON.stringify(inspectFeedState(feed));
-				if (snapshot !== _lastFeedSnapshot) {
-					_lastFeedSnapshot = snapshot;
-					resetSpinner();
-					updatePlanStepDetail(feed.goal || "", orchestratorCtx);
-					recordTimelineFrame("step_started", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
-				}
-				pushStreamingText(event.assistantMessageEvent.delta);
-				const textDelta = renderActivityFeed(specialist.name, feed);
-				onUpdate?.({
-					content: [{ type: "text", text: textDelta }],
-					details: { status: "running", streaming: true },
-				});
-			}
-
-			// Assistant message completed
-			if (event.type === "message_end") {
-				if (event.message?.role === "assistant") {
-					turns++;
-					// Capture stopReason and errorMessage from the assistant message
-					const assistantMsg = event.message as any;
-					lastStopReason = assistantMsg.stopReason;
-					lastErrorMessage = assistantMsg.errorMessage;
-					const text = renderActivityFeed(specialist.name, feed);
-					onUpdate?.({
-						content: [{ type: "text", text }],
-						details: { specialist: specialist.name, status: "running", turns },
-					});
-				}
-
-				// Capture lint-guard tool messages: integrate into feed + forward to onUpdate
-				const lintMsg = (event as any).message;
-				if (lintMsg?.role === "tool" && lintMsg?.toolName === "lint") {
-					const lintContent = typeof lintMsg.content === "string"
-						? lintMsg.content
-						: JSON.stringify(lintMsg.content ?? "");
-
-					// Add lint result as a substep in the feed (visible in delegation step/substep view)
-					feed = addSubstep(feed, lintContent.slice(0, 80));
-					feed = completeLastSubstep(feed);
-
-					// Forward lint content to the delegation output blob
-					output += "\n" + lintContent + "\n";
-					onUpdate?.({
-						content: typeof lintMsg.content === "string"
-							? [{ type: "text", text: lintMsg.content }]
-							: (lintMsg.content ?? []),
-						details: { specialist: specialist.name, status: "lint", ...(lintMsg.details ?? {}) },
-					});
-				}
-			}
-
-			// Tool execution started
-			if (event.type === "tool_execution_start") {
-				if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") return;
-				const substepLabel = toolCallToSubstep(event.toolName, event.args);
-				// Auto-create substep if feed is empty (model skipped text output)
-				feed = addSubstep(feed, substepLabel, event.toolCallId);
-				// Show multi-item detail (queries[], urls[]) in tool_detail instead of repeating substep label
-				const extraDetail = substepToolDetail(event.toolName, event.args);
-				feed = setToolDetail(feed, extraDetail ?? substepLabel);
-				recordTimelineFrame("tool_start", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
-				_lastFeedSnapshot = null;
-				updatePeek(`\u2192 ${event.toolName}\n`);
-				// Pass substep history lines to plan panel immediately
-				const activeStep = feed.steps[feed.currentStep];
-				if (activeStep) {
-					updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
-				} else {
-					updatePlanStepDetail(substepLabel, orchestratorCtx);
-				}
-				const text = renderActivityFeed(specialist.name, feed);
-				onUpdate?.({
-					content: [{ type: "text", text }],
-					details: { specialist: specialist.name, status: "running", tool: event.toolName },
-				});
-			}
-
-			// Tool execution streaming update
-			if (event.type === "tool_execution_update") {
-				try {
-					// Update the active substep with partial output preview — immutable
-					if (event.partialResult && feed.steps.length > 0) {
-						const activeStep = feed.steps[feed.currentStep];
-						if (activeStep && activeStep.substeps.length > 0) {
-							if (!activeStep.substeps[activeStep.substeps.length - 1].completed) {
-								// Truncate to 80 chars for display
-								const preview = event.partialResult.length > 80
-									? event.partialResult.slice(0, 77) + "..."
-									: event.partialResult;
-								feed = updateActiveSubstepOutput(feed, preview);
-
-								// Update plan panel from new feed state
-								const newActiveStep = feed.steps[feed.currentStep];
-								if (newActiveStep) {
-									updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps), orchestratorCtx);
-								}
-
-								// Emit onUpdate so UI stays responsive during tool execution
-								const text = renderActivityFeed(specialist.name, feed);
-								onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", tool: event.toolName } })
-							}
-						}
-					}
-				} catch (e) { debugLog("[subagent] update failed:", e); }
-			}
-
-			// Tool execution completed
-			if (event.type === "tool_execution_end") {
-				if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") {
-					const text = renderActivityFeed(specialist.name, feed);
-					onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running" } });
-					return;
-				}
-				// Extract truncated output preview from tool result
-				let outputPreview: string | undefined;
-				let rawResult: any;
-				try {
-					rawResult = event.result ?? (event as any).output;
-					if (rawResult != null) {
-						const raw = typeof rawResult === "string" ? rawResult : JSON.stringify(rawResult);
-						const stripped = compressOutput(raw);
-						outputPreview = stripped.length > 80 ? stripped.slice(0, 77) + "..." : stripped || undefined;
-					}
-				} catch {}
-				const isError = (event as any).isError === true;
-				// For errors, extract actual error message from result structure
-				if (isError && rawResult != null) {
-					if (typeof rawResult === "string") {
-						outputPreview = rawResult;
-					} else if (rawResult.content && Array.isArray(rawResult.content) && rawResult.content[0]?.text) {
-						outputPreview = rawResult.content[0].text;
-					} else {
-						outputPreview = JSON.stringify(rawResult);
-					}
-				}
-				feed = clearToolDetail(feed);
-				// For web_search, enrich substep label with results count from tool result
-				let completedWithLabel = false;
-				if (event.toolName === "web_search" && !isError) {
-					const totalResults = (event.result as any)?.details?.totalResults;
-					if (typeof totalResults === "number") {
-						const step = feed.steps[feed.currentStep];
-						const sub = step?.substeps?.find(s => !s.completed);
-						if (sub?.label) {
-							feed = completeActiveSubstepWithLabel(feed, appendWebSearchResults(sub.label, totalResults), outputPreview, isError);
-							completedWithLabel = true;
-						}
-					}
-				}
-				if (!completedWithLabel) {
-					feed = completeSubstepByToolCallId(feed, (event as any).toolCallId, outputPreview, isError);
-				}
-				// After edit/write tool completion, add lint indicator substep
-				if (!isError && (event.toolName === "edit" || event.toolName === "write")) {
-					feed = addSubstep(feed, `lint: checking ${(event as any).arguments?.filePath ?? (event as any).arguments?.path ?? "files"}...`);
-				}
-				recordTimelineFrame("tool_end", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
-				_lastFeedSnapshot = null;
-				updatePeek(`\u2713 ${event.toolName}\n`);
-				// Update plan panel with substep history lines
-				const activeStep = feed.steps[feed.currentStep];
-				if (activeStep && activeStep.substeps.length > 0) {
-					updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
-				}
-				const text = renderActivityFeed(specialist.name, feed);
-				onUpdate?.({
-					content: [{ type: "text", text }],
-					details: { specialist: specialist.name, status: "running" },
-				});
-			}
-
-			// Turn end — capture tool results for tracking
-			if (event.type === "turn_end") {
-				// Turn-end tracking: error detection only
-				// Substep creation is handled by tool_execution_start with proper labels via toolCallToSubstep()
-				const results = (event as any).toolResults;
-				
-			}
-		});
-
-		// Periodic re-render timer — animates spinner between events
-		let renderTimer: ReturnType<typeof setInterval> | null = null;
-		let _lastRenderText: string | null = null;
-		let _lastFrame: string = "";
-
-		const startRenderTimer = () => {
-			renderTimer = setInterval(() => {
-				if (feed.steps.length > 0 || output.length > 0) {
-					const text = renderActivityFeed(specialist.name, feed);
-					const frame = currentFrame();
-					// Always emit if spinner frame changed or content changed
-					if (frame !== _lastFrame || text !== _lastRenderText) {
-						_lastRenderText = text;
-						_lastFrame = frame;
-						onUpdate?.({
-							content: [{ type: "text", text }],
-							details: { specialist: specialist.name, status: "running" },
-						});
-					}
-				}
-			}, SPINNER_INTERVAL_MS);
-		};
-		startRenderTimer();
-
-		// Abort handler — cancel subagent when parent aborts
-		const abortHandler = () => { session.abort(); };
-		if (signal) {
-			if (signal.aborted) abortHandler();
-			signal.addEventListener("abort", abortHandler, { once: true });
-		}
-
-		let finalStatus = "completed";
-
-		try {
-			await session.prompt(task);
-
-			// Model-level error (stopReason="error" doesn't throw, but we must surface it)
-			if (lastStopReason === "error") {
-				const errorMsg = lastErrorMessage || "Unknown model error";
-				finalStatus = "error";
-				output = `[error] ${errorMsg}`;
-				feed = markFeedError(feed, errorMsg);
-				setViewerError(errorMsg);
-				const errorText = renderActivityFeed(specialist.name, feed) ?? errorMsg;
-				onUpdate?.({content: [{ type: "text", text: errorText }],
-					details: { specialist: specialist.name, status: "error", error: errorMsg },
-				});
-			} else {
-				finalStatus = "completed";
-			}
-		} catch (error) {
-			const isAborted = signal?.aborted || (error instanceof Error && error.name === "AbortError");
-			const errorMsg = lastErrorMessage && typeof lastErrorMessage === 'string' && lastErrorMessage.length > 0
-				? lastErrorMessage
-				: error instanceof Error ? error.message : String(error);
-			finalStatus = isAborted ? "aborted" : "error";
-			// Surface error in activity feed before cleanup
-			feed = markFeedError(feed, errorMsg);
-			setViewerError(errorMsg);
-			const errorText = renderActivityFeed(specialist.name, feed) ?? errorMsg;
-			onUpdate?.({content: [{ type: "text", text: errorText }],
-				details: { specialist: specialist.name, status: isAborted ? "aborted" : "error", error: errorMsg },
-			});
-			output = isAborted
-				? `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`
-				: `[error] ${errorMsg}`;
-		} finally {
-			unsubscribe();
-			if (renderTimer) {
-				clearInterval(renderTimer);
-				renderTimer = null;
-			}
-			_lastRenderText = null;
-			if (signal) signal.removeEventListener("abort", abortHandler);
-			session.dispose();
-			clearViewerState();
-		}
-
-		// Finalize feed state — complete any remaining steps on success only.
-		// Errored/aborted sessions preserve markFeedError() state and must not
-		// be overwritten as completed.
-		if (finalStatus !== "error" && finalStatus !== "aborted") {
-			while (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
-				feed = completeCurrentStep(feed);
-			}
-		}
-
-		// Emit final render so TUI shows clean final state
-		const finalText = renderActivityFeed(specialist.name, feed);
-		onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus } });
-		recordTimelineFrame("step_finalized", inspectFeedState(feed), snapshotFeedRender(feed), orchestratorCtx);
-
-		// Compress + cap output before returning to parent
-		const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);
-
-		setViewerOutput(output);
-
-		// Build tool call trail from feed state
-		const toolCallTrail: { tool: string; outputPreview?: string; completed: boolean }[] = [];
-		for (const step of feed.steps) {
-			for (const sub of step.substeps) {
-				toolCallTrail.push({
-					tool: sub.label,
-					outputPreview: sub.outputPreview,
-					completed: sub.completed,
-				});
-			}
-		}
-
-		return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime, toolCallTrail, stopReason: lastStopReason, errorMessage: lastErrorMessage, model: (model as any)?.id ?? (model as any)?.model ?? undefined };
-	} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
-		const stack = error instanceof Error ? error.stack : "";
-		return {
-			output: `[error] Subagent init failed: ${msg}${stack ? "\n" + stack.split("\n").slice(0, 5).join("\n") : ""}`,
-			turns: 0,
-		};
-	} finally {
-		// Always restore the original parent environment, even if the subagent
-		// failed before the session started.
-		installSubagentEnv(envSnapshot);
-	}
+): Promise<SubagentResult> {
+	const agentDir = getAgentDir();
+	const runner = new SubagentRunner({
+		cwd,
+		modelRegistry: parentCtx?.modelRegistry ?? ModelRegistry.create(AuthStorage.create()),
+		agentDir,
+		signal,
+		onUpdate,
+	});
+	return runner.run(task, specialist, scope ?? undefined, suggestedSkills, parentCtx, orchestratorCtx, orchestratorUi);
 }

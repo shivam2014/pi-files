@@ -54,8 +54,8 @@ describe("DELEGATION_INSTRUCTIONS_TEMPLATE vs executeDelegate", () => {
 		expect(systemPrompt).not.toContain("auto-create");
 	});
 
-	it("delegate-controller.ts enforces active plan check", () => {
-		const sourcePath = resolve(__dirname, "delegate-controller.ts");
+	it("delegate-pipeline.ts enforces active plan check", () => {
+		const sourcePath = resolve(__dirname, "delegate-pipeline.ts");
 		const source = readFileSync(sourcePath, "utf-8");
 
 		// The guard must check hasActivePlan(ctx) before delegating

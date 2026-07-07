@@ -28,12 +28,15 @@ interface PlanState {
 
 function mockCtx() {
 	const setWidget = (_key: string, _content: string[] | undefined) => {};
-	return { ui: { setWidget } };
+	return {
+		sessionManager: { sessionId: "plan-panel-finalize-test" },
+		ui: { setWidget },
+	};
 }
 
 describe("finalizePlanStep matches completePlanStep", () => {
 	beforeEach(() => {
-		if (hasActivePlan()) {
+		if (hasActivePlan(mockCtx())) {
 			completePlanStep(mockCtx());
 		}
 	});
@@ -52,20 +55,20 @@ describe("finalizePlanStep matches completePlanStep", () => {
 
 	it("both produce identical step state after completing a step", () => {
 		setupPlanPanel("Test goal", ["Step A", "Step B"], mockCtx());
-		expect(hasActivePlan()).toBe(true);
+		expect(hasActivePlan(mockCtx())).toBe(true);
 
 		finalizePlanStep(mockCtx());
 
-		const stateAfterFinalize = inspectPlanState() as unknown as PlanState;
+		const stateAfterFinalize = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(stateAfterFinalize).not.toBeNull();
 		expect(stateAfterFinalize.steps[0].state).toBe("completed");
 		expect(stateAfterFinalize.steps[1].state).toBe("pending");
 
-		if (hasActivePlan()) setupPlanPanel("Test goal", ["Step A", "Step B"], mockCtx());
+		if (hasActivePlan(mockCtx())) setupPlanPanel("Test goal", ["Step A", "Step B"], mockCtx());
 
 		completePlanStep(mockCtx());
 
-		const stateAfterComplete = inspectPlanState() as unknown as PlanState;
+		const stateAfterComplete = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(stateAfterComplete).not.toBeNull();
 		expect(stateAfterComplete.steps[0].state).toBe("completed");
 		expect(stateAfterComplete.steps[1].state).toBe("pending");
@@ -76,17 +79,17 @@ describe("finalizePlanStep matches completePlanStep", () => {
 
 	it("both mark active step as completed and deactivate it", () => {
 		setupPlanPanel("Goal", ["Step A", "Step B"], mockCtx());
-		expect(hasActivePlan()).toBe(true);
+		expect(hasActivePlan(mockCtx())).toBe(true);
 
 		completePlanStep(mockCtx());
-		const state1 = inspectPlanState() as unknown as PlanState;
+		const state1 = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(state1.steps[0].state).toBe("completed");
 		expect(state1.steps[0].detail).toBeNull();
 
 		setupPlanPanel("Goal", ["Step A", "Step B"], mockCtx());
-		expect(hasActivePlan()).toBe(true);
+		expect(hasActivePlan(mockCtx())).toBe(true);
 		finalizePlanStep(mockCtx());
-		const state2 = inspectPlanState() as unknown as PlanState;
+		const state2 = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(state2.steps[0].state).toBe("completed");
 		expect(state2.steps[0].detail).toBeNull();
 	});
@@ -101,14 +104,14 @@ describe("finalizePlanStep matches completePlanStep", () => {
 describe("clearPlanIfComplete", () => {
 	beforeEach(() => {
 		// Ensure clean state
-		if (hasActivePlan()) {
+		if (hasActivePlan(mockCtx())) {
 			clearPlanPanel(mockCtx());
 		}
 	});
 
 	it("keeps planState alive after all steps completed", () => {
 		setupPlanPanel("Goal", ["Step A"], mockCtx());
-		expect(hasActivePlan()).toBe(true);
+		expect(hasActivePlan(mockCtx())).toBe(true);
 
 		// Complete the only step
 		finalizePlanStep(mockCtx());
@@ -117,9 +120,9 @@ describe("clearPlanIfComplete", () => {
 		clearPlanIfComplete(mockCtx());
 
 		// Plan should still be active (not cleared)
-		expect(hasActivePlan()).toBe(true);
+		expect(hasActivePlan(mockCtx())).toBe(true);
 
-		const state = inspectPlanState() as unknown as PlanState;
+		const state = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(state).not.toBeNull();
 		expect(state.completedCount).toBe(state.totalCount);
 		expect(state.steps[0].state).toBe("completed");
@@ -127,7 +130,7 @@ describe("clearPlanIfComplete", () => {
 
 	it("does nothing when not all steps completed", () => {
 		setupPlanPanel("Goal", ["Step A", "Step B"], mockCtx());
-		expect(hasActivePlan()).toBe(true);
+		expect(hasActivePlan(mockCtx())).toBe(true);
 
 		// Complete only first step
 		finalizePlanStep(mockCtx());
@@ -135,34 +138,34 @@ describe("clearPlanIfComplete", () => {
 		// Not all done — clearPlanIfComplete should no-op
 		clearPlanIfComplete(mockCtx());
 
-		expect(hasActivePlan()).toBe(true);
-		const state = inspectPlanState() as unknown as PlanState;
+		expect(hasActivePlan(mockCtx())).toBe(true);
+		const state = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(state.completedCount).toBe(1);
 		expect(state.totalCount).toBe(2);
 	});
 
 	it("does nothing when no active plan", () => {
 		// No plan active
-		if (hasActivePlan()) clearPlanPanel(mockCtx());
-		expect(hasActivePlan()).toBe(false);
+		if (hasActivePlan(mockCtx())) clearPlanPanel(mockCtx());
+		expect(hasActivePlan(mockCtx())).toBe(false);
 		expect(() => clearPlanIfComplete(mockCtx())).not.toThrow();
 	});
 });
 
 describe("addSteps", () => {
 	beforeEach(() => {
-		if (hasActivePlan()) {
+		if (hasActivePlan(mockCtx())) {
 			clearPlanPanel(mockCtx());
 		}
 	});
 
 	it("adds new steps to an existing plan", () => {
 		setupPlanPanel("Goal", ["Step A", "Step B"], mockCtx());
-		expect(hasActivePlan()).toBe(true);
+		expect(hasActivePlan(mockCtx())).toBe(true);
 
-		addSteps(["Step C", "Step D"]);
+		addSteps(["Step C", "Step D"], mockCtx());
 
-		const state = inspectPlanState() as unknown as PlanState;
+		const state = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(state.totalCount).toBe(4);
 		expect(state.steps[2].label).toBe("Step C");
 		expect(state.steps[3].label).toBe("Step D");
@@ -176,11 +179,11 @@ describe("addSteps", () => {
 
 	it("does not duplicate existing steps", () => {
 		setupPlanPanel("Goal", ["Step A"], mockCtx());
-		expect(hasActivePlan()).toBe(true);
+		expect(hasActivePlan(mockCtx())).toBe(true);
 
-		addSteps(["Step A", "Step B"]);
+		addSteps(["Step A", "Step B"], mockCtx());
 
-		const state = inspectPlanState() as unknown as PlanState;
+		const state = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(state.totalCount).toBe(2);
 		expect(state.steps[0].label).toBe("Step A");
 		expect(state.steps[1].label).toBe("Step B");
@@ -189,9 +192,9 @@ describe("addSteps", () => {
 	});
 
 	it("does nothing when no active plan", () => {
-		if (hasActivePlan()) clearPlanPanel(mockCtx());
-		expect(hasActivePlan()).toBe(false);
+		if (hasActivePlan(mockCtx())) clearPlanPanel(mockCtx());
+		expect(hasActivePlan(mockCtx())).toBe(false);
 		expect(() => addSteps(["Step X"])).not.toThrow();
-		expect(hasActivePlan()).toBe(false);
+		expect(hasActivePlan(mockCtx())).toBe(false);
 	});
 });

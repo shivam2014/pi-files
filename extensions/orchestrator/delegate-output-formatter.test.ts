@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractFindingsFromOutput, extractAuditFromOutput, formatResult } from './delegate-output-formatter';
+import { extractFindingsFromOutput, extractAuditFromOutput, formatResult } from './delegate-pipeline';
 import type { DelegationMetrics } from './types';
 
 const m: DelegationMetrics = {

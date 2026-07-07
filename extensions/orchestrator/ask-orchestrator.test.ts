@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAskOrchestratorResolver } from "./delegate-tool.ts";
 import { createAskOrchestratorTool } from "./subagent-runner.ts";
-import { createActivityFeed, addStep, addSubstep } from "./activity-feed.ts";
+import { ActivityFeed } from "./activity-feed.ts";
 
 describe("createAskOrchestratorResolver", () => {
 	let cwd: string;
@@ -103,21 +103,15 @@ describe("createAskOrchestratorResolver", () => {
 
 describe("createAskOrchestratorTool", () => {
 	it("resolves the question, renames pending Clarify substep to Clarified, and emits updates", async () => {
-		let feed = createActivityFeed();
-		feed = addStep(feed, "Step 1");
-		feed = addSubstep(feed, "Clarify: what color?");
-
-		const feedApi = {
-			get: () => feed,
-			set: (f: typeof feed) => { feed = f; },
-		};
+		const feed = new ActivityFeed();
+		feed.addStep("Step 1").addSubstep("Clarify: what color?");
 
 		const updates: any[] = [];
 		const tool = createAskOrchestratorTool(
 			async () => "blue",
 			(u) => updates.push(u),
 			"coder",
-			feedApi,
+			feed,
 		);
 
 		const result = await (tool.execute as any)("call-1", { question: "what color?", context: "" }, undefined, () => {}, {});
@@ -134,10 +128,7 @@ describe("createAskOrchestratorTool", () => {
 	});
 
 	it("returns an error when no resolver is wired", async () => {
-		const tool = createAskOrchestratorTool(undefined, undefined, "coder", {
-			get: () => createActivityFeed(),
-			set: () => {},
-		});
+		const tool = createAskOrchestratorTool(undefined, undefined, "coder", new ActivityFeed());
 
 		const result = await (tool.execute as any)("call-1", { question: "hello?" }, undefined, () => {}, {});
 

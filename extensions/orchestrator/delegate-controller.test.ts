@@ -48,8 +48,19 @@ vi.mock("./plan-panel.ts", () => ({
 }));
 
 const mockClearScope = vi.hoisted(() => vi.fn());
+const mockResolveScope = vi.hoisted(() => vi.fn((params, specialistDef, cwd) => {
+  if (params.scope) return params.scope;
+  if (params.specialist === "coder") return null;
+  if (params.specialist === "writer") return { filesToModify: [], filesToCreate: [], directories: [cwd], maxFiles: 20, requiresApprovalBeyondScope: true, changeType: 'multi-file', maxLinesPerFile: 400, gateMode: 'strict' };
+  const isReadOnly = !specialistDef.tools.includes('edit') && !specialistDef.tools.includes('write');
+  if (isReadOnly) return { filesToModify: [], filesToCreate: [], directories: [], maxFiles: 10, requiresApprovalBeyondScope: false, changeType: 'multi-file', maxLinesPerFile: 400, gateMode: 'relaxed' };
+  return null;
+}));
 vi.mock("./scope-manager.ts", () => ({
-  ScopeManager: vi.fn(function() { return { writeScope: vi.fn(), clearScope: mockClearScope }; }),
+  ScopeManager: Object.assign(
+    vi.fn(function() { return { writeScope: vi.fn(), clearScope: mockClearScope }; }),
+    { resolveScope: mockResolveScope }
+  ),
 }));
 
 vi.mock("./ask-resolver.ts", () => ({
