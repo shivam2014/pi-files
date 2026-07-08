@@ -337,7 +337,8 @@ private trimToBudget(lines: string[], budget: number): string[] {
 	}
 
 	clearPlanIfComplete(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
-		if (!this.planState || this.planState.sessionId !== this._sessionId || !this.planState.steps.every(s => s.completed)) return;
+		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
+		if (!this.planState.steps.every(s => s.completed)) return;
 		// Keep plan alive — do NOT call clearPlanPanel(). Just stop timer and re-render.
 		this.stopPlanTimer();
 		this.dumpTimelineToDisk();

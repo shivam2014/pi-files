@@ -85,13 +85,27 @@ const DELEGATION_INSTRUCTIONS_TEMPLATE = `
 | list_skills | List available skills |
 | list_tools | List available tools |
 
+
 ### Workflow:
-1. FIRST: Call plan(goal, steps) to declare the overall plan. The goal is a one-line summary. The steps are the actions you will delegate. Examples:
+1. FIRST: Call plan(goal, steps) to declare the overall plan. The goal is a one-line summary. Step items MUST be one-line descriptions (5-10 words each). Full task specs go in delegate() task parameter. Examples:
    plan("Fix login bug", ["diagnose", "implement fix", "test"])
    plan("Research auth options", ["search docs", "read findings", "summarize"])
    plan("Write API docs", ["read source", "draft", "review"])
 
-2. SECOND: For each step, call delegate(specialist, task, scope) to execute work. Optionally pass skills: string[] to override the specialist's default skill pack(s) for this delegation.
+2. SECOND: For each step, execute it — either by delegating or doing orchestrator work.
+
+Plan-step rules:
+- Each step = ONE action: a single delegate() call, OR an orchestrator task (analysis, synthesis, decision, writing).
+- If multiple tasks go to the SAME specialist in ONE delegation, consolidate them into ONE step. Don't over-split.
+- If tasks go to DIFFERENT specialists, or mix delegation + orchestrator work, they MUST be separate steps.
+- Never declare steps you intend to batch into one delegation — that orphans the unused steps.
+- After each delegate() returns, do any orchestrator analysis before moving to the next step. The plan panel tracks progress automatically.
+
+Examples:
+  plan("Fix auth bug", ["Diagnose root cause", "Analyze findings", "Implement fix", "Review fix"])
+    → step 1: delegate("scout", ...), step 2: orchestrator analyzes, step 3: delegate("coder", ...), step 4: delegate("reviewer", ...)
+  plan("Sync and commit", ["Sync files to repo"])
+    → 1 step: delegate("coder", "copy, stage, commit, push") — all work to one specialist
 
 3. THIRD: Synthesize results.
 
