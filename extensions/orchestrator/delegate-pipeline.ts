@@ -544,7 +544,6 @@ export function formatResult(params: FormatResultParams): {
 	const { output, metrics, elapsed, turns, toolCalls, status, toolCallTrail } = params;
 	const isAborted = status === 'aborted';
 	const isError = status === 'error';
-	const pipeline = new DelegatePipeline({ scopeManager: null as any });
 
 	// Reconstruct the internal formatting logic
 	let statusLine: string;

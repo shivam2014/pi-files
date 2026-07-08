@@ -79,6 +79,9 @@ export default function (pi: ExtensionAPI) {
 		activeTools.push("list_tools");
 		activeTools.push("vision_query");
 		pi.setActiveTools(activeTools);
+		// Refresh tool docs after init — getAllTools() is an action method
+		// that throws if called during extension loading.
+		updateToolDocs(pi);
 	});
 
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
@@ -152,7 +155,6 @@ export default function (pi: ExtensionAPI) {
 	// ── Register tools, commands, and shortcuts ──
 	registerAllTools(pi, resolveCwd());
 	pi.registerTool(createReadSkillTool());
-	updateToolDocs(pi);
 
 	// ── Ctrl+Q: Peek overlay (Layer 3, mnemonic "quick peek") ──
 	pi.registerShortcut("ctrl+q", {
