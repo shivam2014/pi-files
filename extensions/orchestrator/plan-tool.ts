@@ -1,8 +1,9 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { setupPlanPanel, summarizeGoal, addSteps } from "./plan-panel.ts";
+import { setupPlanPanel, summarizeGoal, addSteps, resolvePlanPanel } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
+import type { StepKind } from "./types.ts";
 import type { SessionContext } from "./types.ts";
 
 function deriveGoal(goal: string | undefined, steps: string[] | undefined, ctx?: SessionContext): string {
@@ -24,6 +25,11 @@ export function registerPlanTool(pi: ExtensionAPI) {
             steps: Type.Array(Type.String(), {
                 description: "Ordered list of steps to accomplish the goal",
             }),
+            kind: Type.Optional(Type.Union([
+                Type.Literal('tool_call'),
+                Type.Literal('agent_call'),
+                Type.Literal('user_action'),
+            ], { description: 'Step classification: tool_call (delegated), agent_call (orchestrator work), user_action' })),
         }),
         promptGuidelines: [
             "Create plan: plan({ goal: 'Fix auth bug', steps: ['Read auth middleware', 'Fix token validation', 'Write tests'] })",
@@ -41,7 +47,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
             setupPlanPanel(effectiveGoal, params.steps, ctx);
             return {
                 content: [{ type: "text", text: `Plan set: ${effectiveGoal} (${params.steps.length} steps)` }],
-                details: { goal: effectiveGoal, steps: params.steps },
+                details: { goal: effectiveGoal, steps: params.steps, kind: params.kind },
             };
         },
         renderCall(args, theme, context) {
@@ -54,6 +60,71 @@ export function registerPlanTool(pi: ExtensionAPI) {
         },
     });
     registerPlanAddStepsTool(pi);
+    registerInsertStepTool(pi);
+}
+
+export function registerInsertStepTool(pi: ExtensionAPI): void {
+    pi.registerTool({
+        name: 'insert_step',
+        description: 'Insert steps at a specific position in the current plan. Use when subagent findings require inserting work between existing steps.',
+        parameters: Type.Object({
+            steps: Type.Array(Type.String(), { description: 'Step labels to insert' }),
+            after: Type.String({ description: 'Insert after this step label (must match an existing step exactly)' }),
+            kind: Type.Optional(Type.Union([
+                Type.Literal('tool_call'),
+                Type.Literal('agent_call'),
+                Type.Literal('user_action'),
+            ], { description: 'Step classification' })),
+        }),
+        promptGuidelines: [
+            "Insert: insert_step({ steps: ['new step'], after: 'existing step label' })",
+            "Inserts steps immediately after the specified step in the plan",
+            "The 'after' label must match an existing step exactly",
+            "Optional kind: tool_call, agent_call, or user_action",
+            "Output: Returns updated plan with inserted steps and count",
+        ],
+        async execute(toolCallId, params, signal, onUpdate, ctx) {
+            const panel = resolvePlanPanel(ctx as SessionContext);
+            if (!panel) {
+                return {
+                    content: [{ type: 'text', text: 'No active plan. Call plan() first.' }],
+                    details: {},
+                };
+            }
+            const state = (panel as any).planState as { goal: string; steps: Array<{ label: string; completed: boolean; errored: boolean; active: boolean; startTime?: number; endTime?: number; kind?: StepKind }> } | null;
+            if (!state) {
+                return {
+                    content: [{ type: 'text', text: 'No active plan. Call plan() first.' }],
+                    details: {},
+                };
+            }
+            const afterIdx = state.steps.findIndex(s => s.label === params.after);
+            if (afterIdx < 0) {
+                return {
+                    content: [{ type: 'text', text: `Step '${params.after}' not found in plan.` }],
+                    details: {},
+                };
+            }
+            let inserted = 0;
+            for (const label of params.steps) {
+                if (state.steps.some(s => s.label === label)) continue;
+                const newStep: any = {
+                    label,
+                    completed: false,
+                    errored: false,
+                    active: false,
+                    startTime: Date.now(),
+                };
+                if (params.kind) newStep.kind = params.kind;
+                state.steps.splice(afterIdx + 1 + inserted, 0, newStep);
+                inserted++;
+            }
+            return {
+                content: [{ type: 'text', text: `Inserted ${inserted} step(s) after '${params.after}'.` }],
+                details: {},
+            };
+        },
+    });
 }
 
 export function registerPlanAddStepsTool(pi: ExtensionAPI) {
@@ -63,6 +134,11 @@ export function registerPlanAddStepsTool(pi: ExtensionAPI) {
         description: "Add new steps to the current active plan. Duplicate step labels are skipped.",
         parameters: Type.Object({
             steps: Type.Array(Type.String()),
+            kind: Type.Optional(Type.Union([
+                Type.Literal('tool_call'),
+                Type.Literal('agent_call'),
+                Type.Literal('user_action'),
+            ], { description: 'Step classification' })),
         }),
         promptGuidelines: [
             "Add steps: plan_add_steps({ steps: ['New step 1', 'New step 2'] })",
@@ -74,7 +150,7 @@ export function registerPlanAddStepsTool(pi: ExtensionAPI) {
             addSteps(params.steps, ctx as SessionContext);
             return {
                 content: [{ type: "text", text: `Added ${params.steps.length} step(s) to plan.` }],
-                details: {},
+                details: { kind: params.kind },
             };
         },
     });

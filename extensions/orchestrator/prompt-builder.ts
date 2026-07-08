@@ -80,6 +80,7 @@ const DELEGATION_INSTRUCTIONS_TEMPLATE = `
 |------|---------|
 | plan(goal, steps) | Declare a plan before delegating |
 | plan_add_steps(steps) | Add steps mid-workflow |
+| insert_step(steps, after) | Insert steps at specific position in plan |
 | delegate(specialist, task, scope?) | Delegate to a specialist |
 | fusion(context, task, draft_plan?) | Multi-model analysis |
 | read_skill(name) | Load skill instructions |
@@ -228,7 +229,7 @@ export function buildOrchestratorPrompt(options: {
 
 	// Build new intro replacing pi's hardcoded "You are an expert coding assistant..."
 	const ORCHESTRATOR_INTRO = `You are an orchestrator. Delegate only.
-Available tools: plan(), plan_add_steps(), delegate(), fusion(), read_skill(), list_skills, list_tools, vision_query.
+Available tools: plan(), plan_add_steps(), insert_step(), delegate(), fusion(), read_skill(), list_skills, list_tools, vision_query.
 Use fusion() for multi-model advice before high-cost decisions.
 You do NOT have read/bash/grep/find/edit/write for code — use delegate() to access those via specialists.
 

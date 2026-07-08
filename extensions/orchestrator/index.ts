@@ -26,6 +26,7 @@ import { ScopeManager } from "./scope-manager.ts";
 import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
 import { buildOrchestratorPrompt } from "./prompt-builder.ts";
 import { registerAllTools } from "./registration-hub.ts";
+import { registerInsertStepTool } from "./plan-tool.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
 import { SPECIALISTS, updateToolDocs } from "./specialists.ts";
 import { join } from "node:path";
@@ -70,7 +71,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		const cwd = ctx?.cwd ?? process.cwd();
 		const fusionConfig = loadFusionConfig(cwd);
-		const activeTools: string[] = ["plan", "plan_add_steps", "delegate"];
+		const activeTools: string[] = ["plan", "plan_add_steps", "insert_step", "delegate"];
 		if (fusionConfig.enabled) {
 			activeTools.push("fusion");
 		}
@@ -126,7 +127,7 @@ export default function (pi: ExtensionAPI) {
 		if (event.toolName === "fusion" && !pi.getAllTools().some((t: any) => t.name === "fusion")) {
 			return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 		}
-		if (event.toolName !== "delegate" && event.toolName !== "plan" && event.toolName !== "plan_add_steps" && event.toolName !== "fusion" && event.toolName !== "read_skill" && event.toolName !== "list_skills" && event.toolName !== "list_tools" && event.toolName !== "vision_query") {
+		if (event.toolName !== "delegate" && event.toolName !== "plan" && event.toolName !== "plan_add_steps" && event.toolName !== "insert_step" && event.toolName !== "fusion" && event.toolName !== "read_skill" && event.toolName !== "list_skills" && event.toolName !== "list_tools" && event.toolName !== "vision_query") {
 			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
 		}
 	});
@@ -154,6 +155,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Register tools, commands, and shortcuts ──
 	registerAllTools(pi, resolveCwd());
+	registerInsertStepTool(pi);
 	pi.registerTool(createReadSkillTool());
 
 	// ── Ctrl+Q: Peek overlay (Layer 3, mnemonic "quick peek") ──

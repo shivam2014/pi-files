@@ -82,6 +82,8 @@ export interface SubagentContext {
 	onAskOrchestrator?: (question: string, context?: string) => Promise<string>;
 }
 
+export type StepKind = 'tool_call' | 'agent_call' | 'user_action';
+
 /** A step in the plan panel header */
 export interface PlanStep {
 	label: string;
@@ -93,6 +95,7 @@ export interface PlanStep {
 	detailLines?: string[];
 	startTime?: number;
 	endTime?: number;
+	kind?: StepKind;
 }
 
 /** Per-delegation tool usage metrics */

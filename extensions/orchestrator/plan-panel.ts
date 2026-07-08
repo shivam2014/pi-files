@@ -72,7 +72,7 @@ export class PlanPanel {
 			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 			writeFileSync(join(dir, 'orchestrator-plan.json'), JSON.stringify({
 				goal: this.planState.goal,
-				steps: this.planState.steps.map(s => ({ label: s.label, completed: s.completed, errored: s.errored })),
+				steps: this.planState.steps.map(s => ({ label: s.label, completed: s.completed, errored: s.errored, kind: s.kind })),
 				startTime: this.planState.startTime,
 			}, null, 2));
 		} catch { /* silent */ }
@@ -84,7 +84,23 @@ export class PlanPanel {
 			if (!existsSync(statePath)) return null;
 			const saved = JSON.parse(readFileSync(statePath, 'utf8'));
 			if (!saved?.goal || !saved?.steps) return null;
-			return { goal: saved.goal, steps: saved.steps.map((s: any) => ({ ...s, active: false })), startTime: saved.startTime || Date.now(), sessionId: this._sessionId ?? saved.sessionId ?? "unknown" };
+			const steps = saved.steps.map((s: any) => ({ ...s, active: false }));
+			// Infer kind for steps that lack it (backward compat with pre-#100 plans)
+			for (const step of steps) {
+				if (!step.kind) {
+					const label = step.label.toLowerCase();
+					if (label.includes('delegate') || label.includes('specialist')) {
+						step.kind = 'tool_call';
+					} else if (label.includes('analyze') || label.includes('review') ||
+						   label.includes('synthesize') || label.includes('decide') ||
+						   label.includes('verify') || label.includes('research')) {
+						step.kind = 'agent_call';
+					} else {
+						step.kind = 'agent_call'; // default
+					}
+				}
+			}
+			return { goal: saved.goal, steps, startTime: saved.startTime || Date.now(), sessionId: this._sessionId ?? saved.sessionId ?? "unknown" };
 		} catch { return null; }
 	}
 
