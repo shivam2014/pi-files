@@ -14,6 +14,7 @@ import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
 import { formatMetricsLine } from "./types.ts";
 import { captureDiagnostic, isDiagnosticsEnabled, persistDiagnostic, cleanupOldDiagnostics } from "./subagent-diagnostics.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { statusIcon, styledSymbol, getTheme } from "./orchestrator-theme.ts";
 
 /** Result type returned by executeDelegate */
 export interface ExecuteDelegateResult {
@@ -399,7 +400,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		// Prepend tool call trail
 		if (toolCallTrail && toolCallTrail.length > 0) {
 			const trail = toolCallTrail.map(t =>
-				`${t.completed ? '✓' : '⚠'} ${t.tool}${t.outputPreview ? ` → ${t.outputPreview}` : ''}`
+				`${t.completed ? statusIcon('completed') : getTheme().fg('warning', styledSymbol('status.warning'))} ${t.tool}${t.outputPreview ? ` → ${t.outputPreview}` : ''}`
 			).join('\n');
 			result = `[Tool Calls (${toolCallTrail.length}):\n${trail}\n]\n\n` + result;
 		}
@@ -429,7 +430,7 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		const toolCalls = toolCallTrail?.length || 0;
 		const turnWord = turns === 1 ? "turn" : "turns";
 		const toolWord = toolCalls === 1 ? "tool call" : "tool calls";
-		const statusNote = `✓ Completed (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+		const statusNote = `${statusIcon('completed')} Completed (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
 		result = `${statusNote}\n${result}`;
 
 		return result;
@@ -450,12 +451,12 @@ The scope tells the coder exactly which files it's allowed to touch.`
 
 		let trailStr = "";
 		if (toolCallTrail && toolCallTrail.length > 0) {
-			trailStr = "\nCompleted tool calls:\n" + toolCallTrail.map(t => `${t.completed ? '✓' : '⚠'} ${t.tool}`).join("\n");
+			trailStr = "\nCompleted tool calls:\n" + toolCallTrail.map(t => `${t.completed ? statusIcon('completed') : getTheme().fg('warning', styledSymbol('status.warning'))} ${t.tool}`).join("\n");
 		}
 
 		const statusNote = isAborted
-			? `■ Aborted — interrupted by user (${turns} ${turnWord}, ${toolCalls} ${toolWord})`
-			: `✗ Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+			? `${statusIcon('aborted')} Aborted — interrupted by user (${turns} ${turnWord}, ${toolCalls} ${toolWord})`
+			: `${statusIcon('error')} Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
 
 		return `${statusNote}${trailStr}\n\n${output}`;
 	}
@@ -548,11 +549,11 @@ export function formatResult(params: FormatResultParams): {
 	// Reconstruct the internal formatting logic
 	let statusLine: string;
 	if (status === 'ok') {
-		statusLine = `✓ Completed (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
+		statusLine = `${statusIcon("completed")} Completed (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
 	} else if (status === 'aborted') {
-		statusLine = `■ Aborted — interrupted by user (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
+		statusLine = `${statusIcon("aborted")} Aborted — interrupted by user (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
 	} else {
-		statusLine = `✗ Error (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
+		statusLine = `${statusIcon('error')} Error (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
 	}
 
 	const metricsLine = `[Metrics: read=${metrics.readCalls}, grep=${metrics.grepCalls}, find=${metrics.findCalls}, edit=${metrics.editCalls}, write=${metrics.writeCalls}, bash=${metrics.bashCalls}, ls=${metrics.lsCalls}, scopeViolations=${metrics.scopeViolations}]`;
@@ -560,8 +561,8 @@ export function formatResult(params: FormatResultParams): {
 	let trailStr = '';
 	if (toolCallTrail && toolCallTrail.length > 0) {
 		const trailItems = toolCallTrail.map(t => {
-			const icon = t.completed ? '✓' : '⚠';
-			const preview = t.outputPreview ? ` → ${t.outputPreview}` : '';
+			const icon = t.completed ? statusIcon("completed") : getTheme().fg("warning", styledSymbol("status.warning"));
+			const preview = t.outputPreview ? ` ${getTheme().fg("dim", styledSymbol("icon.tool"))} ${t.outputPreview}` : '';
 			return `${icon} ${t.tool}${preview}`;
 		}).join('\n');
 		trailStr = `\n\n[Tool Calls (${toolCallTrail.length}):\n${trailItems}]`;

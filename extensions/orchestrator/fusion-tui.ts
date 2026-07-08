@@ -1,6 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { SelectList, type SelectItem, matchesKey, Key } from "@earendil-works/pi-tui";
+import { styledSymbol } from "./orchestrator-theme.ts";
 import { loadFusionConfig, saveFusionConfig, sanitizeFusionConfig } from "./fusion-tool.ts";
 
 interface FusionUIState {
@@ -80,19 +81,19 @@ export async function showFusionTUI(ctx: ExtensionCommandContext): Promise<void>
 			return {
 				render(width: number): string[] {
 					const lines: string[] = [];
-					const border = theme.fg("muted", "─");
+					const border = theme.fg("muted", styledSymbol("boxRound.horizontal"));
 					const iw = Math.max(width - 4, 20);
 
 					// ── Title bar ──
-					lines.push(theme.fg("muted", `┌${border.repeat(Math.max(0, width - 2))}┐`));
+					lines.push(theme.fg("muted", `${styledSymbol("boxRound.topLeft")}${border.repeat(Math.max(0, width - 2))}${styledSymbol("boxRound.topRight")}`));
 					const title = theme.fg("accent", " Fusion Settings ");
 					const padR = Math.max(0, width - 4 - title.length);
 					lines.push(theme.fg("muted", `│`) + ` ${title}` + " ".repeat(padR) + theme.fg("muted", `│`));
-					lines.push(theme.fg("muted", `├${border.repeat(Math.max(0, width - 2))}┤`));
+					lines.push(theme.fg("muted", `${styledSymbol("boxRound.teeRight")}${border.repeat(Math.max(0, width - 2))}${styledSymbol("boxRound.teeLeft")}`));
 
 					if (panelSubView && panelSelectList) {
 						lines.push(theme.fg("accent", " Select panel models (Space to toggle, Enter confirm)"));
-						lines.push(theme.fg("muted", " " + "─".repeat(iw)));
+						lines.push(theme.fg("muted", " " + styledSymbol('boxRound.horizontal').repeat(iw)));
 						for (const line of panelSelectList.render(iw)) {
 							lines.push(" " + line);
 						}
@@ -101,7 +102,7 @@ export async function showFusionTUI(ctx: ExtensionCommandContext): Promise<void>
 						}
 					} else if (judgeSubView && judgeSelectList) {
 						lines.push(theme.fg("accent", " Select judge model (Enter to select)"));
-						lines.push(theme.fg("muted", " " + "─".repeat(iw)));
+						lines.push(theme.fg("muted", " " + styledSymbol('boxRound.horizontal').repeat(iw)));
 						for (const line of judgeSelectList.render(iw)) {
 							lines.push(" " + line);
 						}
@@ -124,9 +125,9 @@ export async function showFusionTUI(ctx: ExtensionCommandContext): Promise<void>
 
 						for (const r of rows) {
 							const focused = r.key === currentSection;
-							const prefix = focused ? theme.fg("accent", "▸ ") : "  ";
+							const prefix = focused ? theme.fg("accent", styledSymbol("nav.cursor") + " ") : "  ";
 							if (r.key === "enabled") {
-								const toggle = state.enabled ? theme.fg("success", "ON") : theme.fg("error", "OFF");
+								const toggle = state.enabled ? theme.fg("success", styledSymbol("status.done") + " ON") : theme.fg("error", styledSymbol("status.error") + " OFF");
 								lines.push(`${prefix}${r.label}: ${toggle}`);
 							} else if (r.key === "save") {
 								lines.push("");
@@ -137,7 +138,7 @@ export async function showFusionTUI(ctx: ExtensionCommandContext): Promise<void>
 						}
 					}
 
-					lines.push(theme.fg("muted", `└${border.repeat(Math.max(0, width - 2))}┘`));
+					lines.push(theme.fg("muted", `${styledSymbol("boxRound.bottomLeft")}${border.repeat(Math.max(0, width - 2))}${styledSymbol("boxRound.bottomRight")}`));
 					lines.push(theme.fg("muted", " ↑↓ navigate  Space toggle  Enter interact  Esc save & exit "));
 					return lines;
 				},

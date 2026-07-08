@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export { createAskOrchestratorResolver } from "./ask-resolver.ts";
 import { SPINNER_FRAMES, SPINNER_INTERVAL_MS, currentFrame } from "./spinner-state.ts";
+import { statusIcon, getTheme } from "./orchestrator-theme.ts";
 
 import { Text } from "@earendil-works/pi-tui";
 import { executeDelegate } from "./delegate-controller.ts";
@@ -120,10 +121,10 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				if (text) state.lastFeedText = text;
 				const feedText = text
 					? theme.fg("warning", text)
-					: theme.fg("warning", `${currentFrame()} working...`);
+					: statusIcon("running") + " working...";
 				comp.setText(prefix ? `${prefix}\n${feedText}` : feedText);
 			} else {
-				const feedText = state.lastFeedText || text || "✓ done";
+				const feedText = state.lastFeedText || text || (statusIcon("completed") + " done");
 				comp.setText(prefix ? `${prefix}\n${theme.fg("success", feedText)}` : theme.fg("success", feedText));
 			}
 

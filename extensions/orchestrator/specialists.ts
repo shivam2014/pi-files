@@ -236,9 +236,6 @@ const CODER_TOOLS = ["read", "bash", "edit", "write", "grep", "lint"] as const;
 const REVIEWER_TOOLS = ["read", "bash", "grep"] as const;
 const WRITER_TOOLS = ["read", "write", "edit", "ls", "find", "git-read"] as const;
 
-// :raw usage hint for specialists that have the read tool
-const RAW_HINT = "For complete file reads, use :raw suffix: read({ path: 'file.ts:raw' })";
-
 // Exported let bindings — populated at module load via _initToolDocs(),
 // then refreshable at runtime via updateToolDocs(pi).
 export let _scoutToolDoc = "";
@@ -253,10 +250,10 @@ export let _writerToolDoc = "";
  * Callers may later refresh via updateToolDocs(pi) when a pi instance is available.
  */
 function _initToolDocs(): void {
-	_scoutToolDoc = generateToolDoc([...SCOUT_TOOLS], `You do NOT have bash, edit, or write.\n${RAW_HINT}`);
-	_coderToolDoc = generateToolDoc([...CODER_TOOLS], `Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.\n${RAW_HINT}`);
-	_reviewerToolDoc = generateToolDoc([...REVIEWER_TOOLS], `You do NOT have edit or write. You cannot modify files.\n${RAW_HINT}`);
-	_researcherToolDoc = generateToolDoc([...RESEARCHER_TOOLS], `You do NOT have bash, edit, or write.\n${RAW_HINT}`);
+	_scoutToolDoc = generateToolDoc([...SCOUT_TOOLS], "You do NOT have bash, edit, or write.");
+	_coderToolDoc = generateToolDoc([...CODER_TOOLS], "Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.");
+	_reviewerToolDoc = generateToolDoc([...REVIEWER_TOOLS], "You do NOT have edit or write. You cannot modify files.");
+	_researcherToolDoc = generateToolDoc([...RESEARCHER_TOOLS], "You do NOT have bash, edit, or write.");
 	_writerToolDoc = generateToolDoc([...WRITER_TOOLS], "You do NOT have bash.");
 }
 _initToolDocs();
@@ -271,19 +268,19 @@ export function updateToolDocs(pi: { getAllTools: () => { name: string; paramete
 
 	_scoutToolDoc = generateToolDocFromApi(
 		[...SCOUT_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
-		`You do NOT have bash, edit, or write.\n${RAW_HINT}`,
+		"You do NOT have bash, edit, or write.",
 	);
 	_coderToolDoc = generateToolDocFromApi(
 		[...CODER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
-		`Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.\n${RAW_HINT}`,
+		"Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.",
 	);
 	_reviewerToolDoc = generateToolDocFromApi(
 		[...REVIEWER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
-		`You do NOT have edit or write. You cannot modify files.\n${RAW_HINT}`,
+		"You do NOT have edit or write. You cannot modify files.",
 	);
 	_researcherToolDoc = generateToolDocFromApi(
 		[...RESEARCHER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
-		`You do NOT have bash, edit, or write.\n${RAW_HINT}`,
+		"You do NOT have bash, edit, or write.",
 	);
 	_writerToolDoc = generateToolDocFromApi(
 		[...WRITER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],

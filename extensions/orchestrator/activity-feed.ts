@@ -11,8 +11,7 @@
  */
 
 import type { ActivityFeedState, Step, Substep, PlanStep } from "./types.ts";
-import { formatDuration } from "./ui-utils.ts";
-import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
+import { styledSymbol, statusIcon, formatDuration as thFormatDuration, getTheme } from "./orchestrator-theme.ts";
 
 
 // ============================================================================
@@ -25,12 +24,7 @@ const MAX_FEED_SUBSTEPS = 8;
 // Max recursive re-renders when state changes mid-render
 const MAX_RENDER_RETRIES = 3;
 
-function renderReportSubstepLine(label: string): string {
-	if (label.startsWith("Clarified:")) {
-		return `    ✓ ${label}`;
-	}
-	return `    ✓ Report: ${label}`;
-}
+
 
 // ============================================================================
 // Activity Feed State — Layer 2 (subagent tool blocks)
@@ -474,19 +468,19 @@ export function renderSubstepLines(substeps: Substep[], maxLines: number = 3): s
 	const hidden = substeps.length - visible.length;
 	const lines: string[] = [];
 	if (hidden > 0) {
-		lines.push(`    … +${hidden} more`);
+		lines.push(`    ${getTheme().fg("dim", "…")} +${hidden} more`);
 	}
 	for (const sub of visible) {
 		if (sub.completed) {
 			if (sub.isReport) {
-				lines.push(renderReportSubstepLine(sub.label));
+				lines.push(sub.label.startsWith("Clarified:") ? `    ${statusIcon("completed")} ${sub.label}` : `    ${statusIcon("completed")} Report: ${sub.label}`);
 			} else {
 				const label = sub.label.startsWith("Reading ") ? "Read " + sub.label.slice(8) : sub.label;
-				lines.push(`    ✓ ${label}`);
+				lines.push(`    ${statusIcon("completed")} ${label}`);
 			}
 		} else {
 			const label = sub.label.startsWith("Running: ") ? sub.label.slice(9) : sub.label;
-			lines.push(`    ${currentFrame()} ${label}`);
+			lines.push(`    ${statusIcon("running")} ${label}`);
 		}
 	}
 	return lines;
@@ -507,7 +501,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 		const retryCount = (state as any).retryCount;
 		if (retryCount) {
 			const reason = (state as any).retryReason || msg || "Error";
-			return `⠇ Retry ${retryCount}/3: ${reason}`;
+			return `${getTheme().fg("warning", styledSymbol("status.warning"))} Retry ${retryCount}/3: ${reason}`;
 		}
 		// Render step tree with errored step showing ✗ instead of early return
 		const errorLines: string[] = [];
@@ -517,7 +511,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 		// Goal line — use goalOverride if provided
 		const displayGoal = goalOverride ?? state.goal;
 		if (displayGoal) {
-			errorLines.push(`◆ ${displayGoal}`);
+			errorLines.push(`${styledSymbol("icon.goal")} ${displayGoal}`);
 		}
 
 		if (total > 0) {
@@ -525,11 +519,11 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 			let dots = "";
 			for (let i = 0; i < total; i++) {
 				if (state.steps[i].completed) {
-					dots += "●";
+					dots += styledSymbol("status.done");
 				} else if (i === _currentStep) {
-					dots += "✗";
+					dots += styledSymbol("status.error");
 				} else {
-					dots += "○";
+					dots += styledSymbol("status.pending");
 				}
 			}
 			errorLines.push(`${dots} ${completed}/${total}`);
@@ -542,56 +536,64 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 
 				if (step.completed) {
 					const duration = step.startTime && step.endTime
-						? formatDuration(step.endTime - step.startTime)
+						? thFormatDuration(step.endTime - step.startTime)
 						: "";
-					const summary = `  ✓ Step ${i + 1}: ${step.label}${duration ? ` (${duration})` : ""}`;
+					const summary = `  ${statusIcon("completed")} Step ${i + 1}: ${step.label}${duration ? ` (${duration})` : ""}`;
 					errorLines.push(summary);
 					// Show Report: substeps under completed steps (Collapse Not Erase)
 					for (const sub of step.substeps) {
 						if (sub.isReport) {
-							errorLines.push(renderReportSubstepLine(sub.label));
+							errorLines.push(
+								sub.label.startsWith("Clarified:")
+									? `    ${statusIcon("completed")} ${sub.label}`
+									: `    ${statusIcon("completed")} Report: ${sub.label}`
+							);
 						}
 					}
 				} else if (isErrored) {
 					const duration = step.startTime
-						? formatDuration(Date.now() - step.startTime)
+						? thFormatDuration(Date.now() - step.startTime)
 						: "";
-					errorLines.push(`  ✗ Step ${i + 1}: ${step.label}${duration ? ` (${duration})` : ""}`);
+					errorLines.push(`  ${statusIcon("error")} Step ${i + 1}: ${step.label}${duration ? ` (${duration})` : ""}`);
 					if (step.overflowCount && step.overflowCount > 0) {
-						errorLines.push(`    … +${step.overflowCount} more`);
+						errorLines.push(`    ${getTheme().fg("dim", "…")} +${step.overflowCount} more`);
 					}
 					let foundActive = false;
 					for (const sub of step.substeps) {
 						if (sub.completed) {
 							if (sub.errored) {
-								errorLines.push(`    ⚠ ${sub.label}`);
+								errorLines.push(`    ${getTheme().fg("warning", styledSymbol("status.warning"))} ${sub.label}`);
 								if (sub.outputPreview) {
 									errorLines.push(`      ${sub.outputPreview}`);
 								}
 							} else if (sub.isReport) {
-								errorLines.push(renderReportSubstepLine(sub.label));
+								errorLines.push(
+									sub.label.startsWith("Clarified:")
+										? `    ${statusIcon("completed")} ${sub.label}`
+										: `    ${statusIcon("completed")} Report: ${sub.label}`
+								);
 							} else {
-								errorLines.push(`    ✓ ${sub.label}`);
+								errorLines.push(`    ${statusIcon("completed")} ${sub.label}`);
 							}
 						} else if (!foundActive) {
 							foundActive = true;
-							errorLines.push(`    ✗ ${sub.label}`);
+							errorLines.push(`    ${statusIcon("error")} ${sub.label}`);
 						} // else: pending substeps after active one — not shown
 					}
 					const pendingCount = step.substeps.filter(s => !s.completed).length - (foundActive ? 1 : 0);
 					if (pendingCount > 0) {
-						errorLines.push(`    ○ +${pendingCount} pending`);
+						errorLines.push(`    ${statusIcon("pending")} +${pendingCount} pending`);
 					}
 					if (msg && !foundActive) {
-						errorLines.push(`    ⚠ ${msg}`);
+						errorLines.push(`    ${getTheme().fg("warning", styledSymbol("status.warning"))} ${msg}`);
 					}
 				} else if (isPending) {
-					errorLines.push(`  ○ Step ${i + 1}: ${step.label}`);
+					errorLines.push(`  ${statusIcon("pending")} Step ${i + 1}: ${step.label}`);
 				}
 			}
 		} else {
 			// No steps yet — just show error message
-			errorLines.push(`  ✗ ${msg}`);
+			errorLines.push(`  ${statusIcon("error")} ${msg}`);
 		}
 
 		return errorLines.join("\n");
@@ -600,17 +602,15 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 	const lines: string[] = [];
 	const total = state.steps.length;
 	const completed = state.steps.filter((s) => s.completed).length;
-	const spinner = currentFrame();
-
 	// Goal line — use goalOverride if provided
 	const displayGoal = goalOverride ?? state.goal;
 	if (displayGoal) {
-		lines.push(`◆ ${displayGoal}`);
+		lines.push(`${styledSymbol("icon.goal")} ${displayGoal}`);
 	}
 
 	// No steps yet — show working indicator
 	if (total === 0) {
-		lines.push(`  ${spinner} Working...`);
+		lines.push(`  ${statusIcon("running")} Working...`);
 		return lines.join("\n");
 	}
 
@@ -619,12 +619,12 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 		let dots = "";
 		for (let i = 0; i < total; i++) {
 			if (state.steps[i].completed) {
-				dots += "●";
+				dots += styledSymbol("status.done");
 			} else if (i === _currentStep) {
 				// Blink: sync with 80ms spinner frame
-				dots += (Math.floor(Date.now() / 1000) % 2 === 0) ? "○" : "●";
+				dots += (Math.floor(Date.now() / 1000) % 2 === 0) ? styledSymbol("status.pending") : styledSymbol("status.done");
 			} else {
-				dots += "○";
+				dots += styledSymbol("status.pending");
 			}
 		}
 		lines.push(`${dots} ${completed}/${total}`);
@@ -638,40 +638,48 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 
 		if (step.completed) {
 			const duration = step.startTime && step.endTime
-				? formatDuration(step.endTime - step.startTime)
+				? thFormatDuration(step.endTime - step.startTime)
 				: "";
-			const summary = `  ✓ Step ${i + 1}: ${step.label}${duration ? ` (${duration})` : ""}`;
+			const summary = `  ${statusIcon("completed")} Step ${i + 1}: ${step.label}${duration ? ` (${duration})` : ""}`;
 			lines.push(summary);
 			// Show Report: substeps under completed steps (Collapse Not Erase)
 			for (const sub of step.substeps) {
 				if (sub.isReport) {
-					lines.push(renderReportSubstepLine(sub.label));
+					lines.push(
+						sub.label.startsWith("Clarified:")
+							? `    ${statusIcon("completed")} ${sub.label}`
+							: `    ${statusIcon("completed")} Report: ${sub.label}`
+					);
 				}
 			}
 		} else if (isCurrent) {
 			// Active step:  <spinner> Step N: <label> (no duration)
-			lines.push(`  ${spinner} Step ${i + 1}: ${step.label}`);
+			lines.push(`  ${statusIcon("running")} Step ${i + 1}: ${step.label}`);
 			// Render substeps: completed first, then active, then pending
 			if (step.overflowCount && step.overflowCount > 0) {
-				lines.push(`    … +${step.overflowCount} more`);
+				lines.push(`    ${getTheme().fg("dim", "…")} +${step.overflowCount} more`);
 			}
 			let foundActive = false;
 			for (const sub of step.substeps) {
 				if (sub.completed) {
 					if (sub.errored) {
-						lines.push(`    ⚠ ${sub.label}`);
+						lines.push(`    ${getTheme().fg("warning", styledSymbol("status.warning"))} ${sub.label}`);
 						if (sub.outputPreview) {
 							lines.push(`      ${sub.outputPreview}`);
 						}
 					} else if (sub.isReport) {
-						lines.push(renderReportSubstepLine(sub.label));
+						lines.push(
+							sub.label.startsWith("Clarified:")
+								? `    ${statusIcon("completed")} ${sub.label}`
+								: `    ${statusIcon("completed")} Report: ${sub.label}`
+						);
 					} else {
-						lines.push(`    ✓ ${sub.label}`);
+						lines.push(`    ${statusIcon("completed")} ${sub.label}`);
 					}
 				} else if (!foundActive) {
 					foundActive = true;
 					// Active substep
-					lines.push(`    ${spinner} ${sub.label}`);
+					lines.push(`    ${statusIcon("running")} ${sub.label}`);
 					// Tool detail (ephemeral, only for active substep)
 					// Supports multi-line (\n-separated) for multi-item tool calls
 					if (sub.toolDetail) {
@@ -679,18 +687,18 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 						for (let di = 0; di < detailLines.length; di++) {
 							// Single-line keeps "Running:" prefix; multi-line renders without prefix
 							const prefix = detailLines.length === 1 ? "Running: " : "";
-							lines.push(`        ${spinner} ${prefix}${detailLines[di]}`);
+							lines.push(`        ${statusIcon("running")} ${prefix}${detailLines[di]}`);
 						}
 					}
 				} else {
 					// Pending substep
-					lines.push(`    ○ ${sub.label}`);
+					lines.push(`    ${statusIcon("pending")} ${sub.label}`);
 				}
 			}
 
 		} else if (isPending) {
 			// Pending step:  ○ Step N: <label>
-			lines.push(`  ○ Step ${i + 1}: ${step.label}`);
+			lines.push(`  ${statusIcon("pending")} Step ${i + 1}: ${step.label}`);
 		}
 	}
 

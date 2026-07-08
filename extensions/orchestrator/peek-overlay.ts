@@ -12,6 +12,7 @@
 
 import { SPINNER_FRAMES, resetSpinner, currentFrame } from "./spinner-state.ts";
 import { formatDuration } from "./ui-utils.ts";
+import { styledSymbol, statusIcon, getTheme } from "./orchestrator-theme.ts";
 import { matchesKey, Key } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
@@ -90,12 +91,12 @@ export class PeekComponent implements Component {
         // ── Empty state ──
         if (!_viewerSession && _peekLines.length === 0 && !_viewerOutput) {
             const topPad = Math.max(0, width - 4);
-            lines.push(mute("┌ ") + mute("─".repeat(topPad)) + mute(" ┐"));
-            lines.push(box(mute("○ Waiting for subagent...")));
+            lines.push(mute(styledSymbol("boxRound.topLeft") + " ") + mute(styledSymbol("boxRound.horizontal").repeat(topPad)) + mute(" " + styledSymbol("boxRound.topRight")));
+            lines.push(box(mute(statusIcon("pending") + " Waiting for subagent...")));
             while (lines.length < MIN_HEIGHT - 1) {
                 lines.push(box(""));
             }
-            lines.push(mute("└─") + mute("─".repeat(Math.max(0, width - 4))) + mute("─┘"));
+            lines.push(mute(styledSymbol("boxRound.bottomLeft") + styledSymbol("boxRound.horizontal")) + mute(styledSymbol("boxRound.horizontal").repeat(Math.max(0, width - 4))) + mute(styledSymbol("boxRound.horizontal") + styledSymbol("boxRound.bottomRight")));
             return lines;
         }
 
@@ -103,13 +104,13 @@ export class PeekComponent implements Component {
         const goalLabel = _viewerTask || _peekGoal || "Subagent";
         const topInnerText = ` ◆ ${goalLabel} `;
         const topPad = Math.max(0, (width - 2) - vLen(topInnerText));
-        lines.push(mute("┌") + accent("◆") + ` ${bld(goalLabel)} ` + mute("─".repeat(topPad)) + mute("┐"));
+        lines.push(mute(styledSymbol("boxRound.topLeft")) + accent(styledSymbol("icon.goal")) + ` ${bld(goalLabel)} ` + mute(styledSymbol("boxRound.horizontal").repeat(topPad)) + mute(styledSymbol("boxRound.topRight")));
 
         // Status line
         let statusText = "";
-        if (_viewerStatus === "running") statusText = accent(currentFrame() + " Running");
-        else if (_viewerStatus === "completed") statusText = success("✓ Completed");
-        else if (_viewerStatus === "error") statusText = errCol("✗ Error");
+        if (_viewerStatus === "running") statusText = statusIcon("running") + " Running";
+        else if (_viewerStatus === "completed") statusText = statusIcon("completed") + " Completed";
+        else if (_viewerStatus === "error") statusText = statusIcon("error") + " Error";
         if (statusText) lines.push(box(statusText));
 
         // ── Build content lines from session messages ──
@@ -129,8 +130,7 @@ export class PeekComponent implements Component {
                     if (!text?.trim()) continue;
                     contentLines.push(accent("[User]"));
                     const wrapped = wrapText(text.trim(), innerWidth - 2);
-                    for (const line of wrapped) contentLines.push(` ${line}`);
-                    contentLines.push(dim("───"));
+                    contentLines.push(dim(styledSymbol('boxRound.horizontal').repeat(3)));
                 } else if (role === "assistant") {
                     contentLines.push(bld("[Assistant]"));
                     // Try multiple content formats
@@ -157,7 +157,7 @@ export class PeekComponent implements Component {
                     for (const name of tools) {
                         contentLines.push(dim(`  [Tool: ${name}]`));
                     }
-                    contentLines.push(dim("───"));
+                    contentLines.push(dim(styledSymbol('boxRound.horizontal').repeat(3)));
                 } else if (role === "toolResult" || role === "tool_result" || role === "tool") {
                     const text = extractMsgText(msg.content ?? msg.text ?? "");
                     if (!text?.trim()) continue;
@@ -165,7 +165,7 @@ export class PeekComponent implements Component {
                     contentLines.push(dim("[Result]"));
                     const wrapped = wrapText(truncated.trim(), innerWidth - 2);
                     for (const line of wrapped) contentLines.push(dim(` ${line}`));
-                    contentLines.push(dim("───"));
+                    contentLines.push(dim(styledSymbol('boxRound.horizontal').repeat(3)));
                 }
             }
         }
@@ -187,7 +187,7 @@ export class PeekComponent implements Component {
             if (contentLines.length > 0) {
                 contentLines.push(dim("─ output ─"));
             }
-            const prefix = _viewerStatus === "error" ? errCol("✗ ") : success("✓ ");
+            const prefix = _viewerStatus === "error" ? `${statusIcon("error")} ` : `${statusIcon("completed")} `;
             contentLines.push(prefix + truncate(_viewerOutput, Math.max(innerWidth - 2, 10)));
         }
 
@@ -196,7 +196,7 @@ export class PeekComponent implements Component {
             if (_viewerStatus === "running") {
                 contentLines.push(dim("Waiting for subagent output..."));
             } else if (_viewerStatus === "idle") {
-                contentLines.push(dim("○ Waiting for subagent..."));
+                contentLines.push(getTheme().fg("dim", statusIcon("pending") + " Waiting for subagent..."));
             }
         }
 
@@ -211,7 +211,7 @@ export class PeekComponent implements Component {
         // ── Bottom border ──
         const bottomText = "─ Esc: close  xx′: abort ";
         const bottomPad = Math.max(0, (width - 2) - vLen(bottomText));
-        lines.push(mute("└") + mute(bottomText) + mute("─".repeat(bottomPad)) + mute("┘"));
+        lines.push(mute(styledSymbol("boxRound.bottomLeft")) + mute(bottomText) + mute(styledSymbol("boxRound.horizontal").repeat(bottomPad)) + mute(styledSymbol("boxRound.bottomRight")));
 
         // Pad to MIN_HEIGHT
         while (lines.length < MIN_HEIGHT) {

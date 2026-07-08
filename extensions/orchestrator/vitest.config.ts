@@ -51,4 +51,7 @@ export default defineConfig({
   resolve: {
     alias: resolveAlias,
   },
+  test: {
+    setupFiles: ["./test-setup.ts"],
+  },
 });

@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { extractFindingsFromOutput, extractAuditFromOutput, formatResult } from './delegate-pipeline';
 import type { DelegationMetrics } from './types';
 
+function stripAnsi(str: string): string {
+  return str.replace(/\u001b\[[\d;]+m/g, '');
+}
+
 const m: DelegationMetrics = {
   readCalls: 3, grepCalls: 2, findCalls: 0,
   editCalls: 1, writeCalls: 0, bashCalls: 5,
@@ -108,13 +112,13 @@ describe('extractAuditFromOutput', () => {
 describe('formatResult', () => {
   describe('status note', () => {
     it('formats ok status with toolCalls', () => {
-      expect(fmt({ output: 'Some output', elapsed: 5.2, turns: 3, toolCalls: 4, status: 'ok' }).formatted)
-        .toMatch(/^✓ Completed \(3 turns, 4 tool calls\)/);
+      const result = fmt({ output: 'Some output', elapsed: 5.2, turns: 3, toolCalls: 4, status: 'ok' }).formatted;
+      expect(stripAnsi(result)).toMatch(/^✓ Completed \(3 turns, 4 tool calls\)/);
     });
 
     it('formats aborted status', () => {
-      expect(fmt({ output: 'Interrupted', turns: 2, toolCalls: 1, status: 'aborted' }).formatted)
-        .toMatch(/^■ Aborted — interrupted by user \(2 turns, 1 tool call\)/);
+      const result = fmt({ output: 'Interrupted', turns: 2, toolCalls: 1, status: 'aborted' }).formatted;
+      expect(stripAnsi(result)).toMatch(/^− Aborted — interrupted by user \(2 turns, 1 tool call\)/);
     });
 
     it('formats error status', () => {
@@ -142,7 +146,7 @@ describe('formatResult', () => {
 
     it('metrics appear after status note but before output', () => {
       const lines = fmt({ output: 'Some output', turns: 2 }).formatted.split('\n');
-      expect(lines[0]).toMatch(/^✓ Completed/);
+      expect(stripAnsi(lines[0])).toMatch(/^✓ Completed/);
       expect(lines[1]).toMatch(/^\[Metrics:/);
     });
 
@@ -205,14 +209,14 @@ describe('formatResult', () => {
         { tool: 'read', completed: true },
       ]});
       expect(r.formatted).toContain('[Tool Calls (2):');
-      expect(r.formatted).toContain('✓ bash');
-      expect(r.formatted).toContain('→ file.txt');
-      expect(r.formatted).toContain('✓ read');
+      expect(stripAnsi(r.formatted)).toContain('✓ bash');
+      expect(stripAnsi(r.formatted)).toContain('→ file.txt');
+      expect(stripAnsi(r.formatted)).toContain('✓ read');
     });
 
     it('shows warning icon for incomplete tool calls', () => {
-      expect(fmt({ toolCalls: 1, toolCallTrail: [{ tool: 'bash', completed: false }] }).formatted)
-        .toContain('⚠ bash');
+      const result = fmt({ toolCalls: 1, toolCallTrail: [{ tool: 'bash', completed: false }] }).formatted;
+      expect(stripAnsi(result)).toContain('⚠ bash');
     });
 
     it('omits tool trail when no trail provided', () => {
@@ -231,7 +235,7 @@ describe('formatResult', () => {
         toolCallTrail: [{ tool: 'read', outputPreview: 'auth.ts', completed: true }],
       });
       const lines = r.formatted.split('\n');
-      expect(lines[0]).toMatch(/^✓ Completed/);
+      expect(stripAnsi(lines[0])).toMatch(/^✓ Completed/);
       expect(lines[1]).toMatch(/^\[Metrics:/);
       expect(r.formatted).toContain('[Tool Calls (1):');
       expect(r.formatted).toContain('[Execution:');
@@ -265,7 +269,7 @@ describe('formatResult', () => {
       const r = fmt({ output, turns: 2, toolCalls: 2,
         toolCallTrail: [{ tool: 'bash', completed: true }],
       });
-      const i = (s: string) => r.formatted.indexOf(s);
+      const i = (s: string) => stripAnsi(r.formatted).indexOf(s);
       const indices = [i('✓ Completed'), i('[Metrics:'), i('[Tool Calls'), i('[Execution:'), i('[Findings:'), i('## Findings')].filter(x => x >= 0);
       for (let idx = 1; idx < indices.length; idx++) {
         expect(indices[idx]).toBeGreaterThan(indices[idx - 1]);

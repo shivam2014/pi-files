@@ -33,6 +33,8 @@ import {
 	appendWebSearchResults,
 	compressOutput,
 } from "./activity-feed.ts";
+import { statusIcon } from "./orchestrator-theme.ts";
+
 import { currentFrame, SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
 
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
@@ -460,7 +462,7 @@ export class SubagentRunner {
 						feed.feedState = { ...feed.feedState, steps: newSteps };
 						const text = feed.render(specialist.name);
 						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "report" } });
-						return { content: [{ type: "text", text: `✓ Reported: ${params.finding}` }], details: {} };
+						return { content: [{ type: "text", text: `${statusIcon("completed")} Reported: ${params.finding}` }], details: {} };
 					}
 					return { content: [{ type: "text", text: "No active step" }], details: {} };
 				},

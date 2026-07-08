@@ -1,11 +1,11 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { truncateLabel } from "../token-saver.ts";
-import { formatDuration } from "./ui-utils.ts";
+import { styledSymbol, formatDuration as thFormatDuration } from "./orchestrator-theme.ts";
 import type { PlanStep } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
-import { SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
+import { SPINNER_INTERVAL_MS, SPINNER_FRAMES, resetSpinner } from "./spinner-state.ts";
 
 import { debugLog } from "./debug.ts";
 
@@ -137,7 +137,9 @@ export class PlanPanel {
 		};
 	}
 
-	private trimToBudget(lines: string[], budget: number): string[] {
+	private _spinnerRe = new RegExp(`^[${SPINNER_FRAMES.join("")}]`);
+
+private trimToBudget(lines: string[], budget: number): string[] {
 		if (lines.length <= budget) return lines;
 		const essentialCount = Math.min(2, lines.length);
 		const essential = lines.slice(0, essentialCount);
@@ -146,7 +148,7 @@ export class PlanPanel {
 		const rest = lines.slice(essentialCount);
 		let activeIdx = -1;
 		for (let i = 0; i < rest.length; i++) {
-			if (/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(rest[i].trimStart())) { activeIdx = i; break; }
+			if (this._spinnerRe.test(rest[i].trimStart())) { activeIdx = i; break; }
 		}
 		if (activeIdx >= 0) {
 			const before = rest.slice(0, activeIdx);
@@ -394,8 +396,8 @@ export class PlanPanel {
 		const elapsed = Date.now() - startTime;
 		const total = steps.length;
 		const completed = steps.filter((s) => s.completed).length;
-		const dots = steps.map((s) => (s.errored ? "✗" : s.completed ? "●" : "○")).join("");
-		return `⚡ ${truncateLabel(goal, 120)} ${dots} [${completed}/${total}] ${formatDuration(elapsed)}`;
+		const dots = steps.map((s) => (s.errored ? styledSymbol("status.error") : s.completed ? styledSymbol("status.done") : styledSymbol("status.pending"))).join("");
+		return `${styledSymbol("icon.plug")} ${truncateLabel(goal, 120)} ${dots} [${completed}/${total}] ${thFormatDuration(elapsed)}`;
 	}
 
 	dumpTimelineToDisk(): void {
