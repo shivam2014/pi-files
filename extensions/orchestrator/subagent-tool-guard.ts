@@ -23,7 +23,7 @@ function checkBashInterception(
 	if (replacement) {
 		return {
 			block: true,
-			reason: `Use ${replacement} instead of bash (${command?.trim().split(/\s+/)[0]}). Set override:true to force bash.`,
+			reason: `Use ${replacement} instead of bash (command: ${command?.trim().split(/\s+/)[0]}). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).`,
 		};
 	}
 	return undefined;

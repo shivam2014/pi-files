@@ -559,7 +559,7 @@ describe("mock-e2e: activity feed state machine", () => {
 		expect(output).toContain("◆ Fix bug in test.ts");
 
 		// Step 1 completed (summary line only — no substep details for completed steps)
-		expect(output).toContain("✓ Step 1: Read file");
+		expect(output).toContain("Step 1: Read file");
 
 		// Step 2 active (has spinner prefix, not ✓ or ○ alone)
 		expect(output).toContain("Step 2: Editing test.ts (1 changes)");
@@ -579,8 +579,8 @@ describe("mock-e2e: activity feed state machine", () => {
 		expect(output).toContain("◆ Fix bug in test.ts");
 
 		// Both steps completed (summary lines only — real render omits completed substep details)
-		expect(output).toContain("✓ Step 1: Read file");
-		expect(output).toContain("✓ Step 2: Editing test.ts (1 changes)");
+		expect(output).toContain("Step 1: Read file");
+		expect(output).toContain("Step 2: Editing test.ts (1 changes)");
 
 		// Progress dots — both completed
 		expect(output).toMatch(/●●\s+2\/2/);

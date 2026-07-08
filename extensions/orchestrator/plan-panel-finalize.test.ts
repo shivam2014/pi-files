@@ -194,7 +194,7 @@ describe("addSteps", () => {
 	it("does nothing when no active plan", () => {
 		if (hasActivePlan(mockCtx())) clearPlanPanel(mockCtx());
 		expect(hasActivePlan(mockCtx())).toBe(false);
-		expect(() => addSteps(["Step X"])).not.toThrow();
+		expect(() => addSteps(["Step X"], mockCtx())).not.toThrow();
 		expect(hasActivePlan(mockCtx())).toBe(false);
 	});
 });

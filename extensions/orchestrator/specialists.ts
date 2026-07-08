@@ -98,8 +98,6 @@ export function generateToolDocFromApi(
  */
 export const FINDINGS_AUDIT_TEMPLATE = `## Findings
 After completing work, output:
-
-## Findings
 - summary: one-line what you found/did
 - key_files: [important paths]
 - issues: [blocking problems or none]
@@ -107,8 +105,6 @@ After completing work, output:
 
 ## Audit
 Before finishing, note any problems encountered and how you handled them:
-
-## Audit
 - problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
 - resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
 - scope_stayed: [yes/no — did you stay within the assigned task?]
@@ -125,7 +121,7 @@ Your writes/edits are enforced by a scope guard. If you attempt to modify a file
 - Error message: \`Scope violation: <path> is outside the allowed scope\`
 
 How to handle:
-1. Check your scope in the ## Scope section assigned to you
+1. Check the scope in the task description you received from the orchestrator
 2. If the file is genuinely needed, call \`ask_orchestrator\` to request scope expansion
 3. Do NOT retry the same blocked path — it will fail again
 4. If scope expansion is denied, complete your task within the allowed scope
@@ -168,9 +164,7 @@ When given a task, follow this workflow:
 
 6. **Complete your plan BEFORE making any tool calls.** The plan is your roadmap.
 
-7. **Use offset for truncated output** — If \`read\` output shows "[...N lines truncated]", use the \`offset\` parameter to continue reading.`;
-
-export const STEPS_MANDATE = `
+7. **Use offset for truncated output** — If \`read\` output shows "[...N lines truncated]", use the \`offset\` parameter to continue reading.
 
 CRITICAL: You MUST call planSteps() before doing any work. This is REQUIRED for the orchestrator to track your progress. You have access to four special tools:
 
@@ -232,7 +226,7 @@ Code/docs/data/PRs: write normal. "stop caveman" / "normal mode": revert.
 
 const SCOUT_TOOLS = ["read", "grep", "find", "ls", "git-read", "gh"] as const;
 const RESEARCHER_TOOLS = ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "find"] as const;
-const CODER_TOOLS = ["read", "bash", "edit", "write", "grep", "lint"] as const;
+const CODER_TOOLS = ["read", "bash", "edit", "write", "grep", "lint", "find", "ls"] as const;
 const REVIEWER_TOOLS = ["read", "bash", "grep"] as const;
 const WRITER_TOOLS = ["read", "write", "edit", "ls", "find", "git-read"] as const;
 
@@ -294,10 +288,11 @@ export function updateToolDocs(pi: { getAllTools: () => { name: string; paramete
 export const SPECIALISTS: Record<string, Specialist> = {
 	scout: {
 		name: "scout",
+		routingLabel: "Investigate codebase / find files",
 		description: "Read-only codebase investigator. Uses grep/find/ls tools to locate code, read to examine files. Ideal for architecture discovery, bug investigation, code tracing, and verifying file contents.",
 		tools: [...SCOUT_TOOLS],
 		suggestedSkills: ["diagnosing-bugs"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
 
 IMPORTANT: Before doing any work, you MUST call planSteps() to register your plan. This is REQUIRED for the orchestrator to track progress. Example:
 
@@ -332,7 +327,7 @@ When you finish your analysis, output a structured scope section:
 - filesToModify: ["path/to/file1.ts", "path/to/file2.ts"]
 - filesToCreate: ["path/to/newfile.ts"]
 - directories: ["path/to/allowed/dir"]
-- maxFiles: 15
+- maxFiles: 10
 - maxLinesPerFile: 400
 - changeType: "single-file" | "multi-file"
 - requiresApprovalBeyondScope: true | false
@@ -352,16 +347,25 @@ ${TERSE_INSTRUCTION}`,
 	},
 	coder: {
 		name: "coder",
+		routingLabel: "Implement features / fix bugs",
 		description: "Implementation specialist with full read/write access. Uses edit/write for file changes, bash for verification. Ideal for implementing features and fixing bugs.",
-		tools: ["read", "bash", "edit", "write", "grep", "lint"],
+		tools: [...CODER_TOOLS],
 		suggestedSkills: ["implement", "tdd"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
 
 You are an implementation specialist. You write and edit code.
 
+## File Operations (CRITICAL)
+- NEVER use \`bash cat\` to read files — use the \`read\` tool instead
+- NEVER use \`bash grep\` or \`bash rg\` to search — use the \`grep\` tool instead  
+- NEVER use \`bash find\` to locate files — use the \`find\` tool instead
+- NEVER use \`bash ls\` to list directories — use the \`ls\` tool instead
+- These get blocked by the interceptor and waste a turn
+- Use \`bash\` ONLY for: running tests, compilation, gh CLI, commands without tool equivalents
+
 Rules:
 - Focus on making exactly the described changes, unless the task explicitly asks for restructuring or you discover dead code or critical information/flow that changes the defined task. Adapt then and report it to the orchestrator without fail.
-- ALWAYS use \`edit\` or \`write\` to modify files — NEVER \`bash\`+sed/awk
+- For file edits, always use `edit` or `write` — never `sed`/`awk`/`perl`/`python` via bash (enforced at tool level, see tool constraint)
 - Use the \`grep\` tool (which wraps ripgrep) to search code — NOT \`bash\`+\`rg\` or \`bash\`+\`grep\`
 - Use \`bash\` to run \`gh\` (GitHub CLI) for GitHub operations instead of \`git commit/push/branch\`
 - Read relevant files first (use \`read\` tool, NOT \`cat\`), then make targeted edits
@@ -385,10 +389,11 @@ ${TERSE_INSTRUCTION}${_coderToolDoc}${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 	reviewer: {
 		name: "reviewer",
+		routingLabel: "Review code changes",
 		description: "Read-only code reviewer. Checks for bugs, security issues, performance problems, and style violations. Outputs Critical/Warnings/Suggestions.",
 		tools: ["read", "bash", "grep"],
-		suggestedSkills: ["review"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
+		suggestedSkills: ["code-review"],
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
 
 You are a reviewer. You review code, documents, data — whatever the task requires. You NEVER make changes.
 
@@ -419,14 +424,17 @@ Output format:
 - issues: [blocking problems or none]
 - recommendation: next step for orchestrator
 
-${TERSE_INSTRUCTION}${_reviewerToolDoc}${SCOPE_VIOLATION_GUIDANCE}`,
+${FINDINGS_AUDIT_TEMPLATE}
+
+${TERSE_INSTRUCTION}${_reviewerToolDoc}`,
 	},
 	researcher: {
 		name: "researcher",
+		routingLabel: "Research questions / gather info",
 		description: "Read-only research specialist with web search capabilities. Searches the web, reads docs, configs, and code to answer questions with evidence-based answers and source references.",
 		tools: [...RESEARCHER_TOOLS],
 		suggestedSkills: ["domain-modeling"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
 
 You are a research specialist with web search capabilities. You NEVER write files.
 
@@ -457,7 +465,7 @@ When you finish your analysis, output a structured scope section:
 - filesToModify: ["path/to/file1.ts", "path/to/file2.ts"]
 - filesToCreate: ["path/to/newfile.ts"]
 - directories: ["path/to/allowed/dir"]
-- maxFiles: 15
+- maxFiles: 10
 - maxLinesPerFile: 400
 - changeType: "single-file" | "multi-file"
 - requiresApprovalBeyondScope: true | false
@@ -473,10 +481,11 @@ ${TERSE_INSTRUCTION}`,
 	},
 	writer: {
 		name: "writer",
+		routingLabel: "Write / edit documentation",
 		description: "Documentation specialist with read/write access. Creates and edits markdown docs, uses ls/find to browse directories. Ideal for READMEs, API docs, and project documentation.",
 		tools: ["read", "write", "edit", "ls", "find", "git-read"],
 		suggestedSkills: ["agents-md-writer"],
-		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}${STEPS_MANDATE}
+		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}
 
 You are a writer. You create and edit docs, reports, and data files.
 
@@ -527,17 +536,21 @@ export function listSpecialists(): string[] {
  * not hard-bound to the specialist role.
  */
 export function buildSkillSection(specialistName: string, suggestedSkills: string[]): string {
+    const skillList = suggestedSkills.length > 0
+        ? suggestedSkills.map(s => `  - ${s}`).join('\n')
+        : '  (none)';
     const lines = [
         '',
         '## Skills',
         '',
         `You are an expert ${specialistName}. If your task below explicitly names a skill (e.g., /skill-name), load it via read_skill() and follow its instructions.`,
         '',
-        'Otherwise, scan <available_skills> above and pick the best match for your task. Read the relevant skill file via read_skill() and follow its methodology.',
+        'Otherwise, scan the available skills below and pick the best match for your task.',
+        '',
+        'Available skills:',
+        skillList,
         '',
         'If no skill matches your task, proceed without one.',
-        '',
-        'After completing your task, note which skills you loaded.',
         '',
     ];
     return lines.join('\n');

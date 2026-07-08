@@ -11,8 +11,8 @@ describe("specialist default skills (#42)", () => {
 		expect(SPECIALISTS.coder.suggestedSkills).toContain("tdd");
 	});
 
-	it("reviewer has review as default skill", () => {
-		expect(SPECIALISTS.reviewer.suggestedSkills).toContain("review");
+	it("reviewer has code-review as default skill", () => {
+		expect(SPECIALISTS.reviewer.suggestedSkills).toContain("code-review");
 	});
 
 	it("researcher has domain-modeling as default skill", () => {
@@ -33,8 +33,8 @@ describe("specialist default skills (#42)", () => {
 
 describe("getSpecialistSkills (#42)", () => {
 	it("returns merge of defaults and override when override provided", () => {
-		const result = getSpecialistSkills("coder", ["review"]);
-		expect(result).toEqual(["implement", "tdd", "review"]);
+		const result = getSpecialistSkills("coder", ["code-review"]);
+		expect(result).toEqual(["implement", "tdd", "code-review"]);
 	});
 
 	it("returns defaults when no override given", () => {

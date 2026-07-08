@@ -122,7 +122,7 @@ describe('formatResult', () => {
     });
 
     it('formats error status', () => {
-      expect(fmt({ output: 'Something broke', elapsed: 0.5, toolCalls: 2, status: 'error' }).formatted)
+      expect(stripAnsi(fmt({ output: 'Something broke', elapsed: 0.5, toolCalls: 2, status: 'error' }).formatted))
         .toMatch(/^✗ Error \(1 turn, 2 tool calls\)/);
     });
 

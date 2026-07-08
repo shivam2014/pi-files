@@ -70,7 +70,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		const cwd = ctx?.cwd ?? process.cwd();
 		const fusionConfig = loadFusionConfig(cwd);
-		const activeTools: string[] = ["plan", "delegate"];
+		const activeTools: string[] = ["plan", "plan_add_steps", "delegate"];
 		if (fusionConfig.enabled) {
 			activeTools.push("fusion");
 		}

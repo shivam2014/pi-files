@@ -109,11 +109,13 @@ describe("init phase — no action method calls", () => {
 		});
 
 		// Find and call the session_start handler that was registered via pi.on()
-		const onMock = pi.on as ReturnType<typeof vi.fn>;
-		const sessionCb = onMock.mock.calls.find(
-			([event]: [string]) => event === "session_start",
-		)?.[1];
-		expect(sessionCb).toBeDefined("session_start handler must be registered");
+		const onMock = pi.on as any;
+		const calls: any[][] = onMock.mock.calls;
+		const match = calls.find(
+			(c: any[]) => c[0] === "session_start",
+		);
+		const sessionCb: (...args: any[]) => any = match ? match[1] : undefined as any;
+		expect(sessionCb).toBeDefined();
 		await sessionCb({}, { cwd: "/tmp/test-cwd" });
 
 		// setActiveTools should have been called (the real handler does this)

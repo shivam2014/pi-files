@@ -76,10 +76,10 @@ describe("registerListSkillsTool", () => {
 				join(skillsDir, "tdd", "SKILL.md"),
 				"---\nname: tdd\ndescription: Test-driven development.\n---\n# TDD",
 			);
-			mkdirSync(join(skillsDir, "review"));
+			mkdirSync(join(skillsDir, "code-review"));
 			writeFileSync(
-				join(skillsDir, "review", "SKILL.md"),
-				"---\nname: review\ndescription: Review code changes.\n---\n# Review",
+				join(skillsDir, "code-review", "SKILL.md"),
+				"---\nname: code-review\ndescription: Review code changes.\n---\n# Code Review",
 			);
 
 			const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
@@ -88,7 +88,7 @@ describe("registerListSkillsTool", () => {
 			const result = await tool.execute("call-1", {}, undefined, () => {}, {});
 
 			expect(result.content[0].text).toContain("• tdd: Test-driven development.");
-			expect(result.content[0].text).toContain("• review: Review code changes.");
+			expect(result.content[0].text).toContain("• code-review: Review code changes.");
 
 			rmSync(tmpDir, { recursive: true, force: true });
 		});

@@ -8,7 +8,7 @@ import type { SessionContext } from "./types.ts";
 function deriveGoal(goal: string | undefined, steps: string[] | undefined, ctx?: SessionContext): string {
     if (goal?.trim()) return goal.trim();
     const stepsText = steps?.filter(Boolean).join(" ").trim();
-    if (stepsText) return summarizeGoal(stepsText) ?? "Untitled plan";
+    if (stepsText) return summarizeGoal(stepsText, ctx) ?? "Untitled plan";
     return "Untitled plan";
 }
 
@@ -29,6 +29,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
             "Create plan: plan({ goal: 'Fix auth bug', steps: ['Read auth middleware', 'Fix token validation', 'Write tests'] })",
             "One-line goal, array of step labels describing what you'll delegate",
             "Must be called before delegate() — delegate rejects if no active plan",
+            "Plan persists after all steps complete — keep delegating without re-planning. Use plan_add_steps() to add new steps if needed.",
             "Output: Returns plan registration status with goal and step count in text format",
         ],
         async execute(toolCallId, params, signal, onUpdate, ctx) {

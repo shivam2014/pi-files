@@ -68,6 +68,8 @@ export interface Specialist {
 	suggestedSkills?: string[];
 	/** Optional model override (e.g. "anthropic/claude-sonnet-4") */
 	model?: string;
+	/** Optional human-readable label used in the task routing UI */
+	routingLabel?: string;
 	/** Full system prompt used when creating the subagent session */
 	systemPrompt: string;
 }

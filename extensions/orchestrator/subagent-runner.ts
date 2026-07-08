@@ -488,7 +488,7 @@ export class SubagentRunner {
 					reportFindingTool,
 					askOrchestratorTool,
 					createReadSkillTool(),
-					...(specialist.name === "scout" ? [gitReadTool, ghTool] : []),
+					...(["scout", "researcher"].includes(specialist.name) ? [gitReadTool, ghTool] : []),
 				],
 				excludeTools,
 				resourceLoader: loader!,
@@ -508,7 +508,7 @@ export class SubagentRunner {
 			let lastStopReason: string | undefined;
 			let lastErrorMessage: string | undefined;
 
-			const unsubscribe = session.subscribe((event) => {
+			const unsubscribe = session.subscribe((event: any) => {
 				if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 					output += event.assistantMessageEvent.delta;
 					const snapshot = JSON.stringify(feed.inspectState());

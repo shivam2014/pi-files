@@ -287,7 +287,7 @@ describe("handleSubagentToolCall", () => {
 			});
 			expect(result).toEqual({
 				block: true,
-				reason: "Use read instead of bash (cat). Set override:true to force bash.",
+				reason: "Use read instead of bash (command: cat). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).",
 			});
 		});
 
@@ -323,7 +323,7 @@ describe("handleSubagentToolCall", () => {
 			});
 			expect(result).toEqual({
 				block: true,
-				reason: "Use grep instead of bash (grep). Set override:true to force bash.",
+				reason: "Use grep instead of bash (command: grep). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).",
 			});
 		});
 	});
@@ -344,7 +344,7 @@ describe("handleSubagentToolCall", () => {
 			});
 			expect(result).toEqual({
 				block: true,
-				reason: "Use read instead of bash (cat). Set override:true to force bash.",
+				reason: "Use read instead of bash (command: cat). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).",
 			});
 		});
 

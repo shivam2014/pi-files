@@ -303,3 +303,92 @@ New tools follow the pattern: `registerXTool(pi: ExtensionAPI)` function → exp
 
 ### 18. Token-neutral changes
 When adding new prompt text, identify what can be removed. Every line costs tokens per session. New features should be token-neutral or token-negative. Measure before committing.
+
+---
+
+## Plan Panel Vision
+
+This section consolidates the full vision for the plan panel — the orchestrator's primary mechanism for tracking and communicating execution progress.
+
+### Core Principle
+
+The plan panel is the orchestrator's **living execution map**. It represents the orchestrator's understanding of how to accomplish the goal, and updates dynamically as new information arrives from subagents. It is not a static checklist — it is a reflection of current knowledge. When knowledge changes, the plan changes.
+
+### Step Types
+
+Each step in the plan is one of two types:
+
+1. **Delegation step** — work delegated to a specialist subagent (scout, coder, reviewer, researcher, writer). The subagent executes the task and the plan panel auto-tracks progress via the activity feed.
+2. **Orchestrator step** — work done by the orchestrator itself: analyzing subagent output, synthesizing findings, calling fusion for multi-model advice, making architectural decisions, or planning next moves.
+
+Both types appear in the same step list. The user does not need to distinguish them — the plan shows *what* is happening, not *who* is doing it.
+
+### Step Lifecycle
+
+```
+Created (○) → Active (⠋) → Completed (✓) or Errored (✗)
+```
+
+- **Created**: Step exists in the plan but has not started.
+- **Active**: Step is currently executing. Only one step is active at a time.
+- **Completed**: Step finished successfully. Never erased — accumulates as execution trail.
+- **Errored**: Step failed. Error details visible in the activity feed or peek overlay.
+
+### Step Management
+
+The orchestrator must be able to:
+
+- **Create** a plan with goal and ordered steps upfront — declared before execution begins
+- **Advance** steps (both delegation and own-work) as they complete — single step advances per completion
+- **Insert** new steps when subagent output reveals unanticipated work — placed at the correct position
+- **Remove** steps that are no longer relevant based on new information — keeps plan accurate
+- **Modify** step labels when the understanding of what's needed changes — plan stays truthful
+- **Append** steps at the end when the plan scope expands — new work goes at the tail
+
+These operations ensure the plan panel always reflects the orchestrator's current understanding, not its initial guess.
+
+### Dynamic Plan Updates
+
+When a subagent returns findings that change the original plan:
+
+1. The orchestrator assesses what changed and what it means for remaining steps
+2. It modifies the plan: insert, remove, modify, or append steps as needed
+3. The plan panel reflects these changes immediately
+4. Execution continues with the updated plan
+
+This is the plan panel's key differentiator from a static checklist. The plan is a **hypothesis** that gets refined as evidence arrives.
+
+### Design Rules
+
+1. Steps are planned in advance — the orchestrator declares its intent before executing
+2. Each step has a clear label describing the work (not a tool name or command)
+3. The plan panel is always visible (9-line budget, widget above editor)
+4. Progress is shown via status icons: ✓ completed, ⠋ active (spinner), ○ pending, ✗ error
+5. Completed steps are never erased — they accumulate as a trail of progress
+6. The plan persists across the session — it is the single source of truth for execution progress
+
+### Tool Interface
+
+The orchestrator interacts with the plan panel via these tools:
+
+- `plan(goal, steps)` — create initial plan with goal and ordered step list
+- `plan_add_steps(steps)` — append new steps when scope expands
+- `advance_plan_step()` — mark current step complete, advance to next
+- `insert_step(index, label)` — insert a step at a specific position
+- `remove_step(index)` — remove a step by position
+- `modify_step(index, label)` — change a step's label to reflect updated understanding
+
+### Separation of Concerns
+
+- **PlanPanel** (Layer 1): Manages plan state, renders the header widget, handles step lifecycle — the macro view
+- **ActivityFeed** (Layer 2): Tracks per-delegation substeps, tool details, progress within a step — the micro view
+
+These are separate layers with distinct responsibilities. PlanPanel tracks *what needs to happen*. ActivityFeed tracks *what is happening right now* within each delegation. They compose but do not overlap.
+
+### Anti-Patterns
+
+- Steps that are too granular (one tool call per step) — steps describe work, not commands
+- Steps that are too vague ("do stuff", "handle it") — each step must be specific enough to verify completion
+- Plans that never update despite new information — stale plans mislead the user
+- Plan panel showing stale or incorrect step labels — labels must match actual work
+- Orchestrator work steps that never advance in the plan panel — own-work steps must advance like delegation steps

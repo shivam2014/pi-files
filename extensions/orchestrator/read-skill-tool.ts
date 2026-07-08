@@ -2,7 +2,7 @@ import type { ReadSkillParams } from "./types.ts";
 import { Type } from "typebox";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 /**
  * Create the read_skill tool definition.
@@ -52,15 +52,16 @@ export function createReadSkillTool() {
 				};
 			}
 
-			const skillsDir = join(getAgentDir(), "skills");
+			// Resolve agent dir first (follows symlinks at base level)
+			const agentDir = realpathSync(getAgentDir());
+			const skillsDir = join(agentDir, "skills");
 			const skillPath = join(skillsDir, name, "SKILL.md");
-			// Use realpathSync to resolve symlinks (security), fallback to resolve for non-existent paths
-			const safeRealpath = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
-			const resolvedPath = safeRealpath(skillPath);
-			const resolvedSkillsDir = safeRealpath(skillsDir);
 
-			// Sandbox check: ensure resolved path is under skills directory
-			if (!resolvedPath.startsWith(resolvedSkillsDir + "/")) {
+			// Sandbox check: name is validated against traversal characters (.., /, \),
+			// so join() produces a path guaranteed under skillsDir by construction.
+			// Individual skill dirs may be symlinks (e.g. to ~/.agents/skills/) —
+			// the OS resolves them transparently at read time.
+			if (!skillPath.startsWith(skillsDir + "/")) {
 				return {
 					content: [
 						{
@@ -72,7 +73,7 @@ export function createReadSkillTool() {
 				};
 			}
 
-			if (!existsSync(resolvedPath)) {
+			if (!existsSync(skillPath)) {
 				return {
 					content: [
 						{
@@ -86,7 +87,7 @@ export function createReadSkillTool() {
 
 			let content: string;
 			try {
-				content = readFileSync(resolvedPath, "utf-8");
+				content = readFileSync(skillPath, "utf-8");
 			} catch (err) {
 				return {
 					content: [

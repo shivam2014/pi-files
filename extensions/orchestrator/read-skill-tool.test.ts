@@ -5,6 +5,7 @@ import { createReadSkillTool } from "./read-skill-tool";
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(),
 	readFileSync: vi.fn(),
+	realpathSync: vi.fn((p: string) => p),
 }));
 
 // Mock getAgentDir

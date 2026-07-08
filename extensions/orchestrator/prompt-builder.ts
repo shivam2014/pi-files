@@ -60,7 +60,8 @@ function generateRoutingFromSpecialists(): string {
 		const skills = spec.suggestedSkills?.length
 			? spec.suggestedSkills.join(", ")
 			: "—";
-		return `| ${spec.description} | ${name} | ${skills} |`;
+		const taskType = spec.routingLabel || spec.description?.split('.')[0] || name;
+		return `| ${taskType} | ${name} | ${skills} |`;
 	}).join("\n");
 
 	return `
@@ -71,7 +72,7 @@ ${rows}
 `;
 }
 
-const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error (destructive operations, broad file changes)\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n`;
+const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error — defined as: destructive operations (rm, schema migrations, auth changes), touching >5 files, or architectural decisions that are hard to reverse\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n`;
 
 const DELEGATION_INSTRUCTIONS_TEMPLATE = `
 ## Capabilities
@@ -101,6 +102,11 @@ Plan-step rules:
 - Never declare steps you intend to batch into one delegation — that orphans the unused steps.
 - After each delegate() returns, do any orchestrator analysis before moving to the next step. The plan panel tracks progress automatically.
 
+Adding steps mid-workflow:
+- If a delegation reveals new work, call plan_add_steps({ steps: ['new step 1', 'new step 2'] }) to append steps to the current plan.
+- plan_add_steps is idempotent — duplicate step labels are automatically skipped.
+- Use this instead of creating a new plan when the current plan is still relevant.
+
 Examples:
   plan("Fix auth bug", ["Diagnose root cause", "Analyze findings", "Implement fix", "Review fix"])
     → step 1: delegate("scout", ...), step 2: orchestrator analyzes, step 3: delegate("coder", ...), step 4: delegate("reviewer", ...)
@@ -109,7 +115,7 @@ Examples:
 
 3. THIRD: Synthesize results.
 
-NOTE: You MUST call plan() before delegate(). delegate() will reject if no active plan exists.
+PREREQUISITE: You MUST call plan() before delegate(). delegate() will reject if no active plan exists.
 
 {{FUSION}}
 
@@ -140,6 +146,9 @@ delegate("coder", "fix the token expiry", {
 You decide next step AFTER seeing previous result. NOT before.
 
 ### Specialist roster:
+When delegating, CHECK each specialist's ⚠ CANNOT field against task requirements.
+A task needing a tool a specialist CANNOT use will fail at runtime.
+
 {{ROSTER}}
 {{ROUTING}}{{SKILLS}}
 
@@ -218,10 +227,12 @@ export function buildOrchestratorPrompt(options: {
 	}
 
 	// Build new intro replacing pi's hardcoded "You are an expert coding assistant..."
-	const ORCHESTRATOR_INTRO = `You are an orchestrator. Delegate only — you do NOT have read/bash/grep/find/edit/write.
-Plan steps with plan(), delegate to specialists, get multi-model advice with fusion().
+	const ORCHESTRATOR_INTRO = `You are an orchestrator. Delegate only.
+Available tools: plan(), plan_add_steps(), delegate(), fusion(), read_skill(), list_skills, list_tools, vision_query.
+Use fusion() for multi-model advice before high-cost decisions.
+You do NOT have read/bash/grep/find/edit/write for code — use delegate() to access those via specialists.
 
-Pi SDK docs (read with read() tool):
+Pi SDK docs (for reference — delegate to specialists who can read these):
 - Main: ${getReadmePath()}
 - Docs: ${getDocsPath()}
 - Examples: ${getExamplesPath()}`;
@@ -247,12 +258,17 @@ Pi SDK docs (read with read() tool):
 	}
 
 	// Build dynamic specialist roster
+	const allTools = [...new Set(Object.values(SPECIALISTS).flatMap(s => s.tools))];
 	const rosterLines = listSpecialists().map(name => {
 		const spec = SPECIALISTS[name];
+		const desc = spec.description || "";
 		const tools = spec.tools.join(", ");
-		const desc = spec.description ? ` ${spec.description}` : "";
-		return `  - **${name}** — tools: ${tools}${desc}`;
-	}).join("\n");
+		const missing = allTools.filter(t => !spec.tools.includes(t));
+		const gapLine = missing.length > 0
+			? `\n    ⚠ CANNOT: ${missing.join(", ")}`
+			: "";
+		return `  - **${name}** — ${desc}\n    tools: ${tools}${gapLine}`;
+	}).join("\n\n");
 
 	// Build skills summary
 	const skillsSection = skills && skills.length > 0

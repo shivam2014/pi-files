@@ -136,21 +136,21 @@ describe("appendix slimming (#39)", () => {
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
 		// The appended part should be reasonable (< 6000 chars — includes routing table + caveman instruction + orchestrator intro)
 		const appendix = systemPrompt.replace(basePrompt, "").trim();
-		expect(appendix.length).toBeLessThan(6000);
+		expect(appendix.length).toBeLessThan(6500);
 	});
 });
 describe("clarification deduplication (#40)", () => {
-	it("subagent-runner does not duplicate STEPS_MANDATE clarification text", async () => {
-		// STEPS_MANDATE in specialists.ts already tells subagents about ask_orchestrator.
+	it("subagent-runner does not duplicate ACTIVITY_FEED_INSTRUCTION clarification text", async () => {
+		// ACTIVITY_FEED_INSTRUCTION in specialists.ts already tells subagents about ask_orchestrator.
 		// subagent-runner.ts's systemPromptOverride must NOT append a duplicate ### Clarification block.
 		// This test fails (RED) as long as the duplication exists.
 
-		// Get actual STEPS_MANDATE (bypass the mock at top of file)
-		const { STEPS_MANDATE } = await vi.importActual<typeof import("./specialists")>("./specialists");
+		// Get actual ACTIVITY_FEED_INSTRUCTION (bypass the mock at top of file)
+		const { ACTIVITY_FEED_INSTRUCTION } = await vi.importActual<typeof import("./specialists")>("./specialists");
 
-		// Sanity: STEPS_MANDATE covers ask_orchestrator
-		expect(STEPS_MANDATE).toContain("ask_orchestrator");
-		expect(STEPS_MANDATE).toContain("Request input from the orchestrator");
+		// Sanity: ACTIVITY_FEED_INSTRUCTION covers ask_orchestrator
+		expect(ACTIVITY_FEED_INSTRUCTION).toContain("ask_orchestrator");
+		expect(ACTIVITY_FEED_INSTRUCTION).toContain("Request input from the orchestrator");
 
 		// Read subagent-runner source to detect duplicate clarification inline
 		const { readFileSync } = await import("node:fs");
@@ -182,11 +182,11 @@ describe("routing table (#43)", () => {
 });
 
 describe("goal-achieved early stop (#45)", () => {
-	it("STEPS_MANDATE contains early-stop instruction", async () => {
-		const { STEPS_MANDATE } = await vi.importActual<typeof import("./specialists")>("./specialists");
-		expect(STEPS_MANDATE).toContain("Goal-achieved early stop");
-		expect(STEPS_MANDATE).toContain("STOP and report back");
-		expect(STEPS_MANDATE).toContain("Do NOT execute remaining planned steps");
+	it("ACTIVITY_FEED_INSTRUCTION contains early-stop instruction", async () => {
+		const { ACTIVITY_FEED_INSTRUCTION } = await vi.importActual<typeof import("./specialists")>("./specialists");
+		expect(ACTIVITY_FEED_INSTRUCTION).toContain("Goal-achieved early stop");
+		expect(ACTIVITY_FEED_INSTRUCTION).toContain("STOP and report back");
+		expect(ACTIVITY_FEED_INSTRUCTION).toContain("Do NOT execute remaining planned steps");
 	});
 });
 

@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.3",
     "picomatch": "^4.0.4"
   },
   "scripts": {
-    "test": "node node_modules/vitest/vitest.mjs run",
+    "test": "npx vitest run",
     "typecheck": "npx tsc --noEmit"
   }
 }

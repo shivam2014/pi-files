@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-const PI_ROOT = `${process.env.HOME}/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent`;
+const PI_ROOT = `${process.env.HOME}/.pi/agent/extensions/node_modules/@earendil-works/pi-coding-agent`;
 
 const resolveAlias = [
   // Longer (more specific) paths first to avoid prefix collisions

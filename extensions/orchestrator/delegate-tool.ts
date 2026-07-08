@@ -68,6 +68,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 		}),
 
 		promptGuidelines: [
+			"PREREQUISITE: plan() must be called before delegate(). delegate() rejects if no active plan exists.",
 			"Delegate: delegate({ specialist: 'coder', task: 'fix auth', scope: { filesToModify: ['src/auth.ts'] } })",
 			"Spawns a subagent specialist to do the work",
 			"Scope required for coder, writer, reviewer — optional for scout, researcher",

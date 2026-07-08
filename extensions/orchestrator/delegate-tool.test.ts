@@ -88,7 +88,7 @@ describe("delegate tool rendering", () => {
 			context,
 		);
 		expect(comp.text).toContain("delegate Coder: fix auth");
-		expect(comp.text).toContain("✓ done");
+		expect(comp.text).toContain("done");
 	});
 });
 
@@ -218,7 +218,7 @@ describe("delegate scope resolution", () => {
 		await execute({
 			specialist: "coder",
 			task: "fix auth",
-			skills: ["tdd", "review"],
+			skills: ["tdd", "code-review"],
 			scope: {
 				filesToModify: ["src/auth.ts"],
 				filesToCreate: [],
@@ -228,7 +228,7 @@ describe("delegate scope resolution", () => {
 		const calls = vi.mocked(runSubagent).mock.calls;
 		const last = calls[calls.length - 1];
 		// suggestedSkills is the 9th argument (index 8)
-		expect(last[8]).toEqual(["implement", "tdd", "review"]);
+		expect(last[8]).toEqual(["implement", "tdd", "code-review"]);
 	});
 
 	it("passes undefined suggestedSkills when no override given", async () => {
