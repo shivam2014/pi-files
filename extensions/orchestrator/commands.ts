@@ -133,38 +133,37 @@ export function registerCommands(pi: ExtensionAPI): void {
 
 	pi.registerCommand("delegate-mode", {
 		description: "Toggle sequential/parallel delegation mode",
-		handler: async (args: string, ctx: any) => {
+		handler: async (args: string, ctx: unknown) => {
+			const c = ctx as { ui: { notify: (msg: string, type: string) => void } } & SessionContext;
 			const config = loadOrchestratorConfig();
 
 			if (args === "sequential") {
 				config.delegation.mode = "sequential";
 				saveOrchestratorConfig(config);
-				setSessionMode(ctx, "sequential");
-				ctx.ui.notify("🔄 Delegation: sequential", "info");
+				setSessionMode(c, "sequential");
+				c.ui.notify("🔄 Delegation: sequential", "info");
 				return;
 			}
 
 			if (args === "parallel") {
 				config.delegation.mode = "parallel";
 				saveOrchestratorConfig(config);
-				setSessionMode(ctx, "parallel");
-				ctx.ui.notify("⚡ Delegation: parallel", "info");
+				setSessionMode(c, "parallel");
+				c.ui.notify("⚡ Delegation: parallel", "info");
 				return;
 			}
 
 			if (args === "status") {
-				const mode = getSessionMode(ctx);
-				ctx.ui.notify(`Current mode: ${mode}`, "info");
+				const mode = getSessionMode(c);
+				c.ui.notify(`Current mode: ${mode}`, "info");
 				return;
 			}
 
-			// Default: toggle
-			const currentMode = getSessionMode(ctx);
+			// Default: toggle (session only, does NOT persist to config)
+			const currentMode = getSessionMode(c);
 			const newMode = currentMode === "sequential" ? "parallel" : "sequential";
-			config.delegation.mode = newMode;
-			saveOrchestratorConfig(config);
-			setSessionMode(ctx, newMode);
-			ctx.ui.notify(`Delegation: ${newMode}`, "info");
+			setSessionMode(c, newMode);
+			c.ui.notify(`Delegation: ${newMode} (session only)`, "info");
 		},
 		getArgumentCompletions: (prefix: string) => [
 			{ value: "sequential", label: "Sequential (default)" },

@@ -7,7 +7,10 @@
 const READ_COMMANDS = new Set([
   "ls", "cat", "grep", "find", "head", "tail", "wc", "echo", "pwd", "date",
   "git status", "git log", "git diff", "git show", "git branch", "git remote",
+  "git tag", "git blame", "git reflog", "git describe",
   "which", "whoami", "hostname", "uname", "env", "printenv",
+  "python3", "node", "cd", "sort", "du", "df", "stat", "file", "man", "type",
+  "readlink", "realpath", "dirname", "basename", "xargs", "awk", "sed", "jq",
 ]);
 
 // Commands that are always write-modifying
@@ -44,6 +47,9 @@ export function isWriteCommand(command: string): boolean {
   if (READ_COMMANDS.has(baseCommand)) {
     return false;
   }
+  
+  // Check for multi-word git subcommands first
+  if (trimmed.startsWith("git stash list")) return false;
   
   // Check for git subcommands
   if (baseCommand === "git") {

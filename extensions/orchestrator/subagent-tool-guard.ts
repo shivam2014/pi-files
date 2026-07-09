@@ -68,7 +68,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				const GIT_SAFE_COMMANDS = new Set([
 					'status', 'log', 'diff', 'show', 'branch', 'remote',
 					'fetch', 'pull', 'stash', 'tag', 'blame', 'describe',
-					'rev-parse', 'rev-list', 'shortlog'
+					'reflog', 'rev-parse', 'rev-list', 'shortlog'
 				]);
 
 				// Git commands that write files
@@ -79,17 +79,29 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 
 				// Git subcommands that are truly read-only (no side effects)
 				const GIT_SKIP_SAFE = new Set([
-					'fetch', 'pull', 'remote', 'branch', 'tag', 'stash', 'log', 'status'
+					'fetch', 'pull', 'remote', 'branch', 'tag', 'log', 'status', 'reflog'
 				]);
 				// Git subcommands that mutate state but don't take file args
 				const GIT_SKIP_WRITE = new Set([
 					'commit', 'push', 'init', 'clone'
 				]);
 
-				// Check if this is a git command
-				const gitMatch = cmd.match(/^git\s+(\w+)/);
+				// Check if this is a git command (capture up to 2 subcommands for multi-word like "stash list")
+				const gitMatch = cmd.match(/^git\s+(\w+)(?:\s+(\w+))?/);
 				if (gitMatch) {
 					const subcmd = gitMatch[1];
+					const subcmd2 = gitMatch[2];
+
+					// Handle multi-word stash subcommands: stash list/show are read-only, rest are writes
+					if (subcmd === 'stash') {
+						const safeStashSubs = new Set(['list', 'show']);
+						// Bare "git stash" defaults to "stash list" (safe)
+						if (subcmd2 && !safeStashSubs.has(subcmd2)) {
+							if (ctx?.readOnly) {
+								return { block: true, reason: `⛔ Git write command blocked for read-only specialist: git stash ${subcmd2}` };
+							}
+						}
+					}
 
 					// Skip path check for commands that don't take file args
 					if (GIT_SKIP_SAFE.has(subcmd)) {

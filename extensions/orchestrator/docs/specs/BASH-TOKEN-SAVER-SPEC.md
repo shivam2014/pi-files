@@ -116,6 +116,22 @@ tag, worktree
 | search | issues, prs, repos, code, commits |
 | auth | status |
 
+### Layer 2 Extension: Write-Command Blocking (Scope Creep, Ratified)
+
+The original spec relied on prompt-level enforcement ("Do NOT use bash to modify files") for reviewers. This proved insufficient per the scope.md principle: *"Tool-level enforcement, not prompt-level."*
+
+**What changed:** `isWriteModifyingCommand()` in `bash-interceptor.ts` classifies bash commands as write-modifying. `subagent-tool-guard.ts` blocks these commands when `ctx.readOnly` is true. The `readOnly` flag is derived from `PI_SPECIALIST_NAME` env var via `isReadOnlySpecialist()` in `index.ts`.
+
+**Why it's here:** Prompt-level instructions are unreliable — LLMs can ignore them. Tool-level enforcement is the only reliable safety mechanism. The scope creep was necessary to close a real security gap.
+
+**Commands blocked in readOnly mode:**
+- Filesystem: `rm`, `mv`, `cp`, `chmod`, `chown`, `tee`, `dd`
+- Package managers: `npm`, `pip`, `apt`, `brew`
+- System: `kill`, `reboot`, `shutdown`, `systemctl`
+- Git: `commit`, `push`, `init`, `clone`, `add`, `rm`, `mv`, `reset`
+- Interpreters with write patterns: `sed -i`, `perl -i`, `python` with `open("w")`
+- Output redirects: `echo x > file`, `cat file >> out`
+
 ## Key Design Decisions
 
 1. **`createBashTool(spawnHook)` over global `pi.on("tool_call")`** — Restriction lives inside the tool instance, not as a global interceptor. Cache-safe, atomic, no risk of conflicting with other extensions.

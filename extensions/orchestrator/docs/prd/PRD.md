@@ -164,6 +164,8 @@ Introduce deep modules. Each owns one seam.
   - Existing tests still pass.
 - **Blocked by**: none
 
+**Post-implementation addition:** Write-command blocking for read-only specialists was added as scope creep. See BASH-TOKEN-SAVER-SPEC.md § "Layer 2 Extension: Write-Command Blocking" for details. Tests added to `bash-interceptor.test.ts` (isWriteModifyingCommand suite) and `subagent-tool-guard.test.ts` (readOnly blocking suite).
+
 ### Issue 9: Extract PromptBuilder and RegistrationHub from index.ts
 
 - **Parent**: PRD
