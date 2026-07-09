@@ -59,6 +59,51 @@ export async function tryCompleteWithTemperatureFallback(
 	}
 }
 
+// ─── Pre-flight temperature probe ──────────────────────
+/**
+ * Proactively test whether a model accepts temperature.
+ * Cached so each model is probed at most once per session.
+ * Probe is minimal: short prompt, few tokens, short timeout.
+ */
+export async function probeTemperatureSupport(
+	model: any,
+	temperature: number,
+	registry: any,
+	ctx?: FusionRunContext,
+): Promise<boolean> {
+	const cache = (ctx ?? _defaultCtx).temperaturePreferenceCache;
+	const modelId = model?.id ?? String(model);
+
+	// Fast path: already probed this session
+	if (cache.has(modelId)) {
+		return cache.get(modelId)!;
+	}
+
+	try {
+		const auth = await registry.getApiKeyAndHeaders(model);
+		const result = await complete(model, {
+			messages: [{ role: "user", content: [{ type: "text", text: "Hi" }], timestamp: Date.now() }],
+		}, {
+			temperature,
+			maxTokens: 10,
+			timeoutMs: 10_000,
+			apiKey: auth.apiKey,
+			headers: auth.headers,
+		});
+
+		if (result?.stopReason === "error") {
+			cache.set(modelId, false);
+			return false;
+		}
+
+		cache.set(modelId, true);
+		return true;
+	} catch {
+		cache.set(modelId, false);
+		return false;
+	}
+}
+
 // ─── Report-Finding Tool (for panel models) ─────────────
 
 const reportFindingTool = {
@@ -214,6 +259,15 @@ export class FusionPipeline {
 		onUpdate?: any,
 		sessionId?: string,
 	): Promise<{ succeeded: any[]; failed: any[] }> {
+		// Pre-flight temperature probe: test each unique model once before panel runs.
+		const uniqueModelIds = [...new Set(panelModels.map((m: any) => m.id))];
+		for (const modelId of uniqueModelIds) {
+			const model = panelModels.find((m: any) => m.id === modelId);
+			if (model) {
+				await probeTemperatureSupport(model, this.config.temperature, this.registry, this.ctx);
+			}
+		}
+
 		const panelResults = await mapWithConcurrencyLimit(panelModels, 2, async (model: any) => {
 			onUpdate?.({
 				content: [{ type: "text", text: `  ⏳ Panel: ${model.id}...` }],

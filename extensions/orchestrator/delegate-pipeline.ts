@@ -14,6 +14,7 @@ import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
 import { formatMetricsLine } from "./types.ts";
 import { captureDiagnostic, isDiagnosticsEnabled, persistDiagnostic, cleanupOldDiagnostics } from "./subagent-diagnostics.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import os from "os";
 import { statusIcon, styledSymbol, getTheme } from "./orchestrator-theme.ts";
 
 /** Result type returned by executeDelegate */
@@ -44,14 +45,14 @@ export class DelegatePipeline {
 	): Promise<ExecuteDelegateResult> {
 		// ── Validation ──
 		if (!params.specialist || !params.task) {
-			return { content: [{ type: "text" as const, text: "Provide specialist+task" }], details: {} };
+			throw new Error("Both 'specialist' and 'task' are required. Example: delegate({ specialist: 'coder', task: 'fix auth middleware' })");
 		}
 
 		const key = params.specialist?.toLowerCase().trim();
 		const specialist: Specialist | undefined = key && Object.hasOwn(SPECIALISTS, key) ? SPECIALISTS[key] : undefined;
 		if (!specialist) {
 			const available = Object.keys(SPECIALISTS).join(", ");
-			return { content: [{ type: "text" as const, text: `Unknown specialist: "${params.specialist}". Available: ${available}` }], details: {} };
+			throw new Error(`Unknown specialist: "${params.specialist}". Available: ${available}. Use one of the listed specialist names.`);
 		}
 
 		// Read-only specialists (no edit/write tools) don't need strict scope validation
@@ -60,20 +61,43 @@ export class DelegatePipeline {
 		// Normalize specialist name for case-insensitive comparison downstream
 		params = { ...params, specialist: specialist.name };
 
-		// Validate scope paths early
-		if (params.scope?.filesToModify) {
-			for (const p of params.scope.filesToModify) {
-				if (p.includes('..') || p.startsWith('~')) {
-					return { content: [{ type: "text", text: `Invalid scope path: \"${p}\". Scope paths must not contain \"..\" or start with \"~\".` }], details: {} };
-				}
+		// Expand tilde in scope paths and validate
+		const expandTilde = (p: string): string => {
+			if (p.startsWith("~")) {
+				const expanded = p.replace(/^~/, os.homedir());
+				debugLog('[scope] expanded tilde path', { original: p, expanded });
+				return expanded;
 			}
+			return p;
+		};
+
+		if (params.scope?.filesToModify) {
+			params = {
+				...params,
+				scope: {
+					...params.scope,
+					filesToModify: params.scope.filesToModify.map(p => {
+						if (p.includes('..')) {
+							throw new Error(`Invalid scope path: "${p}". Scope paths must not contain "..".`);
+						}
+						return expandTilde(p);
+					}),
+				},
+			};
 		}
 		if (params.scope?.filesToCreate) {
-			for (const p of params.scope.filesToCreate) {
-				if (p.includes('..') || p.startsWith('~')) {
-					return { content: [{ type: "text", text: `Invalid scope path: \"${p}\". Scope paths must not contain \"..\" or start with \"~\".` }], details: {} };
-				}
-			}
+			params = {
+				...params,
+				scope: {
+					...params.scope,
+					filesToCreate: params.scope.filesToCreate.map(p => {
+						if (p.includes('..')) {
+							throw new Error(`Invalid scope path: "${p}". Scope paths must not contain "..".`);
+						}
+						return expandTilde(p);
+					}),
+				},
+			};
 		}
 
 		// Resolve skills: override replaces defaults (issue #42)
@@ -86,38 +110,22 @@ export class DelegatePipeline {
 
 		// Coder without scope → error
 		if (params.specialist === "coder" && !scopeToUse) {
-			return {
-				content: [{
-					type: "text" as const,
-					text: `⛔ **Scope required for coder.**
-
-You must pass a \`scope\` parameter when calling coder.
-
-\`\`\`
-delegate("coder", "fix the auth middleware", {
-    scope: {
-        filesToModify: ["src/auth.ts"],
-        filesToCreate: [],
-        directories: ["src/"],
-        maxFiles: 10
-    }
-})
-\`\`\`
-
-The scope tells the coder exactly which files it's allowed to touch.`
-				}],
-				details: {},
-			};
+			throw new Error(
+				`⛔ Scope required for coder. Pass a scope parameter when calling coder.\n\n` +
+				`Example: delegate({ specialist: 'coder', task: 'fix auth middleware', scope: { filesToModify: ['src/auth.ts'], filesToCreate: [], directories: ['src/'], maxFiles: 10 } })\n\n` +
+				`The scope tells the coder which files it may touch. Get this from scout output or declare it yourself.`
+			);
 		}
 
 		// ── Apply scope (side-effectful: gate check + write) ──
 		if (scopeToUse !== null) {
 			const gateResult = resolve(params.task, scopeToUse);
 			if (gateResult === "ask" && !isReadOnly) {
-				return {
-					content: [{ type: "text", text: `⚠️ Scope is vague. Orchestrator must clarify scope before delegating to ${specialist.name}.\n\nTask: ${params.task}\n\nPlease provide a clearer task description or explicit scope, then retry.` }],
-					details: { specialist: specialist.name, task: params.task, status: "scope_vague", turns: 0 },
-				};
+				throw new Error(
+					`⚠️ Scope is vague for ${specialist.name}. Clarify scope before delegating.\n\n` +
+					`Task: ${params.task}\n\n` +
+					`Provide a clearer task description or explicit scope (filesToModify, filesToCreate), then retry.`
+				);
 			}
 			this.deps.scopeManager.writeScope(scopeToUse);
 		}
@@ -127,10 +135,10 @@ The scope tells the coder exactly which files it's allowed to touch.`
 		const stepLabel = `${specName}: ${params.task}`;
 
 		if (!hasActivePlan(ctx)) {
-			return {
-				content: [{ type: "text", text: "No active plan. Call plan(goal, steps) first with a goal and step descriptions before delegating work." }],
-				details: {},
-			};
+			throw new Error(
+				"No active plan. Call planSteps({ goal: '...', steps: [...] }) first before delegating work. " +
+				"delegate() requires an active plan to track progress."
+			);
 		}
 		startDelegationStep(stepLabel, ctx);
 
