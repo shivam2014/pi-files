@@ -5,11 +5,13 @@
  * Commands:
  * - /orchestrate <task> — manual orchestration trigger
  * - /specialists — list available specialists
+ * - /delegate-mode — toggle sequential/parallel delegation mode
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setDebugEnabled, isDebugEnabled, debugLog } from "./debug.ts";
 import { isPeekOpen } from "./peek-overlay.ts";
+import { loadOrchestratorConfig, saveOrchestratorConfig, getSessionMode, setSessionMode } from "./orchestrator-config";
 import { SPECIALISTS, listSpecialists } from "./specialists.ts";
 import type { SessionContext } from "./types.ts";
 
@@ -127,6 +129,48 @@ export function registerCommands(pi: ExtensionAPI): void {
 			}
 			ctx.ui.notify(`Orchestrator snapshot → /tmp/orchestrator-snapshot.json\n${json.slice(0, 200)}...`, "info");
 		},
+	});
+
+	pi.registerCommand("delegate-mode", {
+		description: "Toggle sequential/parallel delegation mode",
+		handler: async (args: string, ctx: any) => {
+			const config = loadOrchestratorConfig();
+
+			if (args === "sequential") {
+				config.delegation.mode = "sequential";
+				saveOrchestratorConfig(config);
+				setSessionMode(ctx, "sequential");
+				ctx.ui.notify("🔄 Delegation: sequential", "info");
+				return;
+			}
+
+			if (args === "parallel") {
+				config.delegation.mode = "parallel";
+				saveOrchestratorConfig(config);
+				setSessionMode(ctx, "parallel");
+				ctx.ui.notify("⚡ Delegation: parallel", "info");
+				return;
+			}
+
+			if (args === "status") {
+				const mode = getSessionMode(ctx);
+				ctx.ui.notify(`Current mode: ${mode}`, "info");
+				return;
+			}
+
+			// Default: toggle
+			const currentMode = getSessionMode(ctx);
+			const newMode = currentMode === "sequential" ? "parallel" : "sequential";
+			config.delegation.mode = newMode;
+			saveOrchestratorConfig(config);
+			setSessionMode(ctx, newMode);
+			ctx.ui.notify(`Delegation: ${newMode}`, "info");
+		},
+		getArgumentCompletions: (prefix: string) => [
+			{ value: "sequential", label: "Sequential (default)" },
+			{ value: "parallel", label: "Parallel" },
+			{ value: "status", label: "Show current mode" },
+		],
 	});
 }
 
