@@ -1,3 +1,40 @@
+function formatAnalysisBullets(analysis: any, indent: string = "  "): string {
+	let text = "";
+	if (analysis?.consensus?.length) {
+		for (const item of analysis.consensus) {
+			text += `${indent}✓ ${item}\n`;
+		}
+	}
+	if (analysis?.contradictions?.length) {
+		for (const item of analysis.contradictions) {
+			const topic = typeof item === "string" ? item : item.topic || "";
+			text += `${indent}⚡ Contradiction: ${topic}\n`;
+		}
+	}
+	if (analysis?.unique_insights?.length) {
+		for (const item of analysis.unique_insights) {
+			if (typeof item === "object") {
+				const insight = item.insight || "";
+				const prefix = item.model ? `${item.model}: ` : "";
+				text += `${indent}💡 ${prefix}${insight}\n`;
+			} else {
+				text += `${indent}💡 ${item}\n`;
+			}
+		}
+	}
+	if (analysis?.blind_spots?.length) {
+		for (const item of analysis.blind_spots) {
+			text += `${indent}⚠ Blind spot: ${item}\n`;
+		}
+	}
+	if (analysis?.recommendations?.length) {
+		for (const item of analysis.recommendations) {
+			text += `${indent}→ ${item}\n`;
+		}
+	}
+	return text;
+}
+
 export function formatFusionResult(analysis: any, succeeded: any[], failed: any[], panelModels: any[], judgeModel: any): string {
 	let text = "## Fusion Analysis\n\n";
 
@@ -36,33 +73,7 @@ export function formatFusionResult(analysis: any, succeeded: any[], failed: any[
 	for (const r of succeeded) {
 		text += `**${r.model}**:\n`;
 		if (r.analysis) {
-			// Format structured panel analysis with same prefixes as judge
-			if (r.analysis.consensus?.length) {
-				for (const item of r.analysis.consensus) {
-					text += `  ✓ ${item}\n`;
-				}
-			}
-			if (r.analysis.contradictions?.length) {
-				for (const item of r.analysis.contradictions) {
-					const topic = typeof item === "string" ? item : item.topic || "";
-					text += `  ⚡ Contradiction: ${topic}\n`;
-				}
-			}
-			if (r.analysis.unique_insights?.length) {
-				for (const item of r.analysis.unique_insights) {
-					text += `  💡 ${item}\n`;
-				}
-			}
-			if (r.analysis.blind_spots?.length) {
-				for (const item of r.analysis.blind_spots) {
-					text += `  ⚠ Blind spot: ${item}\n`;
-				}
-			}
-			if (r.analysis.recommendations?.length) {
-				for (const item of r.analysis.recommendations) {
-					text += `  → ${item}\n`;
-				}
-			}
+			text += formatAnalysisBullets(r.analysis);
 		} else if (r.reports?.length) {
 			// Fallback: use raw reports
 			for (const report of r.reports) {
@@ -81,34 +92,7 @@ export function formatFusionResult(analysis: any, succeeded: any[], failed: any[
 	if (analysis) {
 		text += "### Judge\n\n";
 		text += `**${judgeModel.id}**:\n`;
-		if (analysis.consensus?.length) {
-			for (const item of analysis.consensus) {
-				text += `  ✓ ${item}\n`;
-			}
-		}
-		if (analysis.contradictions?.length) {
-			for (const item of analysis.contradictions) {
-				const topic = typeof item === "string" ? item : item.topic || "";
-				text += `  ⚡ Contradiction: ${topic}\n`;
-			}
-		}
-		if (analysis.unique_insights?.length) {
-			for (const item of analysis.unique_insights) {
-				const insight = typeof item === "string" ? item : item.insight || "";
-				const model = typeof item === "object" ? item.model : undefined;
-				text += model ? `  💡 ${model}: ${insight}\n` : `  💡 ${insight}\n`;
-			}
-		}
-		if (analysis.blind_spots?.length) {
-			for (const item of analysis.blind_spots) {
-				text += `  ⚠ Blind spot: ${item}\n`;
-			}
-		}
-		if (analysis.recommendations?.length) {
-			for (const item of analysis.recommendations) {
-				text += `  → ${item}\n`;
-			}
-		}
+		text += formatAnalysisBullets(analysis);
 		text += "\n";
 	}
 
@@ -126,33 +110,7 @@ export function formatPanelResults(
 		for (const r of succeeded) {
 			text += `### ${r.model}\n`;
 			if (r.analysis) {
-				// Format structured panel analysis with same prefixes as judge
-				if (r.analysis.consensus?.length) {
-					for (const item of r.analysis.consensus) {
-						text += `  ✓ ${item}\n`;
-					}
-				}
-				if (r.analysis.contradictions?.length) {
-					for (const item of r.analysis.contradictions) {
-						const topic = typeof item === "string" ? item : item.topic || "";
-						text += `  ⚡ Contradiction: ${topic}\n`;
-					}
-				}
-				if (r.analysis.unique_insights?.length) {
-					for (const item of r.analysis.unique_insights) {
-						text += `  💡 ${item}\n`;
-					}
-				}
-				if (r.analysis.blind_spots?.length) {
-					for (const item of r.analysis.blind_spots) {
-						text += `  ⚠ Blind spot: ${item}\n`;
-					}
-				}
-				if (r.analysis.recommendations?.length) {
-					for (const item of r.analysis.recommendations) {
-						text += `  → ${item}\n`;
-					}
-				}
+				text += formatAnalysisBullets(r.analysis);
 			} else {
 				text += `${r.content}\n`;
 			}
