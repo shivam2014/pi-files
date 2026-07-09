@@ -4,6 +4,7 @@
  * Design spec: ORCHESTRATION-UI-DESIGN.md
  */
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 /** A step in the orchestration plan (Layer 1 header) */
 export interface OrchestratorStep {
@@ -83,6 +84,12 @@ export interface SubagentContext {
 }
 
 export type StepKind = 'tool_call' | 'agent_call' | 'user_action';
+
+export const STEP_KIND_SCHEMA = Type.Optional(Type.Union([
+	Type.Literal('tool_call'),
+	Type.Literal('agent_call'),
+	Type.Literal('user_action'),
+], { description: 'Step classification: tool_call (delegated), agent_call (orchestrator work), user_action' }));
 
 /** A step in the plan panel header */
 export interface PlanStep {

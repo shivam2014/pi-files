@@ -3,7 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { setupPlanPanel, summarizeGoal, addSteps, resolvePlanPanel } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
-import type { StepKind } from "./types.ts";
+import { STEP_KIND_SCHEMA } from "./types.ts";
 import type { SessionContext } from "./types.ts";
 
 function deriveGoal(goal: string | undefined, steps: string[] | undefined, ctx?: SessionContext): string {
@@ -25,11 +25,10 @@ export function registerPlanTool(pi: ExtensionAPI) {
             steps: Type.Array(Type.String(), {
                 description: "Ordered list of steps to accomplish the goal",
             }),
-            kind: Type.Optional(Type.Union([
-                Type.Literal('tool_call'),
-                Type.Literal('agent_call'),
-                Type.Literal('user_action'),
-            ], { description: 'Step classification: tool_call (delegated), agent_call (orchestrator work), user_action' })),
+            // #100: kind param on plan() is intentional — allows orchestrator to classify
+            // initial steps at creation time, not just via plan_add_steps/insert_step.
+            // Keeps the API consistent across all plan-modifying tools.
+            kind: STEP_KIND_SCHEMA,
         }),
         promptGuidelines: [
             "Create plan: plan({ goal: 'Fix auth bug', steps: ['Read auth middleware', 'Fix token validation', 'Write tests'] })",
@@ -70,11 +69,7 @@ export function registerInsertStepTool(pi: ExtensionAPI): void {
         parameters: Type.Object({
             steps: Type.Array(Type.String(), { description: 'Step labels to insert' }),
             after: Type.String({ description: 'Insert after this step label (must match an existing step exactly)' }),
-            kind: Type.Optional(Type.Union([
-                Type.Literal('tool_call'),
-                Type.Literal('agent_call'),
-                Type.Literal('user_action'),
-            ], { description: 'Step classification' })),
+            kind: STEP_KIND_SCHEMA,
         }),
         promptGuidelines: [
             "Insert: insert_step({ steps: ['new step'], after: 'existing step label' })",
@@ -88,21 +83,21 @@ export function registerInsertStepTool(pi: ExtensionAPI): void {
             if (!panel) {
                 return {
                     content: [{ type: 'text', text: 'No active plan. Call plan() first.' }],
-                    details: {},
+                    details: { error: 'No active plan. Call plan() first.' },
                 };
             }
-            const state = (panel as any).planState as { goal: string; steps: Array<{ label: string; completed: boolean; errored: boolean; active: boolean; startTime?: number; endTime?: number; kind?: StepKind }> } | null;
+            const state = panel.getPlanState();
             if (!state) {
                 return {
                     content: [{ type: 'text', text: 'No active plan. Call plan() first.' }],
-                    details: {},
+                    details: { error: 'Plan state is empty. Call plan() first.' },
                 };
             }
             const afterIdx = state.steps.findIndex(s => s.label === params.after);
             if (afterIdx < 0) {
                 return {
                     content: [{ type: 'text', text: `Step '${params.after}' not found in plan.` }],
-                    details: {},
+                    details: { error: `Step '${params.after}' not found in current plan.` },
                 };
             }
             let inserted = 0;
@@ -121,7 +116,7 @@ export function registerInsertStepTool(pi: ExtensionAPI): void {
             }
             return {
                 content: [{ type: 'text', text: `Inserted ${inserted} step(s) after '${params.after}'.` }],
-                details: {},
+                details: { inserted, after: params.after, totalSteps: state.steps.length },
             };
         },
     });
@@ -134,11 +129,7 @@ export function registerPlanAddStepsTool(pi: ExtensionAPI) {
         description: "Add new steps to the current active plan. Duplicate step labels are skipped.",
         parameters: Type.Object({
             steps: Type.Array(Type.String()),
-            kind: Type.Optional(Type.Union([
-                Type.Literal('tool_call'),
-                Type.Literal('agent_call'),
-                Type.Literal('user_action'),
-            ], { description: 'Step classification' })),
+            kind: STEP_KIND_SCHEMA,
         }),
         promptGuidelines: [
             "Add steps: plan_add_steps({ steps: ['New step 1', 'New step 2'] })",

@@ -86,6 +86,9 @@ export class PlanPanel {
 			if (!saved?.goal || !saved?.steps) return null;
 			const steps = saved.steps.map((s: any) => ({ ...s, active: false }));
 			// Infer kind for steps that lack it (backward compat with pre-#100 plans)
+			// Note: user_action is never inferred here — it's a new concept with no
+			// historical equivalent. Old plans will always get tool_call or agent_call.
+			// user_action steps must be explicitly tagged at creation time.
 			for (const step of steps) {
 				if (!step.kind) {
 					const label = step.label.toLowerCase();
@@ -251,6 +254,10 @@ private trimToBudget(lines: string[], budget: number): string[] {
 	}
 
 	hasActivePlan(): boolean { return this.planState !== null; }
+
+	getPlanState(): { goal: string; steps: PlanStep[] } | null {
+		return this.planState;
+	}
 
 	setupPlanPanel(goal: string, stepLabels: string[], ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 		this._cleared = false;
