@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { ScopeManager } from './scope-manager';
 
@@ -140,8 +140,8 @@ describe('ScopeManager', () => {
       const readBack = sm.readScope();
 
       expect(readBack).not.toBeNull();
-      expect(readBack!.filesToModify).toEqual(['a.ts', 'b.ts']);
-      expect(readBack!.filesToCreate).toEqual(['c.ts']);
+      expect(readBack!.filesToModify).toEqual([resolve('a.ts'), resolve('b.ts')]);
+      expect(readBack!.filesToCreate).toEqual([resolve('c.ts')]);
       expect(readBack!.maxFiles).toBe(3);
     });
 

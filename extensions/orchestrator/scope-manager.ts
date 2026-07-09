@@ -1,6 +1,21 @@
 import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, isAbsolute, resolve } from 'path';
 import { getDefaultWriterScope, getReadOnlyDefaultScope } from './scope-policy.ts';
+
+/**
+ * Normalize a scope path to an absolute path.
+ * - Absolute paths are returned as-is.
+ * - Paths starting with ~ are resolved from the home directory.
+ * - Relative paths are resolved relative to cwd.
+ */
+export function normalizeScopePath(p: string): string {
+  if (isAbsolute(p)) return p;
+  if (p.startsWith('~')) {
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    return resolve(home, p.slice(1));
+  }
+  return resolve(p);
+}
 
 /** ScopeGateMode type */
 export type ScopeGateMode = 'strict' | 'relaxed';
@@ -107,6 +122,9 @@ export class ScopeManager {
 
   writeScope(manifest: ScopeManifest): void {
     const scope = this.normalize(manifest);
+    // Normalize file paths to absolute
+    scope.filesToModify = scope.filesToModify.map(normalizeScopePath);
+    scope.filesToCreate = scope.filesToCreate.map(normalizeScopePath);
     const dir = join(this.cwd, '.pi');
     mkdirSync(dir, { recursive: true });
     const contract: ScopeFileContract = {

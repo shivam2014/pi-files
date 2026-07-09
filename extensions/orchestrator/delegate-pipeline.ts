@@ -60,6 +60,22 @@ export class DelegatePipeline {
 		// Normalize specialist name for case-insensitive comparison downstream
 		params = { ...params, specialist: specialist.name };
 
+		// Validate scope paths early
+		if (params.scope?.filesToModify) {
+			for (const p of params.scope.filesToModify) {
+				if (p.includes('..') || p.startsWith('~')) {
+					return { content: [{ type: "text", text: `Invalid scope path: \"${p}\". Scope paths must not contain \"..\" or start with \"~\".` }], details: {} };
+				}
+			}
+		}
+		if (params.scope?.filesToCreate) {
+			for (const p of params.scope.filesToCreate) {
+				if (p.includes('..') || p.startsWith('~')) {
+					return { content: [{ type: "text", text: `Invalid scope path: \"${p}\". Scope paths must not contain \"..\" or start with \"~\".` }], details: {} };
+				}
+			}
+		}
+
 		// Resolve skills: override replaces defaults (issue #42)
 		const resolvedSuggestedSkills = getSpecialistSkills(specialist.name, params.skills);
 
