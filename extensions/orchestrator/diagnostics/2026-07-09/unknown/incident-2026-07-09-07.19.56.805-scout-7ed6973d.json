@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-09T07:19:56.805Z",
+  "specialist": "scout",
+  "task": "Check if the fusion tool has model fallback logic when a panel model fails.\n\nRead:\n/Users/shivam94/.pi/agent/extensions/orchestrator/fusion-pipeline.ts\n\nFind:\n1. What happens when a panel model returns a 500/error?\n2. Is there fallback to a different model?\n3. Is there retry logic with a different model?\n4. How does the panel phase handle partial failures (1 model succeeds, 1 fails)?\n\nAlso check:\n/Users/shivam94/.pi/agent/extensions/orchestrator/fusion-config.ts\n\nFind:\n5. Is there a config option for fallback models?\n6. Is there a config option for max retries?\n\nReport: exact code snippets showing error handling and fallback logic.",
+  "turns": 2,
+  "toolCalls": 0,
+  "elapsedMs": 5245,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-09T07:19:56.805Z-scout-29c8b780",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "mimo-v2.5-vision",
+  "stopReason": "aborted",
+  "errorMessage": "Request was aborted"
+}

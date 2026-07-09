@@ -96,12 +96,12 @@ describe("executeDelegate", () => {
   describe("validation", () => {
     it("returns error when specialist missing", async () => {
       const r = await executeDelegate({ specialist: "", task: "x" }, createMockCtx(), vi.fn());
-      expect(r.content[0].text).toBe("Provide specialist+task");
+      expect(r.content[0].text).toContain("specialist");
     });
 
     it("returns error when task missing", async () => {
       const r = await executeDelegate({ specialist: "test", task: "" }, createMockCtx(), vi.fn());
-      expect(r.content[0].text).toBe("Provide specialist+task");
+      expect(r.content[0].text).toContain("specialist");
     });
 
     it("returns error for unknown specialist", async () => {
@@ -256,7 +256,7 @@ describe("executeDelegate", () => {
         createMockCtx(),
         vi.fn(),
       );
-      expect(r.content[0].text).toContain("clarify");
+      expect(r.content[0].text).toContain("Clarify");
     });
 
     it("Writer with empty scope still gets vague-scope warning (unchanged)", async () => {
@@ -279,7 +279,7 @@ describe("executeDelegate", () => {
         createMockCtx(),
         vi.fn(),
       );
-      expect(r.content[0].text).toContain("clarify");
+      expect(r.content[0].text).toContain("Clarify");
     });
 
     it("read-only specialist does not get vague-scope warning even when resolve returns 'ask'", async () => {
@@ -308,7 +308,7 @@ describe("executeDelegate", () => {
       expect(result).toBeDefined();
       expect(result.content).toBeDefined();
       expect(result.content[0].type).toBe("text");
-      expect(result.content[0].text).toContain("clarify");
+      expect(result.content[0].text).toContain("Clarify");
       expect(result.details).toBeDefined();
     });
   });

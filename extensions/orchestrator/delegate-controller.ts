@@ -21,5 +21,13 @@ export async function executeDelegate(
 	onUpdate: (update: any) => void,
 ): Promise<ExecuteDelegateResult> {
 	const pipeline = new DelegatePipeline({ scopeManager: new ScopeManager(ctx.cwd) });
-	return pipeline.run(params, ctx, onUpdate);
+	try {
+		return await pipeline.run(params, ctx, onUpdate);
+	} catch (e) {
+		const message = e instanceof Error ? e.message : String(e);
+		return {
+			content: [{ type: "text", text: message }],
+			details: { status: "error" },
+		};
+	}
 }

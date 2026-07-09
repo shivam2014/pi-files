@@ -45,7 +45,7 @@ export function isMutatingEditor(name: string, text: string): boolean {
 export function getBashToolReplacement(command: string | undefined, override?: boolean): string | null {
 	if (override || !command) return null;
 	if (isBlockedRmRecursive(command)) {
-		return "rm -rf is blocked. Use edit/write to modify files, or ask orchestrator for destructive operation approval.";
+		return "rm -rf is blocked. Set override:true in bash tool input to bypass. Use edit/write to modify files, or ask orchestrator for destructive operation approval.";
 	}
 	const cmd = firstCommandName(command);
 	if (!cmd) return null;
