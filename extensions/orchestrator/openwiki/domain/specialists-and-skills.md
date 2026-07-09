@@ -12,7 +12,7 @@ The orchestrator routes tasks to one of five built-in specialist roles. Each spe
 |-----------|------|-------|--------|---------|
 | **Scout** | Read-only codebase investigator | read, grep, find, ls, git-read, gh | diagnosing-bugs | No |
 | **Coder** | Implementation specialist | read, bash, edit, write, grep, lint, find, ls | implement, tdd | Yes |
-| **Reviewer** | Read-only code reviewer | read, bash, grep | code-review | No |
+| **Reviewer** | Read-only code reviewer + bash diagnostics | read, bash, grep | code-review | No |
 | **Researcher** | Web + docs researcher | read, web_search, fetch_content, ls, grep, git-read, find | domain-modeling | No |
 | **Writer** | Documentation specialist | read, write, edit, ls, find, git-read | agents-md-writer | Yes |
 
@@ -24,7 +24,7 @@ The orchestrator uses this routing table (generated dynamically from `SPECIALIST
 |-----------|------------|----------------|
 | Investigate codebase / find files | scout | diagnosing-bugs |
 | Implement feature / fix bug | coder | implement, tdd |
-| Review code / diff | reviewer | review |
+| Review code / diff / run bash diagnostics | reviewer | review |
 | Research docs / web | researcher | domain-modeling |
 | Create/edit docs | writer | agents-md-writer |
 
@@ -117,9 +117,11 @@ Skills are also registered with the SDK via `resources_discover` event in `index
 
 ### Reviewer (Read-Only + Bash)
 - `read` — examine files
-- `bash` — run specific commands
+- `bash` — run diagnostic commands (curl endpoints, check ports, read configs, run CLIs)
 - `grep` — search code
 - ❌ No edit or write
+- Gets auto-defaulted read-only scope (no explicit `scope` parameter needed)
+- Handles all read-only bash diagnostics — use instead of coder for curl/lsof/cat/CLI tasks
 
 ### Researcher (Read-Only + Web)
 - `read` — examine files

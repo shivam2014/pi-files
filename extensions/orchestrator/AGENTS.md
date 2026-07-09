@@ -32,3 +32,14 @@ Check snapshot files (`/tmp/tui-smoke-*/00-startup.txt` through `04-final-state.
 - Don't weaken scope enforcement to pass tests.
 - Don't add prompt-level reminders — they decay. Tool-level gate is the enforcement.
 - Don't let the gate crash the agent — self-correct in one turn.
+
+## OpenWiki
+
+This repository has documentation located in the /openwiki directory.
+
+Start here:
+- [OpenWiki quickstart](openwiki/quickstart.md)
+
+OpenWiki includes repository overview, architecture notes, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+When working in this repository, read the OpenWiki quickstart first, then follow its links to the relevant architecture, workflow, domain, operation, and testing notes.

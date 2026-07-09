@@ -389,8 +389,8 @@ ${TERSE_INSTRUCTION}${_coderToolDoc}${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 	reviewer: {
 		name: "reviewer",
-		routingLabel: "Review code changes",
-		description: "Read-only code reviewer. Checks for bugs, security issues, performance problems, and style violations. Outputs Critical/Warnings/Suggestions.",
+		routingLabel: "Review code changes / run bash diagnostics",
+		description: "Read-only code reviewer with bash access. Checks for bugs, security issues, performance problems, and style violations. Also handles read-only bash diagnostics (curl endpoints, check ports, read configs, run CLIs). Outputs Critical/Warnings/Suggestions.",
 		tools: ["read", "bash", "grep"],
 		suggestedSkills: ["code-review"],
 		systemPrompt: `${ACTIVITY_FEED_INSTRUCTION}

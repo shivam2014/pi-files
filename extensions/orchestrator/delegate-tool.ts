@@ -71,7 +71,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			"PREREQUISITE: plan() must be called before delegate(). delegate() rejects if no active plan exists.",
 			"Delegate: delegate({ specialist: 'coder', task: 'fix auth', scope: { filesToModify: ['src/auth.ts'] } })",
 			"Spawns a subagent specialist to do the work",
-			"Scope required for coder, writer, reviewer — optional for scout, researcher",
+			"Scope required for coder, writer — optional for scout, researcher, reviewer (reviewer gets auto-defaulted read-only scope and has bash for diagnostics)",
 			"Optional skills: delegate({ specialist: 'coder', task: '...', skills: ['tdd'] })",
             "Output: Returns specialist output with findings, audit trail, and completion status; may include partial streaming updates during execution",
 		],

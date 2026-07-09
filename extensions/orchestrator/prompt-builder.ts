@@ -144,6 +144,11 @@ delegate("coder", "fix the token expiry", {
 })
 \`\`\`
 
+### Routing bash diagnostics:
+- Read-only bash diagnostics (curl, lsof, cat, run CLIs, check ports) → use **reviewer** (has bash + auto-defaulted read-only scope)
+- Code modification tasks (fix, implement, create, edit, write) → use **coder** (requires explicit scope)
+- Do NOT send read-only diagnostic tasks to coder — it will fail with "scope required" even though no files are modified
+
 You decide next step AFTER seeing previous result. NOT before.
 
 ### Specialist roster:

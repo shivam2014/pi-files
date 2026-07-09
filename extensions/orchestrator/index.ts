@@ -79,6 +79,7 @@ export default function (pi: ExtensionAPI) {
 		activeTools.push("list_skills");
 		activeTools.push("list_tools");
 		activeTools.push("vision_query");
+		activeTools.push("interactive_shell");
 		pi.setActiveTools(activeTools);
 		// Refresh tool docs after init — getAllTools() is an action method
 		// that throws if called during extension loading.
@@ -127,7 +128,7 @@ export default function (pi: ExtensionAPI) {
 		if (event.toolName === "fusion" && !pi.getAllTools().some((t: any) => t.name === "fusion")) {
 			return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 		}
-		if (event.toolName !== "delegate" && !PLAN_TOOLS.includes(event.toolName as typeof PLAN_TOOLS[number]) && event.toolName !== "fusion" && event.toolName !== "read_skill" && event.toolName !== "list_skills" && event.toolName !== "list_tools" && event.toolName !== "vision_query") {
+		if (event.toolName !== "delegate" && !PLAN_TOOLS.includes(event.toolName as typeof PLAN_TOOLS[number]) && event.toolName !== "fusion" && event.toolName !== "read_skill" && event.toolName !== "list_skills" && event.toolName !== "list_tools" && event.toolName !== "vision_query" && event.toolName !== "interactive_shell") {
 			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
 		}
 	});
