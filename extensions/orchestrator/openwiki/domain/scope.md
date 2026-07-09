@@ -170,22 +170,42 @@ Scenarios that trigger fail-closed:
 
 ## Bash Write-Command Blocking
 
-Read-only specialists with bash access (currently: **reviewer**) have tool-level enforcement against write-modifying bash commands.
+Read-only specialists with bash access (currently: **reviewer**) have tool-level enforcement against write-modifying bash commands. This uses the pi SDK `tool_call` event pattern for interception.
 
-### How it works
+### Overview
 
-1. `subagent-runner.ts` sets `PI_SPECIALIST_NAME` env var when spawning a subagent
-2. `index.ts` reads it and passes `readOnly: true` for read-only specialists
-3. `subagent-tool-guard.ts` blocks bash write commands when `readOnly` is set:
-   - Non-git write commands: `rm`, `mv`, `cp`, `chmod`, `tee`, `echo > file`, `sed -i`, etc.
-   - Git write commands: `commit`, `push`, `init`, `clone`, `add`, `rm`, `mv`, etc.
-   - Unknown git subcommands: fail-closed for readOnly
+`createBashInterceptor()` in `bash-interceptor.ts` returns an event handler that intercepts `tool_call` events for the `bash` tool. Two independent checks run:
 
-### What's blocked
+1. **Dangerous command blocking** — Always active. Blocks destructive system commands regardless of specialist mode.
+2. **Write command blocking** — Active only when `readOnly: true`. Blocks file-modifying and git-write commands.
+
+The handler returns `{ block: true, reason }` to halt execution, or `undefined` to allow the command through.
+
+```typescript
+const interceptor = createBashInterceptor({ readOnly: true, blockDangerous: true });
+// Register as pi SDK tool_call handler
+```
+
+### Blocked Commands Table
+
+#### Always blocked (dangerous)
+
+| Command | Reason |
+|---------|--------|
+| `rm -rf /`, `rm -rf /*` | Root filesystem destruction |
+| `git push --force`, `git push -f` | Force push to remote |
+| `git reset --hard` | Discards all local changes |
+| `sudo rm` | Privileged deletion |
+| `dd if=` | Raw disk write |
+| `mkfs` | Filesystem formatting |
+| `> /dev/sda` | Direct disk write |
+
+#### Blocked in read-only mode
 
 | Command type | Example | Blocked? |
 |-------------|---------|----------|
 | File deletion | `rm file.txt` | ✅ Yes |
+| Recursive delete | `rm -rf dir/` | ✅ Yes |
 | File move/copy | `mv a b`, `cp a b` | ✅ Yes |
 | File permissions | `chmod 777 file` | ✅ Yes |
 | Output redirect | `echo x > file` | ✅ Yes |
@@ -196,22 +216,61 @@ Read-only specialists with bash access (currently: **reviewer**) have tool-level
 | Diagnostic | `curl localhost:19530` | ❌ Allowed |
 | Port check | `lsof -i :19530` | ❌ Allowed |
 
-### Override bypass
+### Specialist Permissions
 
-The `override: true` flag on bash calls bypasses bash-to-SDK interception but does **NOT** bypass readOnly blocking. This is intentional — readOnly is a security boundary, not a convenience feature.
+| Specialist | `readOnly` | `blockDangerous` | Behavior |
+|------------|------------|------------------|----------|
+| **reviewer** | `true` | `true` | Read-only + dangerous command blocking |
+| **coder** | `false` | `true` | Read-write + dangerous command blocking |
+| **writer** | `false` | `true` | Read-write + dangerous command blocking |
+| Other specialists | `false` | `true` | Read-write + dangerous command blocking |
 
-### Architecture alignment
+**Override bypass:** The `override: true` flag on bash calls bypasses bash-to-SDK command redirection but does **NOT** bypass `readOnly` or `blockDangerous` blocking. This is intentional — these are security boundaries, not convenience features.
 
-This implements the core principle from this document: *"Tool-level enforcement, not prompt-level."* The prompt instruction ("Do NOT use bash to modify files") is defense-in-depth; the tool guard is the actual enforcement.
+### Adding New Commands
 
-### Source files
+#### Adding to dangerous commands list
+
+Edit the `DANGEROUS_COMMANDS` array in `bash-interceptor.ts`:
+
+```typescript
+const DANGEROUS_COMMANDS = [
+  "rm -rf /",
+  "rm -rf /*",
+  // ... existing entries ...
+  "your-new-pattern",  // Added: description of why
+];
+```
+
+Matching is substring-based (`command.includes(pattern)`), so patterns like `rm -rf /` will match `rm -rf / --no-preserve-root`.
+
+#### Adding to write-command classifier
+
+Edit `bash-classifier.ts` — the `isWriteCommand()` function. This classifier checks command structure:
+
+- First command extraction via `firstCommandName()`
+- Recursive `rm` detection via `isBlockedRmRecursive()`
+- File write indicators (`>`, `>>`, `open()`, `fs.writeFile()`)
+- Mutating editor flags (`sed -i`, `perl -i`)
+
+#### Adding new specialist permissions
+
+1. Add the specialist name to `isReadOnlySpecialist()` in `index.ts`
+2. Set `readOnly: true` in the `BashInterceptorOptions` when creating the interceptor
+3. Update the Specialist Permissions table above
+
+### Architecture Alignment
+
+This implements the core principle from this document: *"Tool-level enforcement, not prompt-level."* The prompt instruction ("Do NOT use bash to modify files") is defense-in-depth; the event handler is the actual enforcement.
+
+### Source Files
 
 | File | Role |
 |------|------|
-| `/bash-interceptor.ts` | `isWriteModifyingCommand()` — pure function classifying bash commands |
-| `/subagent-tool-guard.ts` | `handleSubagentToolCall()` — enforces readOnly blocking |
-| `/index.ts` | `isReadOnlySpecialist()` — determines readOnly from env var |
-| `/subagent-runner.ts` | Sets `PI_SPECIALIST_NAME` env var |
+| `bash-interceptor.ts` | `createBashInterceptor()` — SDK tool_call event handler, dangerous command list |
+| `bash-classifier.ts` | `isWriteCommand()` — pure function classifying write commands |
+| `index.ts` | `isReadOnlySpecialist()` — determines readOnly from specialist name |
+| `subagent-runner.ts` | Sets `PI_SPECIALIST_NAME` env var for specialist identification |
 
 ## Concurrency Caveat
 

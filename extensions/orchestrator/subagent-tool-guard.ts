@@ -3,7 +3,8 @@
  * Depends on BashInterceptor, ScopeGuard, and orchestrator state.
  */
 
-import { getBashToolReplacement, isWriteModifyingCommand } from "./bash-interceptor.ts";
+import { getBashToolReplacement } from "./bash-interceptor.ts";
+import { isWriteCommand } from "./bash-classifier.ts";
 import { ScopeGuard } from "./scope-guard.ts";
 import { _batchLoadSubagent, isPlanParsed } from "./subagent-runner.ts";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
@@ -11,6 +12,9 @@ import { readFileSync } from "node:fs";
 import { debugLog } from "./debug.ts";
 import { traceToolCallEntry, tracePathsExtracted, tracePathResolved, traceScopeCheck, traceDecision } from "./debug-path-trace.ts";
 import { resolve } from "node:path";
+
+/** Tools that never modify state — always safe to allow */
+const readOnlyTools = new Set(['read', 'grep', 'find', 'ls', 'git-read', 'head', 'tail', 'wc', 'file']);
 
 /** Check if a bash call should be intercepted and replaced with a native tool. */
 function checkBashInterception(
@@ -20,10 +24,16 @@ function checkBashInterception(
 	if (event.toolName !== 'bash') return undefined;
 	const command = isToolCallEventType('bash', event) ? event.input.command : event.input?.command;
 	const replacement = getBashToolReplacement(command, override);
-	if (replacement) {
+	if (!replacement.allowed) {
 		return {
 			block: true,
-			reason: `Use ${replacement} instead of bash (command: ${command?.trim().split(/\s+/)[0]}). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).`,
+			reason: replacement.reason || `Bash command blocked (command: ${command?.trim().split(/\s+/)[0]}). Set override:true to bypass.`,
+		};
+	}
+	if (replacement.tool) {
+		return {
+			block: true,
+			reason: `Use ${replacement.tool} instead of bash (command: ${command?.trim().split(/\s+/)[0]}). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).`,
 		};
 	}
 	return undefined;
@@ -116,7 +126,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					}
 				} else {
 					// Read-only specialist: block write-modifying non-git bash commands
-					if (ctx?.readOnly && isWriteModifyingCommand(input.command)) {
+					if (ctx?.readOnly && isWriteCommand(input.command)) {
 						return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
 					}
 					// Non-git bash command - use file extension regex
@@ -126,10 +136,9 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 			}
 
 			// Derive operation from tool name — reads always safe, writes require scope approval
-			const readOnlyTools = new Set(['read', 'grep', 'find', 'ls', 'git-read', 'head', 'tail', 'wc', 'file']);
-			const operation = event.toolName === 'edit' ? 'edit'
-				: readOnlyTools.has(event.toolName) ? 'read'
-				: 'write'; // fail-closed: unknown tools treated as mutations
+				const operation = event.toolName === 'edit' ? 'edit'
+					: readOnlyTools.has(event.toolName) ? 'read'
+					: 'write'; // fail-closed: unknown tools treated as mutations
 
 			for (const rawPath of filePaths) {
 				const absolutePath = resolve(cwd, rawPath);
@@ -158,7 +167,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 	// Read-only bash enforcement (orchestrator context)
 	if (event.toolName === 'bash' && ctx?.readOnly) {
 		const command = isToolCallEventType('bash', event) ? event.input.command : event.input?.command;
-		if (command && isWriteModifyingCommand(command)) {
+		if (command && isWriteCommand(command)) {
 			const blockResult = { block: true, reason: `⛔ Bash write command blocked for read-only specialist.\nCommand: ${command}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
 			traceDecision('handleSubagentToolCall', event, blockResult);
 			return blockResult;

@@ -19,7 +19,6 @@ import { registerCommands } from "./commands.ts";
 import { registerFusionCommands } from "./fusion-commands.ts";
 import { registerFusionTool } from "./fusion-tool.ts";
 import { registerListSkillsTool, registerListToolsTool } from "./introspection-tools.ts";
-import { registerInteractiveShellTool } from "./interactive-shell-tool";
 
 /**
  * Register a `glob` tool alias that delegates to the built-in `find` tool.
@@ -70,8 +69,11 @@ function registerBashWrapper(pi: ExtensionAPI, cwd: string): void {
 		async execute(_toolCallId: string, args: { command: string; override?: boolean }): Promise<{ content: { type: "text"; text: string }[]; details: Record<string, unknown> }> {
 			if (args.override) return runBashCommand(args.command, cwd);
 			const replacement = getBashToolReplacement(args.command, args.override);
-			if (replacement) {
-				return { content: [{ type: "text", text: `Intercepted: use ${replacement} tool instead. Set override:true to bypass.` }], details: {} };
+			if (!replacement.allowed) {
+				return { content: [{ type: "text", text: `Blocked: ${replacement.reason}` }], details: { isError: true } };
+			}
+			if (replacement.tool) {
+				return { content: [{ type: "text", text: `Intercepted: use ${replacement.tool} tool instead. Set override:true to bypass.` }], details: {} };
 			}
 			return runBashCommand(args.command, cwd);
 		},
@@ -86,7 +88,6 @@ export function registerAllTools(pi: ExtensionAPI, cwd: string): void {
 	registerListSkillsTool(pi);
 	registerListToolsTool(pi, cwd);
 	registerGlobAlias(pi);
-	registerInteractiveShellTool(pi);
 	registerCommands(pi);
 	registerFusionCommands(pi);
 }

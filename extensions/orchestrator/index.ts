@@ -32,8 +32,6 @@ import { SPECIALISTS, updateToolDocs } from "./specialists.ts";
 import { join } from "node:path";
 import { getSessionMode } from "./orchestrator-config";
 
-export { getBashToolReplacement } from "./bash-interceptor.ts";
-
 function resolveCwd(ctx?: { cwd?: string }): string {
 	return ctx?.cwd ?? process.cwd();
 }

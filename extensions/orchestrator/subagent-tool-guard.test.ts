@@ -15,7 +15,10 @@ vi.mock("./subagent-runner.ts", () => ({
 
 vi.mock("./bash-interceptor.ts", () => ({
 	getBashToolReplacement: vi.fn(),
-	isWriteModifyingCommand: vi.fn(),
+}));
+
+vi.mock("./bash-classifier.ts", () => ({
+	isWriteCommand: vi.fn(),
 }));
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
@@ -33,7 +36,8 @@ vi.mock("node:path", () => ({
 }));
 
 import { handleSubagentToolCall } from "./subagent-tool-guard";
-import { getBashToolReplacement, isWriteModifyingCommand } from "./bash-interceptor";
+import { getBashToolReplacement } from "./bash-interceptor";
+import { isWriteCommand } from "./bash-classifier";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 // Mock ScopeGuard — vi.fn() acts as constructor, mockImplementation replaces per-test
@@ -279,7 +283,7 @@ describe("handleSubagentToolCall", () => {
 		});
 
 		it("blocks bash when replacement exists", () => {
-			vi.mocked(getBashToolReplacement).mockReturnValue("read");
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true, tool: "read" });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
 			const result = handleSubagentToolCall({
@@ -293,7 +297,7 @@ describe("handleSubagentToolCall", () => {
 		});
 
 		it("allows bash when no replacement", () => {
-			vi.mocked(getBashToolReplacement).mockReturnValue(null);
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
 			const result = handleSubagentToolCall({
@@ -304,7 +308,7 @@ describe("handleSubagentToolCall", () => {
 		});
 
 		it("allows bash when override is set", () => {
-			vi.mocked(getBashToolReplacement).mockReturnValue(null);
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
 			const result = handleSubagentToolCall({
@@ -316,7 +320,7 @@ describe("handleSubagentToolCall", () => {
 
 		it("handles non-typed bash event fallback", () => {
 			vi.mocked(isToolCallEventType).mockReturnValue(false);
-			vi.mocked(getBashToolReplacement).mockReturnValue("grep");
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true, tool: "grep" });
 
 			const result = handleSubagentToolCall({
 				toolName: "bash",
@@ -336,7 +340,7 @@ describe("handleSubagentToolCall", () => {
 		});
 
 		it("intercepts bash cat command and redirects to read when batchLoad > 0", () => {
-			vi.mocked(getBashToolReplacement).mockReturnValue("read");
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true, tool: "read" });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
 			const result = handleSubagentToolCall({
@@ -350,7 +354,7 @@ describe("handleSubagentToolCall", () => {
 		});
 
 		it("allows bash with no replacement when batchLoad > 0", () => {
-			vi.mocked(getBashToolReplacement).mockReturnValue(null);
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
 			const result = handleSubagentToolCall({
@@ -361,7 +365,7 @@ describe("handleSubagentToolCall", () => {
 		});
 
 		it("respects override:true in subagent context", () => {
-			vi.mocked(getBashToolReplacement).mockReturnValue(null);
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
 			const result = handleSubagentToolCall({
@@ -408,13 +412,13 @@ describe("handleSubagentToolCall", () => {
 	describe("readOnly bash blocking", () => {
 		beforeEach(() => {
 			mockState.batchLoad = 0;
-			vi.mocked(getBashToolReplacement).mockReturnValue(null);
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
-			vi.mocked(isWriteModifyingCommand).mockReturnValue(false);
+			vi.mocked(isWriteCommand).mockReturnValue(false);
 		});
 
 		it("blocks write-modifying bash when readOnly is true", () => {
-			vi.mocked(isWriteModifyingCommand).mockReturnValue(true);
+			vi.mocked(isWriteCommand).mockReturnValue(true);
 			const result = handleSubagentToolCall(
 				{ toolName: "bash", input: { command: "rm file.txt" } },
 				true,
