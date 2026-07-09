@@ -252,6 +252,10 @@ export default function (pi: ExtensionAPI) {
 		readFingerprints.clear();
 
 		rtkAvailable = checkRtkVersion();
+
+		// Check orchestrator here (after runtime is initialized, not during load)
+		checkOrchestrator(pi);
+
 		if (enabled) {
 			const rtkStatus = rtkAvailable ? "rtk ✓" : "";
 			pi.sendMessage({
@@ -259,6 +263,36 @@ export default function (pi: ExtensionAPI) {
 				content: `[token-saver] Active — ${currentTerseMode} mode${rtkStatus ? ` (${rtkStatus})` : ""}`,
 				display: true,
 			}, { deliverAs: "steer" });
+		}
+
+		// Register bash tool here if orchestrator is not present
+		if (!hasOrchestrator) {
+			const originalBash = createBashTool(cwd, {
+				spawnHook: ({ command, cwd, env }) => {
+					if (!rtkEnabled || !rtkAvailable) return { command, cwd, env };
+					if (command.startsWith("rtk ")) return { command, cwd, env };
+					const rewritten = rtkRewrite(command);
+					return { command: rewritten ?? command, cwd, env };
+				},
+			});
+			pi.registerTool({
+				...originalBash,
+				async execute(toolCallId, params, signal, onUpdate, ctx) {
+					const result = await originalBash.execute(toolCallId, params, signal, onUpdate);
+					if (!enabled || !result.content) return result;
+
+					const text = result.content
+						.filter((c): c is { type: "text"; text: string } => c.type === "text")
+						.map((c) => c.text)
+						.join("\n");
+
+					const budget = BUDGETS.bash;
+					const compressed = compress(text, budget);
+
+					if (compressed === text) return result;
+					return { ...result, content: [{ type: "text", text: compressed }] };
+				},
+			});
 		}
 	});
 
@@ -273,10 +307,22 @@ export default function (pi: ExtensionAPI) {
 		return { systemPrompt: event.systemPrompt + prompt };
 	});
 
+	const cwd = process.cwd();
+
+	// We need to defer getAllTools() until runtime is initialized,
+	// so compute it lazily inside hook handlers.
+	let hasOrchestratorChecked = false;
+	let hasOrchestrator = false;
+
+	function checkOrchestrator(pi: ExtensionAPI): void {
+		if (!hasOrchestratorChecked) {
+		hasOrchestrator = pi.getAllTools().some((t: any) => t.name === 'delegate');
+		hasOrchestratorChecked = true;
+		}
+	}
+
 	// ── 2. Override built-in tools with compressed versions ───────────────
 	// Compression happens BEFORE output enters context = cache-safe
-
-	const cwd = process.cwd();
 
 	// ── bash: RTK rewrite + ANSI strip + tail 80 lines ──
 	// Orchestrator registers its own bash with destructive-op interception.
@@ -312,36 +358,10 @@ export default function (pi: ExtensionAPI) {
 	//
 	// END LEGACY
 
-	const hasOrchestrator = pi.getAllTools().some((t: any) => t.name === 'delegate');
-
-	if (!hasOrchestrator) {
-		const originalBash = createBashTool(cwd, {
-			spawnHook: ({ command, cwd, env }) => {
-				if (!rtkEnabled || !rtkAvailable) return { command, cwd, env };
-				if (command.startsWith("rtk ")) return { command, cwd, env };
-				const rewritten = rtkRewrite(command);
-				return { command: rewritten ?? command, cwd, env };
-			},
-		});
-		pi.registerTool({
-			...originalBash,
-			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				const result = await originalBash.execute(toolCallId, params, signal, onUpdate);
-				if (!enabled || !result.content) return result;
-
-				const text = result.content
-					.filter((c): c is { type: "text"; text: string } => c.type === "text")
-					.map((c) => c.text)
-					.join("\n");
-
-				const budget = BUDGETS.bash;
-				const compressed = compress(text, budget);
-
-				if (compressed === text) return result;
-				return { ...result, content: [{ type: "text", text: compressed }] };
-			},
-		});
-	}
+	// ── 2. Override built-in tools with compressed versions ───────────────
+	// Compression happens BEFORE output enters context = cache-safe
+	// Note: bash tool is registered in session_start handler (needs getAllTools())
+	// Other tools are safe to register at load time.
 
 	// ── read: dedup + line budget ──
 	const originalRead = createReadTool(cwd);
