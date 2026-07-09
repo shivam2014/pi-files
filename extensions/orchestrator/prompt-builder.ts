@@ -44,8 +44,6 @@ function generateToolDocumentation(pi: ExtensionAPI): string {
 | Tool | Syntax | Output |
 |------|--------|--------|
 ${toolRows}
-
-${generateScopeDocumentation()}
 `;
 }
 
@@ -121,28 +119,9 @@ delegate() auto-creates a minimal plan if none exists, but calling plan() first 
 {{FUSION}}
 
 ### Scope requirement:
-When calling delegate(coder|writer, ...), you MUST include a \`scope\` parameter with the files the specialist is allowed to modify/create and any boundaries.
-// Scout, reviewer, researcher are read-only — scope optional
-
-- Get scope from scout's or researcher's \`## Scope\` output when available.
-- Prefer reusing cached scope across delegations for the same task instead of re-deriving it.
-- For writers, default to doc-friendly scope: only the docs mentioned, minimal edits, preserve structure.
-
-Example:
-\`\`\`
-delegate("coder", "fix the token expiry", {
-    scope: {
-        filesToModify: ["src/auth.ts"],
-        filesToCreate: [],
-        directories: ["src"],
-        boundaries: "do not modify files under src/legacy/",
-        maxFiles: 15,
-        maxLinesPerFile: 400,
-        changeType: "single-file",
-        requiresApprovalBeyondScope: false
-    }
-})
-\`\`\`
+When calling delegate(coder|writer, ...), include \`scope\`: { filesToModify, filesToCreate, directories, maxFiles, maxLinesPerFile, changeType, boundaries, requiresApprovalBeyondScope }.
+Get scope from scout's or researcher's \`## Scope\` output. Reuse cached scope across delegations for the same task.
+Writers: default to doc-friendly scope (only mentioned docs, minimal edits, preserve structure).
 
 ### Routing bash diagnostics:
 - Read-only bash diagnostics (curl, lsof, cat, run CLIs, check ports) → use **reviewer** (has bash + auto-defaulted read-only scope)
