@@ -120,9 +120,6 @@ export class PlanPanel {
 	private toFeedState(state: { goal: string; steps: PlanStep[]; startTime: number }): ActivityFeedState {
 		const steps: Step[] = state.steps.map(ps => {
 			const substeps: Substep[] = [];
-			if (ps.delegationLabel) {
-				substeps.push({ label: ps.delegationLabel, completed: ps.completed });
-			}
 			if (ps.completed && ps.detailLines?.length) {
 				for (const line of ps.detailLines) {
 					const m = line.match(/^    ✓ Report: (.+)$/i);
@@ -317,7 +314,7 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
 		const activeIdx = this.planState.steps.findIndex((s) => s.active);
 		if (activeIdx >= 0 && !this.planState.steps[activeIdx].completed) {
-			this.planState.steps[activeIdx].delegationLabel = label;
+			this.planState.steps[activeIdx].kind = 'delegation';
 			this.planState.steps[activeIdx].active = true;
 			if (!this.planState.steps[activeIdx].startTime) this.planState.steps[activeIdx].startTime = Date.now();
 			resetSpinner();
@@ -327,7 +324,7 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		}
 		const pendingIdx = this.planState.steps.findIndex((s) => !s.completed && !s.active && !s.errored);
 		if (pendingIdx >= 0) {
-			this.planState.steps[pendingIdx].delegationLabel = label;
+			this.planState.steps[pendingIdx].kind = 'delegation';
 			this.planState.steps[pendingIdx].active = true;
 			this.planState.steps[pendingIdx].startTime = Date.now();
 			resetSpinner();

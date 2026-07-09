@@ -84,20 +84,18 @@ export interface SubagentContext {
 	onAskOrchestrator?: (question: string, context?: string) => Promise<string>;
 }
 
-export type StepKind = 'tool_call' | 'agent_call' | 'user_action';
+export type StepKind = 'delegation' | 'orchestrator';
 
 export const STEP_KIND_SCHEMA = Type.Optional(Type.Union([
-	Type.Literal('tool_call'),
-	Type.Literal('agent_call'),
-	Type.Literal('user_action'),
-], { description: 'Step classification: tool_call (delegated), agent_call (orchestrator work), user_action' }));
+	Type.Literal('delegation'),
+	Type.Literal('orchestrator'),
+], { description: 'Step classification: delegation (subagent work), orchestrator (orchestrator work)' }));
 
 /** A step in the plan panel header */
 export interface PlanStep {
 	label: string;
 	completed: boolean;
 	active: boolean;
-	delegationLabel?: string;
 	errored?: boolean;
 	errorMessage?: string;
 	detail?: string;
