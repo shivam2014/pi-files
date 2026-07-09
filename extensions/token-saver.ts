@@ -279,32 +279,69 @@ export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 
 	// ── bash: RTK rewrite + ANSI strip + tail 80 lines ──
-	const originalBash = createBashTool(cwd, {
-		spawnHook: ({ command, cwd, env }) => {
-			if (!rtkEnabled || !rtkAvailable) return { command, cwd, env };
-			if (command.startsWith("rtk ")) return { command, cwd, env };
-			const rewritten = rtkRewrite(command);
-			return { command: rewritten ?? command, cwd, env };
-		},
-	});
-	pi.registerTool({
-		...originalBash,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const result = await originalBash.execute(toolCallId, params, signal, onUpdate);
-			if (!enabled || !result.content) return result;
+	// Orchestrator registers its own bash with destructive-op interception.
+	// Only register our compressed bash when orchestrator is NOT present.
+	//
+	// LEGACY: Original unconditional bash registration below.
+	// Conflicts with orchestrator/registration-hub.ts registerBashWrapper().
+	// Kept for reference if orchestrator is removed.
+	//
+	// const originalBash = createBashTool(cwd, {
+	// 	spawnHook: ({ command, cwd, env }) => {
+	// 		if (!rtkEnabled || !rtkAvailable) return { command, cwd, env };
+	// 		if (command.startsWith("rtk ")) return { command, cwd, env };
+	// 		const rewritten = rtkRewrite(command);
+	// 		return { command: rewritten ?? command, cwd, env };
+	// 	},
+	// });
+	// pi.registerTool({
+	// 	...originalBash,
+	// 	async execute(toolCallId, params, signal, onUpdate, ctx) {
+	// 		const result = await originalBash.execute(toolCallId, params, signal, onUpdate);
+	// 		if (!enabled || !result.content) return result;
+	// 		const text = result.content
+	// 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+	// 			.map((c) => c.text)
+	// 			.join("\n");
+	// 		const budget = BUDGETS.bash;
+	// 		const compressed = compress(text, budget);
+	// 		if (compressed === text) return result;
+	// 		return { ...result, content: [{ type: "text", text: compressed }] };
+	// 	},
+	// });
+	//
+	// END LEGACY
 
-			const text = result.content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map((c) => c.text)
-				.join("\n");
+	const hasOrchestrator = pi.getAllTools().some((t: any) => t.name === 'delegate');
 
-			const budget = BUDGETS.bash;
-			const compressed = compress(text, budget);
+	if (!hasOrchestrator) {
+		const originalBash = createBashTool(cwd, {
+			spawnHook: ({ command, cwd, env }) => {
+				if (!rtkEnabled || !rtkAvailable) return { command, cwd, env };
+				if (command.startsWith("rtk ")) return { command, cwd, env };
+				const rewritten = rtkRewrite(command);
+				return { command: rewritten ?? command, cwd, env };
+			},
+		});
+		pi.registerTool({
+			...originalBash,
+			async execute(toolCallId, params, signal, onUpdate, ctx) {
+				const result = await originalBash.execute(toolCallId, params, signal, onUpdate);
+				if (!enabled || !result.content) return result;
 
-			if (compressed === text) return result;
-			return { ...result, content: [{ type: "text", text: compressed }] };
-		},
-	});
+				const text = result.content
+					.filter((c): c is { type: "text"; text: string } => c.type === "text")
+					.map((c) => c.text)
+					.join("\n");
+
+				const budget = BUDGETS.bash;
+				const compressed = compress(text, budget);
+
+				if (compressed === text) return result;
+				return { ...result, content: [{ type: "text", text: compressed }] };
+			},
+		});
+	}
 
 	// ── read: dedup + line budget ──
 	const originalRead = createReadTool(cwd);
