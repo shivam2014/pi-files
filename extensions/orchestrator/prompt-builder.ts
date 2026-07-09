@@ -101,7 +101,7 @@ Plan-step rules:
 - If multiple tasks go to the SAME specialist in ONE delegation, consolidate them into ONE step. Don't over-split.
 - If tasks go to DIFFERENT specialists, or mix delegation + orchestrator work, they MUST be separate steps.
 - Never declare steps you intend to batch into one delegation — that orphans the unused steps.
-- After each delegate() returns, do any orchestrator analysis before moving to the next step. The plan panel tracks progress automatically.
+- modify_step: update label/kind. remove_step: delete step.
 
 Adding steps mid-workflow:
 - If a delegation reveals new work, call plan_add_steps({ steps: ['new step 1', 'new step 2'] }) to append steps to the current plan.

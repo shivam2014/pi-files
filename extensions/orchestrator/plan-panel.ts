@@ -2,14 +2,12 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { truncateLabel } from "../token-saver.ts";
 import { styledSymbol, formatDuration as thFormatDuration } from "./orchestrator-theme.ts";
-import type { PlanStep } from "./types.ts";
+import type { PlanStep, StepKind, SessionContext } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
 import { SPINNER_INTERVAL_MS, SPINNER_FRAMES, resetSpinner } from "./spinner-state.ts";
 
 import { debugLog } from "./debug.ts";
-
-let _lastSessionId: string | undefined;
 
 export interface TimelineEntry {
 	t: number;
@@ -88,20 +86,16 @@ export class PlanPanel {
 			if (!saved?.goal || !saved?.steps) return null;
 			const steps = saved.steps.map((s: any) => ({ ...s, active: false }));
 			// Infer kind for steps that lack it (backward compat with pre-#100 plans)
-			// Note: user_action is never inferred here — it's a new concept with no
-			// historical equivalent. Old plans will always get tool_call or agent_call.
-			// user_action steps must be explicitly tagged at creation time.
+
 			for (const step of steps) {
 				if (!step.kind) {
 					const label = step.label.toLowerCase();
 					if (label.includes('delegate') || label.includes('specialist')) {
-						step.kind = 'tool_call';
+						step.kind = 'delegation';
 					} else if (label.includes('analyze') || label.includes('review') ||
 						   label.includes('synthesize') || label.includes('decide') ||
 						   label.includes('verify') || label.includes('research')) {
-						step.kind = 'agent_call';
-					} else {
-						step.kind = 'agent_call'; // default
+						step.kind = 'orchestrator';
 					}
 				}
 			}
@@ -144,7 +138,7 @@ export class PlanPanel {
 					if (sm && !substeps.find(s => !s.completed)) substeps.push({ label: sm[1].trim(), completed: false });
 				}
 			}
-			return { label: truncateLabel(ps.label, 120), completed: ps.completed, startTime: ps.startTime, endTime: ps.endTime, substeps, kind: ps.kind };
+			return { label: truncateLabel(ps.label, 120), completed: ps.completed, startTime: ps.startTime, endTime: ps.endTime, substeps };
 		});
 		const erroredStep = state.steps.find(s => s.errored);
 		return {
@@ -278,7 +272,6 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		};
 		this._setWidget = ctx.ui.setWidget.bind(ctx.ui);
 		this._lastWidgetContent = null;
-		_lastSessionId = this._sessionId;
 		this.startPlanTimer();
 		this._renderWidget();
 		this.savePlanState();
@@ -314,8 +307,8 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
 		const activeIdx = this.planState.steps.findIndex((s) => s.active);
 		if (activeIdx >= 0 && !this.planState.steps[activeIdx].completed) {
-			this.planState.steps[activeIdx].kind = 'delegation';
 			this.planState.steps[activeIdx].active = true;
+			this.planState.steps[activeIdx].kind = 'delegation';
 			if (!this.planState.steps[activeIdx].startTime) this.planState.steps[activeIdx].startTime = Date.now();
 			resetSpinner();
 			this._renderWidget();
@@ -324,8 +317,8 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		}
 		const pendingIdx = this.planState.steps.findIndex((s) => !s.completed && !s.active && !s.errored);
 		if (pendingIdx >= 0) {
-			this.planState.steps[pendingIdx].kind = 'delegation';
 			this.planState.steps[pendingIdx].active = true;
+			this.planState.steps[pendingIdx].kind = 'delegation';
 			this.planState.steps[pendingIdx].startTime = Date.now();
 			resetSpinner();
 			this._renderWidget();
@@ -354,6 +347,12 @@ private trimToBudget(lines: string[], budget: number): string[] {
 			const step = this.planState.steps[idx];
 			if (step.detailLines?.length) (step as any).substepLines = step.detailLines.slice(-3);
 			step.completed = true; step.errored = false; step.active = false; step.detail = undefined; step.detailLines = undefined; step.endTime = Date.now();
+			// Auto-advance: activate the next pending step
+			const nextPending = this.planState.steps.find(s => !s.completed && !s.errored && !s.active);
+			if (nextPending) {
+				nextPending.active = true;
+				if (!nextPending.startTime) nextPending.startTime = Date.now();
+			}
 		}
 		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame("step_complete");
 	}
@@ -427,6 +426,34 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		return `${styledSymbol("icon.plug")} ${truncateLabel(goal, 120)} ${dots} [${completed}/${total}] ${thFormatDuration(elapsed)}`;
 	}
 
+	modifyStep(index: number, label: string, kind?: StepKind): { success: boolean; error?: string } {
+		if (!this.planState || this.planState.sessionId !== this._sessionId) return { success: false, error: 'No active plan' };
+		const idx = index - 1; // 1-based external → 0-based internal
+		if (idx < 0 || idx >= this.planState.steps.length) return { success: false, error: `Index ${index} out of range (1–${this.planState.steps.length})` };
+		this.planState.steps[idx].label = label;
+		if (kind !== undefined) this.planState.steps[idx].kind = kind;
+		this._renderWidget();
+		return { success: true };
+	}
+
+	removeStep(index: number): { success: boolean; error?: string } {
+		if (!this.planState || this.planState.sessionId !== this._sessionId) return { success: false, error: 'No active plan' };
+		const idx = index - 1; // 1-based external → 0-based internal
+		if (idx < 0 || idx >= this.planState.steps.length) return { success: false, error: `Index ${index} out of range (1–${this.planState.steps.length})` };
+		if (this.planState.steps[idx].active) return { success: false, error: 'Cannot remove active step' };
+		this.planState.steps.splice(idx, 1);
+		// After removal, if no step is active, activate the next pending step
+		if (this.planState.steps.length > 0 && !this.planState.steps.some(s => s.active)) {
+			const nextPending = this.planState.steps.find(s => !s.completed && !s.errored);
+			if (nextPending) {
+				nextPending.active = true;
+				if (!nextPending.startTime) nextPending.startTime = Date.now();
+			}
+		}
+		this._renderWidget();
+		return { success: true };
+	}
+
 	dumpTimelineToDisk(): void {
 		if (this._timeline.length === 0) return;
 		const id = this._sessionId ?? "unknown";
@@ -443,18 +470,7 @@ export const _instances = new Map<string, PlanPanel>();
 export function resolvePlanPanel(ctx: unknown): PlanPanel | null {
 	const sessionId = _extractSessionId(ctx);
 	if (sessionId) {
-		const panel = _instances.get(sessionId);
-		if (panel) return panel;
-		// Fallback: try lastSessionId if direct lookup fails
-		if (_lastSessionId && _lastSessionId !== sessionId && _instances.has(_lastSessionId)) {
-			console.warn(`[plan-panel] Session ID mismatch: requested=${sessionId}, fallback=${_lastSessionId}`);
-			return _instances.get(_lastSessionId)!;
-		}
-		return null;
-	}
-	// No sessionId: fallback to lastSessionId
-	if (_lastSessionId && _instances.has(_lastSessionId)) {
-		return _instances.get(_lastSessionId)!;
+		return _instances.get(sessionId) ?? null;
 	}
 	return null;
 }
@@ -515,6 +531,7 @@ export const recordTimelineFrame = (e: string, f?: Record<string, unknown> | nul
 export const getTimeline = (ctx: unknown) => resolvePlanPanel(ctx)?.getTimeline();
 export const getTimelineDiff = (ctx: unknown) => resolvePlanPanel(ctx)?.getTimelineDiff();
 export const hasActivePlan = (ctx: unknown) => resolvePlanPanel(ctx)?.hasActivePlan() ?? false;
+export const getPlanState = (ctx: unknown) => resolvePlanPanel(ctx)?.getPlanState();
 export const pushPlanStep = (l: string, ctx: unknown) => resolvePlanPanel(ctx)?.pushPlanStep(l);
 export const startDelegationStep = (l: string, ctx: unknown) => resolvePlanPanel(ctx)?.startDelegationStep(l);
 export const updatePlanStepDetail = (d: string | string[], ctx: unknown) => resolvePlanPanel(ctx)?.updatePlanStepDetail(d);
@@ -522,3 +539,13 @@ export const addSteps = (s: string[], ctx: unknown) => resolvePlanPanel(ctx)?.ad
 export const retryPlanStep = (ctx: unknown) => resolvePlanPanel(ctx)?.retryPlanStep();
 export const renderPlanStatusText = (ctx: unknown) => resolvePlanPanel(ctx)?.renderPlanStatusText();
 export const dumpTimelineToDisk = (ctx: unknown) => resolvePlanPanel(ctx)?.dumpTimelineToDisk();
+
+export function modifyStep(index: number, label: string, kind?: StepKind, ctx?: unknown) {
+	const panel = resolvePlanPanel(ctx);
+	return panel ? panel.modifyStep(index, label, kind) : { success: false, error: 'No active plan' };
+}
+
+export function removeStep(index: number, ctx?: unknown) {
+	const panel = resolvePlanPanel(ctx);
+	return panel ? panel.removeStep(index) : { success: false, error: 'No active plan' };
+}

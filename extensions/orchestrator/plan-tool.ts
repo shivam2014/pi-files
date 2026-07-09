@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { setupPlanPanel, summarizeGoal, addSteps, resolvePlanPanel } from "./plan-panel.ts";
+import { setupPlanPanel, summarizeGoal, addSteps, resolvePlanPanel, modifyStep, removeStep } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { STEP_KIND_SCHEMA } from "./types.ts";
 import type { SessionContext } from "./types.ts";
@@ -12,6 +12,8 @@ function deriveGoal(goal: string | undefined, steps: string[] | undefined, ctx?:
     if (stepsText) return summarizeGoal(stepsText, ctx) ?? "Untitled plan";
     return "Untitled plan";
 }
+
+export const PLAN_TOOLS = ['plan', 'plan_add_steps', 'advance_plan_step', 'insert_step', 'remove_step', 'modify_step'] as const;
 
 export function registerPlanTool(pi: ExtensionAPI) {
     pi.registerTool({
@@ -60,6 +62,8 @@ export function registerPlanTool(pi: ExtensionAPI) {
     });
     registerPlanAddStepsTool(pi);
     registerInsertStepTool(pi);
+    registerModifyStepTool(pi);
+    registerRemoveStepTool(pi);
 }
 
 export function registerInsertStepTool(pi: ExtensionAPI): void {
@@ -143,6 +147,66 @@ export function registerPlanAddStepsTool(pi: ExtensionAPI) {
             return {
                 content: [{ type: "text", text: `Added ${params.steps.length} step(s) to plan.` }],
                 details: { kind: params.kind },
+            };
+        },
+    });
+}
+
+export function registerModifyStepTool(pi: ExtensionAPI): void {
+    pi.registerTool({
+        name: 'modify_step',
+        label: 'Modify Plan Step',
+        description: 'Modify the label and/or kind of an existing step in the current plan.',
+        parameters: Type.Object({
+            index: Type.Number({ description: '1-based step index to modify' }),
+            label: Type.String({ description: 'New label for the step' }),
+            kind: STEP_KIND_SCHEMA,
+        }),
+        promptGuidelines: [
+            "Modify: modify_step({ index: 2, label: 'New label' })",
+            "Updates the label (and optionally kind) of the step at the given 1-based index",
+            "Output: Returns success or error with reason",
+        ],
+        async execute(toolCallId, params, signal, onUpdate, ctx) {
+            const result = modifyStep(params.index, params.label, params.kind, ctx as SessionContext);
+            if (result.success) {
+                return {
+                    content: [{ type: 'text', text: `Step ${params.index} modified: '${params.label}'` }],
+                    details: { index: params.index, label: params.label, kind: params.kind },
+                };
+            }
+            return {
+                content: [{ type: 'text', text: result.error ?? 'Failed to modify step' }],
+                details: { error: result.error },
+            };
+        },
+    });
+}
+
+export function registerRemoveStepTool(pi: ExtensionAPI): void {
+    pi.registerTool({
+        name: 'remove_step',
+        label: 'Remove Plan Step',
+        description: 'Remove a pending or completed step from the current plan. Cannot remove the active step.',
+        parameters: Type.Object({
+            index: Type.Number({ description: '1-based step index to remove' }),
+        }),
+        promptGuidelines: [
+            "Remove: remove_step({ index: 3 })",
+            "Removes the step at the given 1-based index (cannot remove active step)",
+            "Output: Returns success or error with reason",
+        ],
+        async execute(toolCallId, params, signal, onUpdate, ctx) {
+            const result = removeStep(params.index, ctx as SessionContext);
+            if (result.success) {
+                return {
+                    content: [{ type: 'text', text: `Step ${params.index} removed.` }],
+                    details: { index: params.index },
+                };
+            }
+            return {
+                content: [{ type: 'text', text: result.error ?? 'Failed to remove step' }],
+                details: { error: result.error },
             };
         },
     });

@@ -42,7 +42,6 @@ export interface Step {
 	startTime?: number;
 	endTime?: number;
 	overflowCount?: number;
-	kind?: StepKind;
 }
 
 /** Activity feed state for subagent tool blocks */
@@ -89,7 +88,7 @@ export type StepKind = 'delegation' | 'orchestrator';
 export const STEP_KIND_SCHEMA = Type.Optional(Type.Union([
 	Type.Literal('delegation'),
 	Type.Literal('orchestrator'),
-], { description: 'Step classification: delegation (subagent work), orchestrator (orchestrator work)' }));
+], { description: 'Step classification: delegation (subagent-owned, auto-advances), orchestrator (self-owned, call advance_plan_step)' }));
 
 /** A step in the plan panel header */
 export interface PlanStep {

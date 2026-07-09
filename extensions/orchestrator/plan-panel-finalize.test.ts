@@ -62,16 +62,17 @@ describe("finalizePlanStep matches completePlanStep", () => {
 		const stateAfterFinalize = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(stateAfterFinalize).not.toBeNull();
 		expect(stateAfterFinalize.steps[0].state).toBe("completed");
-		expect(stateAfterFinalize.steps[1].state).toBe("pending");
+		expect(stateAfterFinalize.steps[1].state).toBe("active");
 
-		if (hasActivePlan(mockCtx())) setupPlanPanel("Test goal", ["Step A", "Step B"], mockCtx());
+		if (hasActivePlan(mockCtx())) clearPlanPanel(mockCtx());
+		setupPlanPanel("Test goal", ["Step A", "Step B"], mockCtx());
 
 		completePlanStep(mockCtx());
 
 		const stateAfterComplete = inspectPlanState(mockCtx()) as unknown as PlanState;
 		expect(stateAfterComplete).not.toBeNull();
 		expect(stateAfterComplete.steps[0].state).toBe("completed");
-		expect(stateAfterComplete.steps[1].state).toBe("pending");
+		expect(stateAfterComplete.steps[1].state).toBe("active");
 
 		expect(stateAfterFinalize.completedCount).toBe(stateAfterComplete.completedCount);
 		expect(stateAfterFinalize.totalCount).toBe(stateAfterComplete.totalCount);

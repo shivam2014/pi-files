@@ -1,5 +1,5 @@
 import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
-import { join, isAbsolute, resolve } from 'path';
+import { join } from 'path';
 import { getDefaultWriterScope, getReadOnlyDefaultScope } from './scope-policy.ts';
 
 /** ScopeGateMode type */
@@ -86,11 +86,6 @@ export function parseScopeFile(scopePath: string): ResolvedScope | null {
   }
 }
 
-export function normalizeScopePath(filePath: string, cwd: string): string {
-  const absolute = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
-  return absolute;
-}
-
 export class ScopeManager {
   constructor(private cwd: string) {}
 
@@ -112,13 +107,6 @@ export class ScopeManager {
 
   writeScope(manifest: ScopeManifest): void {
     const scope = this.normalize(manifest);
-    // Normalize file paths to canonical absolute form
-    const normalizedManifest: ScopeManifest = {
-      ...manifest,
-      filesToModify: (manifest.filesToModify ?? []).map(p => normalizeScopePath(p, this.cwd)),
-      filesToCreate: (manifest.filesToCreate ?? []).map(p => normalizeScopePath(p, this.cwd)),
-    };
-    const normalizedScope = this.normalize(normalizedManifest);
     const dir = join(this.cwd, '.pi');
     mkdirSync(dir, { recursive: true });
     const contract: ScopeFileContract = {
