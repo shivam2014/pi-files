@@ -6,7 +6,7 @@ import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic
 import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills } from "./specialists.ts";
 import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
 import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
-import { hasActivePlan, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
+import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { hidePeek, clearViewerState } from "./peek-overlay.ts";
 import { Scope, ScopeManager } from "./scope-manager.ts";
@@ -134,12 +134,14 @@ export class DelegatePipeline {
 		const specName = specialist.name.charAt(0).toUpperCase() + specialist.name.slice(1);
 		const stepLabel = `${specName}: ${params.task}`;
 
+		// Auto-create minimal plan if none exists
 		if (!hasActivePlan(ctx)) {
-			throw new Error(
-				"No active plan. Call planSteps({ goal: '...', steps: [...] }) first before delegating work. " +
-				"delegate() requires an active plan to track progress."
-			);
+			const autoGoal = `delegate to ${specialist.name}: ${params.task}`;
+			const autoSteps = [stepLabel];
+			setupPlanPanel(autoGoal, autoSteps, ctx);
+			debugLog('[delegate-pipeline] auto-created plan:', autoGoal);
 		}
+
 		startDelegationStep(stepLabel, ctx);
 
 		onUpdate?.({

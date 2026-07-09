@@ -116,7 +116,7 @@ Examples:
 
 3. THIRD: Synthesize results.
 
-PREREQUISITE: You MUST call plan() before delegate(). delegate() will reject if no active plan exists.
+delegate() auto-creates a minimal plan if none exists, but calling plan() first gives better structure and multi-step visibility.
 
 {{FUSION}}
 

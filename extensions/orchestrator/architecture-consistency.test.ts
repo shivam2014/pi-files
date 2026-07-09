@@ -47,22 +47,22 @@ describe("DELEGATION_INSTRUCTIONS_TEMPLATE vs executeDelegate", () => {
 			fusionEnabled: false,
 		});
 
-		// The prompt MUST tell the LLM to call plan() before delegate()
-		expect(systemPrompt).toContain("MUST call plan() before delegate()");
+		// The prompt should advise calling plan() before delegate()
+		expect(systemPrompt).toContain("plan() first");
 
-		// The prompt must NOT suggest auto-creating plans (old wrong behavior)
-		expect(systemPrompt).not.toContain("auto-create");
+		// The prompt may mention auto-creation (now supported)
+		// No assertion on auto-create presence/absence
 	});
 
 	it("delegate-pipeline.ts enforces active plan check", () => {
 		const sourcePath = resolve(__dirname, "delegate-pipeline.ts");
 		const source = readFileSync(sourcePath, "utf-8");
 
-		// The guard must check hasActivePlan(ctx) before delegating
+		// The guard checks hasActivePlan(ctx) before delegating, with auto-create fallback
 		expect(source).toContain("hasActivePlan(");
 
-		// The error message when no active plan exists
-		expect(source).toContain("No active plan");
+		// Auto-create plan if none exists (replaces old 'No active plan' rejection)
+		expect(source).toContain("auto-created plan");
 
 		// Scope validation - coder without scope must be rejected
 		expect(source).toContain("Scope required for coder");

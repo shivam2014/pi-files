@@ -125,12 +125,14 @@ describe("executeDelegate", () => {
       expect(r.details.turns).toBe(3);
     });
 
-    it("returns error when no active plan", async () => {
+    it("auto-creates plan and proceeds when no active plan", async () => {
       mockHasActivePlan.mockReturnValue(false);
       const r = await executeDelegate({ specialist: "test", task: "plan" }, createMockCtx(), vi.fn());
-      expect(r.content[0].text).toContain("No active plan");
-      expect(mockSetupPlanPanel).not.toHaveBeenCalled();
-      expect(mockStartDelegationStep).not.toHaveBeenCalled();
+      expect(mockSetupPlanPanel).toHaveBeenCalledOnce();
+      const [goal, steps] = mockSetupPlanPanel.mock.calls[0];
+      expect(goal).toContain("test");
+      expect(steps).toHaveLength(1);
+      expect(r.details.status).toBe("done");
     });
 
     it("appends to existing plan", async () => {

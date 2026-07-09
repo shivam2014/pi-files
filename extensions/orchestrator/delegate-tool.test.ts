@@ -244,4 +244,49 @@ describe("delegate scope resolution", () => {
 		// suggestedSkills arg should be resolved (mock returns [] for no override)
 		expect(last[8]).toBeDefined();
 	});
+
+	describe("auto-create plan when no active plan", () => {
+		it("auto-creates plan when hasActivePlan returns false", async () => {
+			mockHasActivePlan.mockReturnValue(false);
+			vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
+
+			await execute({ specialist: "writer", task: "write docs" });
+
+			expect(mockSetupPlanPanel).toHaveBeenCalledOnce();
+			const [goal, steps] = mockSetupPlanPanel.mock.calls[0];
+			expect(goal).toBe("delegate to writer: write docs");
+			expect(steps).toEqual(["Writer: write docs"]);
+		});
+
+		it("does NOT auto-create when hasActivePlan returns true", async () => {
+			mockHasActivePlan.mockReturnValue(true);
+			vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
+
+			await execute({ specialist: "writer", task: "write docs" });
+
+			expect(mockSetupPlanPanel).not.toHaveBeenCalled();
+		});
+
+		it("auto-create works for different specialists", async () => {
+			mockHasActivePlan.mockReturnValue(false);
+			vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
+
+			await execute({ specialist: "scout", task: "find files" });
+
+			expect(mockSetupPlanPanel).toHaveBeenCalledOnce();
+			const [goal] = mockSetupPlanPanel.mock.calls[0];
+			expect(goal).toBe("delegate to scout: find files");
+		});
+
+		it("delegation proceeds after auto-create", async () => {
+			mockHasActivePlan.mockReturnValue(false);
+			vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
+
+			await execute({ specialist: "writer", task: "write docs" });
+
+			expect(mockSetupPlanPanel).toHaveBeenCalledOnce();
+			expect(mockStartDelegationStep).toHaveBeenCalled();
+			expect(runSubagent).toHaveBeenCalled();
+		});
+	});
 });
