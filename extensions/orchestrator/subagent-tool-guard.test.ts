@@ -15,6 +15,7 @@ vi.mock("./subagent-runner.ts", () => ({
 
 vi.mock("./bash-interceptor.ts", () => ({
 	getBashToolReplacement: vi.fn(),
+	isWriteModifyingCommand: vi.fn(),
 }));
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
@@ -32,7 +33,7 @@ vi.mock("node:path", () => ({
 }));
 
 import { handleSubagentToolCall } from "./subagent-tool-guard";
-import { getBashToolReplacement } from "./bash-interceptor";
+import { getBashToolReplacement, isWriteModifyingCommand } from "./bash-interceptor";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 // Mock ScopeGuard — vi.fn() acts as constructor, mockImplementation replaces per-test
@@ -400,6 +401,55 @@ describe("handleSubagentToolCall", () => {
 				toolName: "fusion",
 				input: { prompt: "analyze" },
 			});
+			expect(result).toBeUndefined();
+		});
+	});
+
+	describe("readOnly bash blocking", () => {
+		beforeEach(() => {
+			mockState.batchLoad = 0;
+			vi.mocked(getBashToolReplacement).mockReturnValue(null);
+			vi.mocked(isToolCallEventType).mockReturnValue(true);
+			vi.mocked(isWriteModifyingCommand).mockReturnValue(false);
+		});
+
+		it("blocks write-modifying bash when readOnly is true", () => {
+			vi.mocked(isWriteModifyingCommand).mockReturnValue(true);
+			const result = handleSubagentToolCall(
+				{ toolName: "bash", input: { command: "rm file.txt" } },
+				true,
+				{ readOnly: true }
+			);
+			expect(result).toEqual({
+				block: true,
+				reason: expect.stringContaining("Bash write command blocked"),
+			});
+		});
+
+		it("allows read-only bash when readOnly is true", () => {
+			const result = handleSubagentToolCall(
+				{ toolName: "bash", input: { command: "curl localhost:19530" } },
+				true,
+				{ readOnly: true }
+			);
+			expect(result).toBeUndefined();
+		});
+
+		it("allows write-modifying bash when readOnly is false", () => {
+			const result = handleSubagentToolCall(
+				{ toolName: "bash", input: { command: "rm file.txt" } },
+				true,
+				{ readOnly: false }
+			);
+			expect(result).toBeUndefined();
+		});
+
+		it("allows bash when readOnly is undefined (default)", () => {
+			const result = handleSubagentToolCall(
+				{ toolName: "bash", input: { command: "rm file.txt" } },
+				true,
+				{}
+			);
 			expect(result).toBeUndefined();
 		});
 	});

@@ -168,6 +168,51 @@ Scenarios that trigger fail-closed:
 - Wrong version number or schema name
 - Parse error
 
+## Bash Write-Command Blocking
+
+Read-only specialists with bash access (currently: **reviewer**) have tool-level enforcement against write-modifying bash commands.
+
+### How it works
+
+1. `subagent-runner.ts` sets `PI_SPECIALIST_NAME` env var when spawning a subagent
+2. `index.ts` reads it and passes `readOnly: true` for read-only specialists
+3. `subagent-tool-guard.ts` blocks bash write commands when `readOnly` is set:
+   - Non-git write commands: `rm`, `mv`, `cp`, `chmod`, `tee`, `echo > file`, `sed -i`, etc.
+   - Git write commands: `commit`, `push`, `init`, `clone`, `add`, `rm`, `mv`, etc.
+   - Unknown git subcommands: fail-closed for readOnly
+
+### What's blocked
+
+| Command type | Example | Blocked? |
+|-------------|---------|----------|
+| File deletion | `rm file.txt` | ✅ Yes |
+| File move/copy | `mv a b`, `cp a b` | ✅ Yes |
+| File permissions | `chmod 777 file` | ✅ Yes |
+| Output redirect | `echo x > file` | ✅ Yes |
+| In-place edit | `sed -i 's/x/y/' file` | ✅ Yes |
+| Package install | `npm install`, `pip install` | ✅ Yes |
+| Git write | `git commit`, `git push` | ✅ Yes |
+| Git read | `git log`, `git diff` | ❌ Allowed |
+| Diagnostic | `curl localhost:19530` | ❌ Allowed |
+| Port check | `lsof -i :19530` | ❌ Allowed |
+
+### Override bypass
+
+The `override: true` flag on bash calls bypasses bash-to-SDK interception but does **NOT** bypass readOnly blocking. This is intentional — readOnly is a security boundary, not a convenience feature.
+
+### Architecture alignment
+
+This implements the core principle from this document: *"Tool-level enforcement, not prompt-level."* The prompt instruction ("Do NOT use bash to modify files") is defense-in-depth; the tool guard is the actual enforcement.
+
+### Source files
+
+| File | Role |
+|------|------|
+| `/bash-interceptor.ts` | `isWriteModifyingCommand()` — pure function classifying bash commands |
+| `/subagent-tool-guard.ts` | `handleSubagentToolCall()` — enforces readOnly blocking |
+| `/index.ts` | `isReadOnlySpecialist()` — determines readOnly from env var |
+| `/subagent-runner.ts` | Sets `PI_SPECIALIST_NAME` env var |
+
 ## Concurrency Caveat
 
 Scope is stored in a single `.pi/scope.json` file per cwd. When multiple delegations run concurrently, the last writer wins. This can cause scope conflicts — a known limitation.

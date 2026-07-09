@@ -331,6 +331,7 @@ export class SubagentRunner {
 			// Load extensions for subagent, flag context so orchestrator skips re-registration
 			_batchLoadSubagent++;
 			process.env[SUBAGENT_ENV_KEY] = "1";
+			process.env["PI_SPECIALIST_NAME"] = specialist.name;
 			let loader: DefaultResourceLoader | undefined;
 			try {
 				loader = new DefaultResourceLoader({

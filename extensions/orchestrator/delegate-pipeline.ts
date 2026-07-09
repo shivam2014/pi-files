@@ -9,13 +9,14 @@ import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
 import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { hidePeek, clearViewerState } from "./peek-overlay.ts";
-import { Scope, ScopeManager } from "./scope-manager.ts";
+import { Scope, ScopeManager, createDelegationScope, clearDelegationScope } from "./scope-manager.ts";
 import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
 import { formatMetricsLine } from "./types.ts";
 import { captureDiagnostic, isDiagnosticsEnabled, persistDiagnostic, cleanupOldDiagnostics } from "./subagent-diagnostics.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import os from "os";
 import { statusIcon, styledSymbol, getTheme } from "./orchestrator-theme.ts";
+import { getSessionMode } from "./orchestrator-config";
 
 /** Result type returned by executeDelegate */
 export interface ExecuteDelegateResult {
@@ -39,10 +40,19 @@ export class DelegatePipeline {
 	 * @returns Result with content and details
 	 */
 	async run(
-		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal },
+		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal; parallel?: boolean },
 		ctx: DelegateControllerContext,
 		onUpdate: (update: any) => void,
 	): Promise<ExecuteDelegateResult> {
+		// ── Delegation mode guard ──
+		const mode = getSessionMode(ctx);
+		if (mode === "sequential" && params.parallel) {
+			return {
+				content: [{ type: "text", text: "Parallel delegation blocked in sequential mode. Use /delegate-mode parallel to enable." }],
+				details: { error: "parallel_requested_but_mode_sequential" },
+			};
+		}
+
 		// ── Validation ──
 		if (!params.specialist || !params.task) {
 			throw new Error("Both 'specialist' and 'task' are required. Example: delegate({ specialist: 'coder', task: 'fix auth middleware' })");
@@ -118,6 +128,7 @@ export class DelegatePipeline {
 		}
 
 		// ── Apply scope (side-effectful: gate check + write) ──
+		let delegationId: string | null = null;
 		if (scopeToUse !== null) {
 			const gateResult = resolve(params.task, scopeToUse);
 			if (gateResult === "ask" && !isReadOnly) {
@@ -126,6 +137,10 @@ export class DelegatePipeline {
 					`Task: ${params.task}\n\n` +
 					`Provide a clearer task description or explicit scope (filesToModify, filesToCreate), then retry.`
 				);
+			}
+			// Parallel mode: create per-delegation scope for isolation
+			if (mode === "parallel") {
+				delegationId = createDelegationScope(scopeToUse);
 			}
 			this.deps.scopeManager.writeScope(scopeToUse);
 		}
@@ -300,6 +315,10 @@ export class DelegatePipeline {
 			clearViewerState();
 			// Clear scope after delegation completes
 			this.deps.scopeManager.clearScope();
+			// Clear per-delegation scope if parallel mode
+			if (delegationId) {
+				clearDelegationScope(delegationId);
+			}
 			// Dynamic status: clear on completion
 			try {
 				if (orchestratorUi) {

@@ -1,5 +1,7 @@
-import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
-import { join, isAbsolute, resolve } from 'path';
+import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { join, dirname, isAbsolute, resolve } from 'path';
+import { randomUUID } from 'node:crypto';
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { getDefaultWriterScope, getReadOnlyDefaultScope } from './scope-policy.ts';
 
 /**
@@ -201,4 +203,74 @@ export class ScopeManager {
     return null; // other specialists require explicit scope
   }
 
+}
+
+// ─── Per-delegation scope (parallel mode isolation) ───────────
+
+/** Per-delegation scope path */
+function _delegationScopePath(delegationId: string): string {
+  const agentDir = getAgentDir();
+  return join(agentDir, 'scopes', `${delegationId}.json`);
+}
+
+/** Create a new delegation scope (returns delegationId) */
+export function createDelegationScope(scope: Scope): string {
+  const delegationId = randomUUID();
+  const scopePath = _delegationScopePath(delegationId);
+  mkdirSync(dirname(scopePath), { recursive: true });
+  writeFileSync(scopePath, JSON.stringify(scope, null, 2));
+  return delegationId;
+}
+
+/** Read a delegation scope */
+export function readDelegationScope(delegationId: string): Scope | null {
+  const scopePath = _delegationScopePath(delegationId);
+  if (!existsSync(scopePath)) return null;
+  return JSON.parse(readFileSync(scopePath, 'utf-8'));
+}
+
+/** Clear a delegation scope */
+export function clearDelegationScope(delegationId: string): void {
+  const scopePath = _delegationScopePath(delegationId);
+  if (existsSync(scopePath)) unlinkSync(scopePath);
+}
+
+// Manifest for tracking active delegations
+export interface DelegationManifest {
+  active: string[];
+  completed: string[];
+}
+
+function _manifestPath(): string {
+  return join(getAgentDir(), 'scopes', 'manifest.json');
+}
+
+export function getManifest(): DelegationManifest {
+  const path = _manifestPath();
+  if (!existsSync(path)) return { active: [], completed: [] };
+  return JSON.parse(readFileSync(path, 'utf-8'));
+}
+
+export function updateManifest(active: string[], completed: string[]): void {
+  const path = _manifestPath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ active, completed }, null, 2));
+}
+
+/** Cleanup stale scope files (>24h old) */
+export function cleanupStaleScopes(): void {
+  const scopesDir = join(getAgentDir(), 'scopes');
+  if (!existsSync(scopesDir)) return;
+
+  const now = Date.now();
+  const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+
+  readdirSync(scopesDir).forEach(file => {
+    if (file === 'manifest.json') return;
+    const filePath = join(scopesDir, file);
+    const stat = statSync(filePath);
+    if (now - stat.mtimeMs > maxAge) {
+      unlinkSync(filePath);
+    }
+  });
 }

@@ -6,6 +6,7 @@ import {
 	firstCommandName,
 	hasFileWriteIndicator,
 	isMutatingEditor,
+	isWriteModifyingCommand,
 	getBashToolReplacement,
 } from "./bash-interceptor";
 
@@ -219,5 +220,17 @@ describe("getBashToolReplacement", () => {
 
 	it("returns null for unknown commands", () => {
 		expect(getBashToolReplacement("docker build .")).toBeNull();
+	});
+});
+
+// ── isWriteModifyingCommand ──
+
+describe("isWriteModifyingCommand", () => {
+	it("does not false-positive on comparison operators", () => {
+		expect(isWriteModifyingCommand("echo $((a > b))")).toBe(false);
+	});
+
+	it("does not false-positive on stderr redirect 2>&1", () => {
+		expect(isWriteModifyingCommand("ls file 2>&1")).toBe(false);
 	});
 });

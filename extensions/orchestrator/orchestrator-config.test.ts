@@ -167,6 +167,30 @@ describe("clearSessionMode", () => {
 	});
 });
 
+// ─── undefined session ID phantom session ─────────────────
+
+describe("BUG: undefined session ID phantom session", () => {
+	beforeEach(() => {
+		_sessionModes.clear();
+	});
+
+	it("multiple sessions with broken ctx share phantom 'undefined' session", () => {
+		// Session with valid ctx
+		setSessionMode({ sessionManager: { sessionId: "valid-session" } }, "parallel");
+
+		// Session with broken ctx (no sessionManager)
+		setSessionMode({}, "sequential");
+
+		// Both should be independent, but broken ctx gets key "undefined"
+		expect(getSessionMode({ sessionManager: { sessionId: "valid-session" } })).toBe("parallel");
+		expect(getSessionMode({})).toBe("sequential"); // This should fail if bug exists
+
+		// The map should only have the valid session stored
+		expect(_sessionModes.size).toBe(1);
+		expect(_sessionModes.has("valid-session")).toBe(true);
+	});
+});
+
 // ─── DEFAULTS ──────────────────────────────────────────────
 
 describe("DEFAULTS", () => {

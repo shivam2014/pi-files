@@ -3,7 +3,7 @@
  * Depends on BashInterceptor, ScopeGuard, and orchestrator state.
  */
 
-import { getBashToolReplacement } from "./bash-interceptor.ts";
+import { getBashToolReplacement, isWriteModifyingCommand } from "./bash-interceptor.ts";
 import { ScopeGuard } from "./scope-guard.ts";
 import { _batchLoadSubagent, isPlanParsed } from "./subagent-runner.ts";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
@@ -29,7 +29,7 @@ function checkBashInterception(
 	return undefined;
 }
 
-export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true, ctx?: { cwd?: string }) {
+export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true, ctx?: { cwd?: string; readOnly?: boolean }) {
 	traceToolCallEntry('handleSubagentToolCall', event, ctx);
 	if (!fusionEnabled && event.toolName === 'fusion') {
 		return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
@@ -67,10 +67,13 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					'clean', 'merge', 'rebase', 'cherry-pick'
 				]);
 
-				// Git commands to skip entirely (no path extraction needed)
-				const GIT_SKIP_PATH_CHECK = new Set([
-					'commit', 'push', 'fetch', 'pull', 'remote',
-					'branch', 'tag', 'stash', 'init', 'clone'
+				// Git subcommands that are truly read-only (no side effects)
+				const GIT_SKIP_SAFE = new Set([
+					'fetch', 'pull', 'remote', 'branch', 'tag', 'stash', 'log', 'status'
+				]);
+				// Git subcommands that mutate state but don't take file args
+				const GIT_SKIP_WRITE = new Set([
+					'commit', 'push', 'init', 'clone'
 				]);
 
 				// Check if this is a git command
@@ -79,11 +82,21 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					const subcmd = gitMatch[1];
 
 					// Skip path check for commands that don't take file args
-					if (GIT_SKIP_PATH_CHECK.has(subcmd)) {
-						// Allow without path check
+					if (GIT_SKIP_SAFE.has(subcmd)) {
+						// Truly read-only — allow
+					} else if (GIT_SKIP_WRITE.has(subcmd)) {
+						// Mutating but no file args — block in readOnly mode
+						if (ctx?.readOnly) {
+							return { block: true, reason: `⛔ Git write command blocked for read-only specialist: git ${subcmd}` };
+						}
+						// Allow for non-readOnly (coder)
 					} else if (GIT_SAFE_COMMANDS.has(subcmd)) {
 						// Safe read-only commands - allow without path check
 					} else if (GIT_WRITE_COMMANDS.has(subcmd)) {
+						// Read-only specialist: block git write commands
+						if (ctx?.readOnly) {
+							return { block: true, reason: `⛔ Git write command blocked for read-only specialist. Command: git ${subcmd}` };
+						}
 						// Write commands - extract paths from positional args only
 						const args = cmd.split(/\s+/).slice(2);
 						const paths = args.filter((arg: string) => !arg.startsWith('-'));
@@ -96,9 +109,16 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 							}
 						}
 					} else {
-						// Unknown git subcommand - fail-open for git
+						// Unknown git subcommand — fail-closed for readOnly, fail-open for others
+						if (ctx?.readOnly) {
+							return { block: true, reason: `⛔ Unknown git command blocked for read-only specialist: git ${subcmd}` };
+						}
 					}
 				} else {
+					// Read-only specialist: block write-modifying non-git bash commands
+					if (ctx?.readOnly && isWriteModifyingCommand(input.command)) {
+						return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
+					}
 					// Non-git bash command - use file extension regex
 					const pathMatches = input.command.match(/(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g);
 					if (pathMatches) filePaths.push(...pathMatches);
@@ -134,6 +154,15 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 		if (interception) { traceDecision('handleSubagentToolCall/subagent', event, interception); return interception; }
 		traceDecision('handleSubagentToolCall/subagent', event, { block: false });
 		return;
+	}
+	// Read-only bash enforcement (orchestrator context)
+	if (event.toolName === 'bash' && ctx?.readOnly) {
+		const command = isToolCallEventType('bash', event) ? event.input.command : event.input?.command;
+		if (command && isWriteModifyingCommand(command)) {
+			const blockResult = { block: true, reason: `⛔ Bash write command blocked for read-only specialist.\nCommand: ${command}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
+			traceDecision('handleSubagentToolCall', event, blockResult);
+			return blockResult;
+		}
 	}
 	const interception = checkBashInterception(event, event.input?.override === true);
 	if (interception) { traceDecision('handleSubagentToolCall', event, interception); return interception; }

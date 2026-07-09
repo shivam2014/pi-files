@@ -8,6 +8,7 @@ import { renderActivityFeed } from "./activity-feed.ts";
 import { SPINNER_INTERVAL_MS, SPINNER_FRAMES, resetSpinner } from "./spinner-state.ts";
 
 import { debugLog } from "./debug.ts";
+import { getSessionMode } from "./orchestrator-config";
 
 export interface TimelineEntry {
 	t: number;
@@ -267,12 +268,15 @@ private trimToBudget(lines: string[], budget: number): string[] {
 
 	setupPlanPanel(goal: string, stepLabels: string[], ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 		this._cleared = false;
-		const sameGoal = this.planState?.goal === goal;
+		const mode = getSessionMode(ctx);
+		const modePrefix = mode === "parallel" ? "⚡" : "🔄";
+		const goalWithMode = `${modePrefix} ${goal}`;
+		const sameGoal = this.planState?.goal === goalWithMode;
 		if (!sameGoal) { this._sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8); this._activeDelegations = 0; }
 		const oldSteps = sameGoal ? (this.planState?.steps || []) : [];
 		const prevStart = this.planState?.startTime;
 		this.planState = {
-			goal, sessionId: this._sessionId!,
+			goal: goalWithMode, sessionId: this._sessionId!,
 			steps: stepLabels.map((label, i) => {
 				const old = oldSteps.find(s => s.label === label);
 				const wasCompleted = old?.completed === true;

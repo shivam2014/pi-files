@@ -24,6 +24,57 @@ export function hasFileWriteIndicator(text: string): boolean {
 		/\b(writeFile|appendFile)(Sync)?\s*\(/i.test(text);
 }
 
+/**
+ * Check if a bash command performs file writes/mutations.
+ * Used by tool guard to block write-modifying bash for read-only specialists.
+ */
+export function isWriteModifyingCommand(command: string | undefined): boolean {
+	if (!command) return false;
+	const first = firstCommandName(command);
+	if (!first) return false;
+	const { name } = first;
+
+	// Known write commands
+	const WRITE_COMMANDS = new Set([
+		// Filesystem mutations
+		'rm', 'rmdir', 'unlink',
+		'mv', 'cp', 'ln',
+		'chmod', 'chown', 'chgrp',
+		'tee', 'install', 'dd',
+		'mktemp', 'truncate',
+		'zip', 'tar', 'gzip', 'gunzip', 'bzip2',
+		'touch', 'mkdir', 'mkfifo', 'mknod',
+		'patch', 'xargs',
+		// Package managers / system
+		'apt', 'apt-get', 'brew', 'pip', 'npm', 'npx', 'yarn',
+		'pip3', 'pipx',
+		'sudo', 'kill', 'killall', 'pkill', 'reboot', 'shutdown',
+		'mount', 'umount', 'fdisk', 'mkfs',
+		'crontab', 'systemctl',
+		'docker', 'podman', 'kubectl',
+		'ssh', 'scp', 'rsync',
+		// Editors with write potential
+		'sed', 'awk', 'perl',
+		// Scripting languages
+		'python', 'python3', 'node', 'ruby', 'perl',
+	]);
+
+	if (WRITE_COMMANDS.has(name)) return true;
+
+	// Strip $((...)) arithmetic expansions — > inside those is comparison, not redirect
+	const stripped = command.replace(/\$\([^)]*\)\)/g, '');
+
+	// Check for file write indicators in the cleaned command text
+	if (hasFileWriteIndicator(stripped)) return true;
+
+	// Output redirection: > file, >> file
+	if (/[\w'")\]]\s*>{1,2}\s*\S/.test(stripped) && !/\s-g[tlek]|-[le]q|\s[<>]=?\s|2>&\d/.test(stripped)) {
+		return true;
+	}
+
+	return false;
+}
+
 // DESIGN DECISION: We intentionally do NOT intercept sed/awk/perl file modifications
 // beyond the -i flag. Shell command parsing via regex is inherently brittle —
 // quotes, heredocs, subshells, and pipes create false positives/negatives.

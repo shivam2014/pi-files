@@ -30,6 +30,7 @@ import { PLAN_TOOLS } from "./plan-tool.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
 import { SPECIALISTS, updateToolDocs } from "./specialists.ts";
 import { join } from "node:path";
+import { getSessionMode } from "./orchestrator-config";
 
 export { getBashToolReplacement } from "./bash-interceptor.ts";
 
@@ -37,8 +38,20 @@ function resolveCwd(ctx?: { cwd?: string }): string {
 	return ctx?.cwd ?? process.cwd();
 }
 
+/** Specialist names that have bash but no edit/write — need tool-level readOnly enforcement */
+const READ_ONLY_WITH_BASH = new Set(["reviewer"]);
+
 export default function (pi: ExtensionAPI) {
 	// ── Guard: Skip full orchestrator registration when loading for a subagent session ──
+	/**
+	 * Check if current specialist is read-only with bash access.
+	 * These specialists have bash but no edit/write — need tool-level enforcement.
+	 */
+	function isReadOnlySpecialist(): boolean {
+		const name = process.env["PI_SPECIALIST_NAME"];
+		return !!name && READ_ONLY_WITH_BASH.has(name);
+	}
+
 	if (_batchLoadSubagent > 0 || isSubagentContext()) {
 		debugLog("SKIPPING orchestrator registration (subagent context)", {
 			batchLoad: _batchLoadSubagent,
@@ -48,7 +61,7 @@ export default function (pi: ExtensionAPI) {
 			traceToolCallEntry('index:subagent-tool_call', event, ctx);
 			const cwd = resolveCwd(ctx);
 			const fusionConfig = loadFusionConfig(cwd);
-			const result = handleSubagentToolCall(event, fusionConfig.enabled, ctx);
+			const result = handleSubagentToolCall(event, fusionConfig.enabled, { ...ctx, readOnly: isReadOnlySpecialist() });
 			traceMark('index:subagent-tool_call.result', { tool: event.toolName, input_path: (event.input as any)?.path, result });
 			return result;
 		});
@@ -118,6 +131,13 @@ export default function (pi: ExtensionAPI) {
 	// ── Safety net: Block non-delegation tool calls ──
 	pi.on("tool_call", async (event, ctx) => {
 		traceToolCallEntry('index:orchestrator-tool_call', event, ctx);
+
+		// Delegation mode safety net (primary blocking in delegate-pipeline)
+		if (event.toolName === "delegate") {
+			const currentMode = getSessionMode(ctx);
+			debugLog("[orchestrator] delegate call in mode:", currentMode);
+		}
+
 		// Subagent: enforce planSteps-first before any other tool
 		if (_batchLoadSubagent > 0 && !isPlanParsed()) {
 			if (event.toolName !== "planSteps") {
