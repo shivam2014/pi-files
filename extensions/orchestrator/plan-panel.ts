@@ -9,6 +9,8 @@ import { SPINNER_INTERVAL_MS, SPINNER_FRAMES, resetSpinner } from "./spinner-sta
 
 import { debugLog } from "./debug.ts";
 
+let _lastSessionId: string | undefined;
+
 export interface TimelineEntry {
 	t: number;
 	event: string;
@@ -118,6 +120,9 @@ export class PlanPanel {
 	private toFeedState(state: { goal: string; steps: PlanStep[]; startTime: number }): ActivityFeedState {
 		const steps: Step[] = state.steps.map(ps => {
 			const substeps: Substep[] = [];
+			if (ps.delegationLabel) {
+				substeps.push({ label: ps.delegationLabel, completed: ps.completed });
+			}
 			if (ps.completed && ps.detailLines?.length) {
 				for (const line of ps.detailLines) {
 					const m = line.match(/^    ✓ Report: (.+)$/i);
@@ -142,7 +147,7 @@ export class PlanPanel {
 					if (sm && !substeps.find(s => !s.completed)) substeps.push({ label: sm[1].trim(), completed: false });
 				}
 			}
-			return { label: truncateLabel(ps.label, 120), completed: ps.completed, startTime: ps.startTime, endTime: ps.endTime, substeps };
+			return { label: truncateLabel(ps.label, 120), completed: ps.completed, startTime: ps.startTime, endTime: ps.endTime, substeps, kind: ps.kind };
 		});
 		const erroredStep = state.steps.find(s => s.errored);
 		return {
@@ -276,6 +281,7 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		};
 		this._setWidget = ctx.ui.setWidget.bind(ctx.ui);
 		this._lastWidgetContent = null;
+		_lastSessionId = this._sessionId;
 		this.startPlanTimer();
 		this._renderWidget();
 		this.savePlanState();
@@ -311,7 +317,7 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
 		const activeIdx = this.planState.steps.findIndex((s) => s.active);
 		if (activeIdx >= 0 && !this.planState.steps[activeIdx].completed) {
-			this.planState.steps[activeIdx].label = label;
+			this.planState.steps[activeIdx].delegationLabel = label;
 			this.planState.steps[activeIdx].active = true;
 			if (!this.planState.steps[activeIdx].startTime) this.planState.steps[activeIdx].startTime = Date.now();
 			resetSpinner();
@@ -321,7 +327,7 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		}
 		const pendingIdx = this.planState.steps.findIndex((s) => !s.completed && !s.active && !s.errored);
 		if (pendingIdx >= 0) {
-			this.planState.steps[pendingIdx].label = label;
+			this.planState.steps[pendingIdx].delegationLabel = label;
 			this.planState.steps[pendingIdx].active = true;
 			this.planState.steps[pendingIdx].startTime = Date.now();
 			resetSpinner();
@@ -440,7 +446,18 @@ export const _instances = new Map<string, PlanPanel>();
 export function resolvePlanPanel(ctx: unknown): PlanPanel | null {
 	const sessionId = _extractSessionId(ctx);
 	if (sessionId) {
-		return _instances.get(sessionId) ?? null;
+		const panel = _instances.get(sessionId);
+		if (panel) return panel;
+		// Fallback: try lastSessionId if direct lookup fails
+		if (_lastSessionId && _lastSessionId !== sessionId && _instances.has(_lastSessionId)) {
+			console.warn(`[plan-panel] Session ID mismatch: requested=${sessionId}, fallback=${_lastSessionId}`);
+			return _instances.get(_lastSessionId)!;
+		}
+		return null;
+	}
+	// No sessionId: fallback to lastSessionId
+	if (_lastSessionId && _instances.has(_lastSessionId)) {
+		return _instances.get(_lastSessionId)!;
 	}
 	return null;
 }

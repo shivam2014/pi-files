@@ -42,6 +42,7 @@ export interface Step {
 	startTime?: number;
 	endTime?: number;
 	overflowCount?: number;
+	kind?: StepKind;
 }
 
 /** Activity feed state for subagent tool blocks */
@@ -96,6 +97,7 @@ export interface PlanStep {
 	label: string;
 	completed: boolean;
 	active: boolean;
+	delegationLabel?: string;
 	errored?: boolean;
 	errorMessage?: string;
 	detail?: string;
