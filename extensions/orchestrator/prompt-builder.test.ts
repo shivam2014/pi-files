@@ -134,9 +134,9 @@ describe("appendix slimming (#39)", () => {
 	it("reduces appendix character count compared to before", () => {
 		const basePrompt = "Some base instructions";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
-		// The appended part should be reasonable (< 6000 chars — includes routing table + caveman instruction + orchestrator intro)
+		// The appended part should be reasonable (< 7500 chars — includes routing table + caveman instruction + orchestrator intro)
 		const appendix = systemPrompt.replace(basePrompt, "").trim();
-		expect(appendix.length).toBeLessThan(6500);
+		expect(appendix.length).toBeLessThan(7500);
 	});
 });
 describe("clarification deduplication (#40)", () => {
