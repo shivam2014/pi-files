@@ -106,7 +106,7 @@ export function registerFusionTool(pi: ExtensionAPI, cwd: string): void {
 			// Build prompt
 			const systemPrompt = `You are a planning advisor. Analyze the context below and provide your best plan or critique. Be specific, practical, and consider edge cases. Focus on correctness, tradeoffs, and potential blind spots.
 
-IMPORTANT: For each distinct finding, insight, or recommendation you identify, you MUST call the reportFinding tool. Do not group multiple findings into one tool call. If you have no tool calls, your full analysis will be used as a single finding.`;
+IMPORTANT: For each distinct finding, insight, or recommendation you identify, clearly label it (e.g. "Finding 1:", "Finding 2:"). Keep each finding focused on a single point. Present your findings as structured text. If you have no distinct findings, your full analysis will be used as a single finding.`;
 			let userPrompt = params.context;
 			if (params.draft_plan) {
 				userPrompt += `\n\n## Draft Plan for Critique\n${params.draft_plan}`;

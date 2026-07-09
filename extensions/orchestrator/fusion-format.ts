@@ -35,7 +35,36 @@ export function formatFusionResult(analysis: any, succeeded: any[], failed: any[
 	text += "### Panel\n\n";
 	for (const r of succeeded) {
 		text += `**${r.model}**:\n`;
-		if (r.reports?.length) {
+		if (r.analysis) {
+			// Format structured panel analysis with same prefixes as judge
+			if (r.analysis.consensus?.length) {
+				for (const item of r.analysis.consensus) {
+					text += `  ✓ ${item}\n`;
+				}
+			}
+			if (r.analysis.contradictions?.length) {
+				for (const item of r.analysis.contradictions) {
+					const topic = typeof item === "string" ? item : item.topic || "";
+					text += `  ⚡ Contradiction: ${topic}\n`;
+				}
+			}
+			if (r.analysis.unique_insights?.length) {
+				for (const item of r.analysis.unique_insights) {
+					text += `  💡 ${item}\n`;
+				}
+			}
+			if (r.analysis.blind_spots?.length) {
+				for (const item of r.analysis.blind_spots) {
+					text += `  ⚠ Blind spot: ${item}\n`;
+				}
+			}
+			if (r.analysis.recommendations?.length) {
+				for (const item of r.analysis.recommendations) {
+					text += `  → ${item}\n`;
+				}
+			}
+		} else if (r.reports?.length) {
+			// Fallback: use raw reports
 			for (const report of r.reports) {
 				text += `  ✓ ${report}\n`;
 			}
@@ -63,6 +92,13 @@ export function formatFusionResult(analysis: any, succeeded: any[], failed: any[
 				text += `  ⚡ Contradiction: ${topic}\n`;
 			}
 		}
+		if (analysis.unique_insights?.length) {
+			for (const item of analysis.unique_insights) {
+				const insight = typeof item === "string" ? item : item.insight || "";
+				const model = typeof item === "object" ? item.model : undefined;
+				text += model ? `  💡 ${model}: ${insight}\n` : `  💡 ${insight}\n`;
+			}
+		}
 		if (analysis.blind_spots?.length) {
 			for (const item of analysis.blind_spots) {
 				text += `  ⚠ Blind spot: ${item}\n`;
@@ -87,7 +123,41 @@ export function formatPanelResults(
 ): { content: Array<{ type: "text"; text: string }>; details: { status: string; responses: any[]; errors: any[]; judgeError?: string } } {
 	let text = "## Panel Responses\n\n";
 	if (succeeded.length > 0) {
-		text += succeeded.map((r: any) => `### ${r.model}\n${r.content}`).join("\n\n");
+		for (const r of succeeded) {
+			text += `### ${r.model}\n`;
+			if (r.analysis) {
+				// Format structured panel analysis with same prefixes as judge
+				if (r.analysis.consensus?.length) {
+					for (const item of r.analysis.consensus) {
+						text += `  ✓ ${item}\n`;
+					}
+				}
+				if (r.analysis.contradictions?.length) {
+					for (const item of r.analysis.contradictions) {
+						const topic = typeof item === "string" ? item : item.topic || "";
+						text += `  ⚡ Contradiction: ${topic}\n`;
+					}
+				}
+				if (r.analysis.unique_insights?.length) {
+					for (const item of r.analysis.unique_insights) {
+						text += `  💡 ${item}\n`;
+					}
+				}
+				if (r.analysis.blind_spots?.length) {
+					for (const item of r.analysis.blind_spots) {
+						text += `  ⚠ Blind spot: ${item}\n`;
+					}
+				}
+				if (r.analysis.recommendations?.length) {
+					for (const item of r.analysis.recommendations) {
+						text += `  → ${item}\n`;
+					}
+				}
+			} else {
+				text += `${r.content}\n`;
+			}
+			text += "\n";
+		}
 	} else {
 		text += "*(No panel model succeeded)*";
 	}
