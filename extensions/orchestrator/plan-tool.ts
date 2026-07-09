@@ -65,6 +65,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
 export function registerInsertStepTool(pi: ExtensionAPI): void {
     pi.registerTool({
         name: 'insert_step',
+        label: 'Insert Plan Steps',
         description: 'Insert steps at a specific position in the current plan. Use when subagent findings require inserting work between existing steps.',
         parameters: Type.Object({
             steps: Type.Array(Type.String(), { description: 'Step labels to insert' }),
