@@ -26,7 +26,7 @@ import { ScopeManager } from "./scope-manager.ts";
 import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
 import { buildOrchestratorPrompt } from "./prompt-builder.ts";
 import { registerAllTools } from "./registration-hub.ts";
-import { registerInsertStepTool, PLAN_TOOLS } from "./plan-tool.ts";
+import { PLAN_TOOLS } from "./plan-tool.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
 import { SPECIALISTS, updateToolDocs } from "./specialists.ts";
 import { join } from "node:path";
@@ -155,7 +155,6 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Register tools, commands, and shortcuts ──
 	registerAllTools(pi, resolveCwd());
-	registerInsertStepTool(pi);
 	pi.registerTool(createReadSkillTool());
 
 	// ── Ctrl+Q: Peek overlay (Layer 3, mnemonic "quick peek") ──

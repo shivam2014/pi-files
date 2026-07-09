@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { setupPlanPanel, summarizeGoal, addSteps, resolvePlanPanel, modifyStep, removeStep } from "./plan-panel.ts";
+import { setupPlanPanel, summarizeGoal, addSteps, resolvePlanPanel, modifyStep, removeStep, insertSteps } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { STEP_KIND_SCHEMA } from "./types.ts";
 import type { SessionContext } from "./types.ts";
@@ -62,6 +62,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
     });
     registerPlanAddStepsTool(pi);
     registerInsertStepTool(pi);
+    registerAdvancePlanStepTool(pi);
     registerModifyStepTool(pi);
     registerRemoveStepTool(pi);
 }
@@ -73,55 +74,30 @@ export function registerInsertStepTool(pi: ExtensionAPI): void {
         description: 'Insert steps at a specific position in the current plan. Use when subagent findings require inserting work between existing steps.',
         parameters: Type.Object({
             steps: Type.Array(Type.String(), { description: 'Step labels to insert' }),
-            after: Type.String({ description: 'Insert after this step label (must match an existing step exactly)' }),
+            after: Type.Optional(Type.String({ description: 'Insert after this step label (must match an existing step exactly). Mutually exclusive with index.' })),
+            index: Type.Optional(Type.Number({ description: 'Insert at this 0-based position (0 = beginning, steps.length = end). Mutually exclusive with after.' })),
             kind: STEP_KIND_SCHEMA,
         }),
         promptGuidelines: [
             "Insert: insert_step({ steps: ['new step'], after: 'existing step label' })",
-            "Inserts steps immediately after the specified step in the plan",
+            "Insert by index: insert_step({ steps: ['new step'], index: 2 })",
+            "Exactly one of 'after' or 'index' must be provided",
             "The 'after' label must match an existing step exactly",
             "Optional kind: tool_call, agent_call, or user_action",
             "Output: Returns updated plan with inserted steps and count",
         ],
         async execute(toolCallId, params, signal, onUpdate, ctx) {
-            const panel = resolvePlanPanel(ctx as SessionContext);
-            if (!panel) {
+            const result = insertSteps(params.steps, { after: params.after, index: params.index }, ctx as SessionContext);
+            if (result.error) {
                 return {
-                    content: [{ type: 'text', text: 'No active plan. Call plan() first.' }],
-                    details: { error: 'No active plan. Call plan() first.' },
+                    content: [{ type: 'text', text: result.error }],
+                    details: { error: result.error },
                 };
             }
-            const state = panel.getPlanState();
-            if (!state) {
-                return {
-                    content: [{ type: 'text', text: 'No active plan. Call plan() first.' }],
-                    details: { error: 'Plan state is empty. Call plan() first.' },
-                };
-            }
-            const afterIdx = state.steps.findIndex(s => s.label === params.after);
-            if (afterIdx < 0) {
-                return {
-                    content: [{ type: 'text', text: `Step '${params.after}' not found in plan.` }],
-                    details: { error: `Step '${params.after}' not found in current plan.` },
-                };
-            }
-            let inserted = 0;
-            for (const label of params.steps) {
-                if (state.steps.some(s => s.label === label)) continue;
-                const newStep: any = {
-                    label,
-                    completed: false,
-                    errored: false,
-                    active: false,
-                    startTime: Date.now(),
-                };
-                if (params.kind) newStep.kind = params.kind;
-                state.steps.splice(afterIdx + 1 + inserted, 0, newStep);
-                inserted++;
-            }
+            const target = params.after ? `after '${params.after}'` : `at index ${params.index}`;
             return {
-                content: [{ type: 'text', text: `Inserted ${inserted} step(s) after '${params.after}'.` }],
-                details: { inserted, after: params.after, totalSteps: state.steps.length },
+                content: [{ type: 'text', text: `Inserted ${result.inserted} step(s) ${target}.` }],
+                details: { inserted: result.inserted, after: params.after, index: params.index, totalSteps: result.inserted },
             };
         },
     });
@@ -148,6 +124,47 @@ export function registerPlanAddStepsTool(pi: ExtensionAPI) {
                 content: [{ type: "text", text: `Added ${params.steps.length} step(s) to plan.` }],
                 details: { kind: params.kind },
             };
+        },
+    });
+}
+
+export function registerAdvancePlanStepTool(pi: ExtensionAPI): void {
+    pi.registerTool({
+        name: 'advance_plan_step',
+        label: 'Advance Plan Step',
+        description: 'Mark the currently active plan step as complete and advance to the next pending step. Do not call for delegation steps (handled by delegate pipeline).',
+        parameters: Type.Object({}),
+        promptGuidelines: [
+            "advance_plan_step() — no parameters",
+            "Marks the active step complete and activates the next pending step",
+            "Do NOT call for delegation steps — those are managed by the delegate pipeline",
+            "Output: Returns step label that was advanced",
+        ],
+        async execute(toolCallId, params, signal, onUpdate, ctx) {
+            const panel = resolvePlanPanel(ctx as SessionContext);
+            if (!panel) {
+                return {
+                    content: [{ type: 'text', text: 'No active plan. Call plan() first.' }],
+                    details: { error: 'No active plan.' },
+                };
+            }
+            const result = panel.advanceStep();
+            if (result.status === 'error') {
+                return {
+                    content: [{ type: 'text', text: result.error === 'No active plan' ? 'No active plan. Call plan() first.' : 'No active step to advance.' }],
+                    details: { error: result.error },
+                };
+            } else if (result.status === 'skipped') {
+                return {
+                    content: [{ type: 'text', text: 'Step managed by delegate pipeline — no-op.' }],
+                    details: { status: 'no-op', reason: result.reason },
+                };
+            } else {
+                return {
+                    content: [{ type: 'text', text: `Step completed: '${result.label}'` }],
+                    details: { completed: result.label },
+                };
+            }
         },
     });
 }

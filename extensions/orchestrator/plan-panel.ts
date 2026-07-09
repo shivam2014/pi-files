@@ -78,6 +78,16 @@ export class PlanPanel {
 		} catch { /* silent */ }
 	}
 
+	/** Find the first pending (non-completed, non-errored, non-active) step and activate it. */
+	private _activateNextPending(): void {
+		if (!this.planState) return;
+		const nextPending = this.planState.steps.find(s => !s.completed && !s.errored && !s.active);
+		if (nextPending) {
+			nextPending.active = true;
+			if (!nextPending.startTime) nextPending.startTime = Date.now();
+		}
+	}
+
 	private loadPlanState(): typeof this.planState {
 		try {
 			const statePath = join(this._cwd, '.pi', 'orchestrator-plan.json');
@@ -340,6 +350,34 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		}
 	}
 
+	public advanceStep(): { status: 'completed'; label: string } | { status: 'skipped'; reason: string } | { status: 'error'; error: string } {
+		if (!this.planState || this.planState.sessionId !== this._sessionId) {
+			return { status: 'error', error: 'No active plan' };
+		}
+		const activeStep = this.planState.steps.find(s => s.active);
+		if (!activeStep) {
+			return { status: 'error', error: 'no active step' };
+		}
+		if (activeStep.kind === 'delegation') {
+			return { status: 'skipped', reason: 'managed by delegate pipeline' };
+		}
+		activeStep.active = false;
+		activeStep.completed = true;
+		activeStep.endTime = Date.now();
+		if (activeStep.detailLines?.length) (activeStep as any).substepLines = [...(activeStep.detailLines || [])];
+		activeStep.detailLines = undefined;
+		this._activateNextPending();
+		this._renderWidget();
+		this.savePlanState();
+		this.recordTimelineFrame("step_complete");
+		return { status: 'completed', label: activeStep.label };
+	}
+
+	/** Public wrapper for the private _activateNextPending. */
+	public activateNextPending(): void {
+		this._activateNextPending();
+	}
+
 	completePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
 		const idx = this.planState.steps.findIndex((s) => s.active);
@@ -347,12 +385,7 @@ private trimToBudget(lines: string[], budget: number): string[] {
 			const step = this.planState.steps[idx];
 			if (step.detailLines?.length) (step as any).substepLines = step.detailLines.slice(-3);
 			step.completed = true; step.errored = false; step.active = false; step.detail = undefined; step.detailLines = undefined; step.endTime = Date.now();
-			// Auto-advance: activate the next pending step
-			const nextPending = this.planState.steps.find(s => !s.completed && !s.errored && !s.active);
-			if (nextPending) {
-				nextPending.active = true;
-				if (!nextPending.startTime) nextPending.startTime = Date.now();
-			}
+			this._activateNextPending();
 		}
 		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame("step_complete");
 	}
@@ -381,6 +414,56 @@ private trimToBudget(lines: string[], budget: number): string[] {
 			this.planState.steps[idx].endTime = Date.now();
 		}
 		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame(aborted ? "step_aborted" : "step_error");
+	}
+
+	/**
+	 * Insert steps into the plan. Supports two modes:
+	 * - `after`: label-based insertion (find by label, insert after)
+	 * - `index`: direct array insertion at that position (0 = beginning, steps.length = end)
+	 * Exactly one of `after` or `index` must be provided.
+	 */
+	insertSteps(labels: string[], opts: { after?: string; index?: number }): { inserted: number; error?: string } {
+		if (!this.planState || this.planState.sessionId !== this._sessionId) {
+			return { inserted: 0, error: 'No active plan' };
+		}
+		if (opts.after && opts.index !== undefined) {
+			return { inserted: 0, error: 'Cannot specify both "after" and "index" — use one or the other' };
+		}
+		if (!opts.after && opts.index === undefined) {
+			return { inserted: 0, error: 'Must specify either "after" (label) or "index" (position)' };
+		}
+
+		let spliceIdx: number;
+		if (opts.after !== undefined) {
+			const afterIdx = this.planState.steps.findIndex(s => s.label === opts.after);
+			if (afterIdx < 0) {
+				return { inserted: 0, error: `Step '${opts.after}' not found in plan.` };
+			}
+			spliceIdx = afterIdx + 1;
+		} else {
+			// index-based: 0 = beginning, steps.length = end
+			if (opts.index! < 0 || opts.index! > this.planState.steps.length) {
+				return { inserted: 0, error: `Index ${opts.index} out of bounds [0–${this.planState.steps.length}]` };
+			}
+			spliceIdx = opts.index!;
+		}
+
+		let inserted = 0;
+		for (const label of labels) {
+			if (this.planState.steps.some(s => s.label === label)) continue;
+			const newStep: PlanStep = {
+				label,
+				completed: false,
+				errored: false,
+				active: false,
+				startTime: Date.now(),
+			};
+			this.planState.steps.splice(spliceIdx + inserted, 0, newStep);
+			inserted++;
+		}
+		this._renderWidget();
+		this.savePlanState();
+		return { inserted };
 	}
 
 	addSteps(newSteps: string[]): void {
@@ -444,13 +527,10 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		this.planState.steps.splice(idx, 1);
 		// After removal, if no step is active, activate the next pending step
 		if (this.planState.steps.length > 0 && !this.planState.steps.some(s => s.active)) {
-			const nextPending = this.planState.steps.find(s => !s.completed && !s.errored);
-			if (nextPending) {
-				nextPending.active = true;
-				if (!nextPending.startTime) nextPending.startTime = Date.now();
-			}
+			this._activateNextPending();
 		}
 		this._renderWidget();
+		this.savePlanState();
 		return { success: true };
 	}
 
@@ -539,6 +619,11 @@ export const addSteps = (s: string[], ctx: unknown) => resolvePlanPanel(ctx)?.ad
 export const retryPlanStep = (ctx: unknown) => resolvePlanPanel(ctx)?.retryPlanStep();
 export const renderPlanStatusText = (ctx: unknown) => resolvePlanPanel(ctx)?.renderPlanStatusText();
 export const dumpTimelineToDisk = (ctx: unknown) => resolvePlanPanel(ctx)?.dumpTimelineToDisk();
+
+export function insertSteps(labels: string[], opts: { after?: string; index?: number }, ctx?: unknown): { inserted: number; error?: string } {
+	const panel = resolvePlanPanel(ctx);
+	return panel ? panel.insertSteps(labels, opts) : { inserted: 0, error: 'No active plan' };
+}
 
 export function modifyStep(index: number, label: string, kind?: StepKind, ctx?: unknown) {
 	const panel = resolvePlanPanel(ctx);
