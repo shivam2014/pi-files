@@ -76,7 +76,7 @@ const DELEGATION_INSTRUCTIONS_TEMPLATE = `
 ## Capabilities
 | Tool | Purpose |
 |------|---------|
-| plan(goal, steps) | Declare a plan before delegating |
+| plan(goal, steps) | Declare a plan. Steps can be strings or objects with kind |
 | plan_add_steps(steps) | Add steps mid-workflow |
 | insert_step(steps, after) | Insert steps at specific position in plan |
 | delegate(specialist, task, scope?) | Delegate to a specialist |
@@ -92,14 +92,69 @@ const DELEGATION_INSTRUCTIONS_TEMPLATE = `
    plan("Research auth options", ["search docs", "read findings", "summarize"])
    plan("Write API docs", ["read source", "draft", "review"])
 
+Step input format:
+- String: "do something" → step label. Orchestrator decides at runtime whether to delegate() or handle it as an orchestrator task.
+- Object: { label, kind, ... } → structured step with explicit kind
+  - kind: "delegation" → forces delegate() call
+  - kind: "orchestrator" → forces self-owned task (analysis, synthesis, decision)
+  - kind: "loop_until" → repeats until criterion met (requires loopUntil config)
+
+Example (loop — for iterative tasks with checkable criteria):
+  plan("Fix all lint errors", [{
+    label: "Fix until clean",
+    kind: "loop_until",
+    loopUntil: {
+      criterion: "Zero lint errors",
+      evaluator: "reviewer",
+      maxIterations: 5,
+      mode: "satisficing",
+      satisficingPasses: 1,
+      iterationTemplate: { specialist: "coder", task: "Fix lint errors" }
+    }
+  }])
+
+Example (mixed — single steps + loop):
+  plan("Resolve all issues", [
+    "Read all open issues",
+    { label: "Fix each issue", kind: "loop_until", loopUntil: { ... } },
+    "Summarize results"
+  ])
+
+Loop vs single-pass — confirm ALL THREE before using loop_until:
+- Criterion is checkable by an evaluator (not subjective like "looks good")
+- Endpoint is NOT known upfront (if you know the exact file, single-pass)
+- Iterations produce measurably different output (not just shuffling)
+
+DON'T use loop for:
+- Single deliverables ("write the README", "add a logout button")
+- Known endpoints ("fix bug in auth.ts line 42")
+- Subjective completion ("make it look good", "clean up the docs")
+
+If uncertain whether to use loop_until, ask the user:
+"This looks like it might need iteration. Want me to loop until the criterion is met, or do a single pass?"
+The user can also explicitly request a loop: "keep fixing until clean"
+
 2. SECOND: For each step, execute it — either by delegating or doing orchestrator work.
 
 Plan-step rules:
 - Each step = ONE action: a single delegate() call, OR an orchestrator task (analysis, synthesis, decision, writing).
+- Exception: a loop_until step is ONE plan step that internally executes multiple delegate/evaluate cycles. Do not decompose a loop into multiple plan steps — the loop mechanism owns the iteration lifecycle.
 - If multiple tasks go to the SAME specialist in ONE delegation, consolidate them into ONE step. Don't over-split.
 - If tasks go to DIFFERENT specialists, or mix delegation + orchestrator work, they MUST be separate steps.
 - Never declare steps you intend to batch into one delegation — that orphans the unused steps.
 - modify_step: update label/kind. remove_step: delete step.
+
+Loop step behavior:
+- loop_until steps execute internally — the plan panel runs iterations automatically. You do NOT manually delegate for each iteration.
+- The loop handles: iteration counting, evaluation, feedback, stopping.
+- After each iteration, the loop updates the rolling summary (visible in plan panel) and checks the criterion.
+- If criterion met → loop completes, step marked done.
+- If maxIterations exhausts → loop surfaces last evaluation to you with a ⚠️ message. You decide: escalate to user, refine criteria, or add follow-up steps.
+- If oscillation detected (2 consecutive iterations with net-zero progress) → loop exits early with diagnostic.
+
+Loop output — when a loop step returns:
+- If satisfied: read the final iteration's output and proceed.
+- If exhausted: output contains per-iteration delta. If net progress was made, consider plan_add_steps([follow-up loop]). If no progress, report ⚠️ to user.
 
 Adding steps mid-workflow:
 - If a delegation reveals new work, call plan_add_steps({ steps: ['new step 1', 'new step 2'] }) to append steps to the current plan.
@@ -113,6 +168,11 @@ Examples:
     → 1 step: delegate("coder", "copy, stage, commit, push") — all work to one specialist
 
 3. THIRD: Synthesize results.
+
+After a loop step completes:
+- If satisfied: proceed with next step.
+- If exhausted with progress: consider follow-up loop with refined criterion.
+- If exhausted without progress: report ⚠️ to user with diagnostic.
 
 delegate() auto-creates a minimal plan if none exists, but calling plan() first gives better structure and multi-step visibility.
 
@@ -154,6 +214,8 @@ After each delegation returns:
 4. If no: proceed with next step.
 
 Can: add steps mid-workflow, skip unnecessary steps, re-order based on findings.
+
+Loop steps manage their own iteration cycle. Do not try to advance or recalibrate a running loop step — it handles evaluation and feedback internally. After a loop completes, assess its output during recalibration like any other delegation result.
 
 # Execution Monitoring
 
