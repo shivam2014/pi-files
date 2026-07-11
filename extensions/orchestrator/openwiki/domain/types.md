@@ -218,22 +218,17 @@ User-provided loop configuration. Passed as part of a `loop_until` step input.
 
 ```typescript
 interface LoopUntilConfig {
-  criterion: LoopCriterion;
-  evaluationMode: 'single-pass' | 'satisficing';
-  maxIterations?: number;
-  specialist?: string;
-  initialTask?: string;
-}
-```
-
-### LoopCriterion
-
-```typescript
-interface LoopCriterion {
-  type: 'binary' | 'scored' | 'checklist' | 'custom';
-  threshold?: number;      // For scored: target score
-  items?: string[];        // For checklist: required items
-  evaluate?: string;       // For custom: evaluation prompt
+  criterion: string;           // plain string, not object
+  evaluator: string;           // specialist name
+  maxIterations: number;       // default 10
+  maxTokens?: number;          // optional
+  mode: 'single-pass' | 'satisficing';
+  satisficingPasses: number;   // default 2
+  iterationTemplate: {
+    specialist: string;
+    task: string;
+    scope?: any;
+  };
 }
 ```
 
@@ -243,12 +238,11 @@ Transient runtime state for an active loop. Not persisted — rebuilt from itera
 
 ```typescript
 interface LoopUntilState {
-  config: LoopUntilConfig;
-  iterations: LoopIteration[];
   currentIteration: number;
-  rollingSummary: LoopRollingSummary;
-  completed: boolean;
-  stallDetected: boolean;
+  consecutivePasses: number;
+  rollingSummary: string;      // plain string, not object
+  status: 'idle' | 'running' | 'completed' | 'max-reached' | 'error';
+  iterations: LoopIteration[];
 }
 ```
 
@@ -259,35 +253,10 @@ Per-iteration record. Captures what happened, what was evaluated, and the feedba
 ```typescript
 interface LoopIteration {
   index: number;
-  task: string;
-  result?: string;
-  evaluation?: LoopEvaluation;
+  status: 'pass' | 'fail' | 'error';
+  scores?: Record<string, number>;
   feedback?: string;
-  elapsedMs: number;
-  timestamp: number;
-}
-```
-
-### LoopEvaluation
-
-```typescript
-interface LoopEvaluation {
-  passed: boolean;
-  score?: number;
-  checklistResults?: Array<{ item: string; met: boolean }>;
   summary: string;
-}
-```
-
-### LoopRollingSummary
-
-Structured facts + recent narrative summary. Prevents context bloat across iterations.
-
-```typescript
-interface LoopRollingSummary {
-  facts: string[];         // Accumulated key facts across iterations
-  recentNarrative: string; // Narrative of last N iterations
-  iterationCount: number;
 }
 ```
 
@@ -301,6 +270,12 @@ interface LoopUntilStepInput {
   kind: 'loop_until';
   loopUntil: LoopUntilConfig;
 }
+```
+
+### PlanStepInput
+
+```typescript
+type PlanStepInput = string | LoopUntilStepInput;
 ```
 
 ## Context Types

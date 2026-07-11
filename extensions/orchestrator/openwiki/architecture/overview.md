@@ -82,31 +82,22 @@ The orchestrator doubles as a loop controller via the `loop_until` step kind. No
 setup → iterate → evaluate → feedback → repeat
 ```
 
-1. **Setup**: `initLoopState()` creates `LoopUntilState` with config, iteration history, and rolling summary
-2. **Iterate**: `runLoopIteration()` runs one pass (may delegate or use orchestrator directly)
-3. **Evaluate**: `evaluateLoopCriterion()` checks success criteria (binary, scored, checklist, custom)
-4. **Feedback**: `composeFeedback()` generates structured feedback for the next iteration
+1. **Setup**: `initLoopState()` creates `LoopUntilState` with status, rolling summary, and iteration history
+2. **Iterate**: `runLoopIteration()` runs one pass via `iterationTemplate` (delegates to specialist)
+3. **Evaluate**: Evaluator specialist checks `criterion` string against iteration results
+4. **Feedback**: Feedback string passed to next iteration for improvement
 5. **Repeat**: Loop continues until criterion met or hard stop hit
-
-### Success Criteria Modes
-
-| Mode | Description |
-|------|-------------|
-| **binary** | Pass/fail check — criterion returns true/false |
-| **scored** | Numeric score against threshold (e.g., test coverage > 80%) |
-| **checklist** | All items must be checked off |
-| **custom** | Arbitrary evaluation logic via specialist |
 
 ### Evaluation Modes
 
 | Mode | Description |
 |------|-------------|
 | **single-pass** | Evaluate once per iteration |
-| **satisficing** | Stop at first "good enough" result, don't optimize further |
+| **satisficing** | Stop after `satisficingPasses` consecutive passes — don't optimize further |
 
 ### Rolling Summary
 
-Maintained by `updateRollingSummary()` — a structured facts + recent narrative summary visible to the user. Prevents context bloat across iterations while preserving key state.
+A plain string (`rollingSummary`) maintained across iterations. Prevents context bloat while preserving key state.
 
 ### Hard Stops
 
