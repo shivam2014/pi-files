@@ -25,7 +25,7 @@ import { registerListSkillsTool, registerListToolsTool } from "./introspection-t
  * Subagents (especially scout) attempt to call `glob` but only `find` exists.
  */
 function registerGlobAlias(pi: ExtensionAPI): void {
-	const findTool = (pi as any).getTool?.("find");
+	const findTool = (pi as any).getToolDefinition?.("find");
 	if (!findTool) return; // find not available — skip alias
 
 	pi.registerTool({

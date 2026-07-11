@@ -469,7 +469,7 @@ export class SubagentRunner {
 				},
 			});
 
-			const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding", "ask_orchestrator", "read_skill", "vision_query"];
+			const allTools = [...(specialist.tools || []), "planSteps", "advanceStep", "reportFinding", "ask_orchestrator", "read_skill", "vision_query", "glob"];
 
 			const askOrchestratorTool = createAskOrchestratorTool(
 				parentCtx?.onAskOrchestrator,

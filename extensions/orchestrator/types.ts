@@ -83,12 +83,61 @@ export interface SubagentContext {
 	onAskOrchestrator?: (question: string, context?: string) => Promise<string>;
 }
 
-export type StepKind = 'delegation' | 'orchestrator';
+export type StepKind = 'delegation' | 'orchestrator' | 'loop_until';
 
 export const STEP_KIND_SCHEMA = Type.Optional(Type.Union([
 	Type.Literal('delegation'),
 	Type.Literal('orchestrator'),
-], { description: 'Step classification: delegation (subagent-owned, auto-advances), orchestrator (self-owned, call advance_plan_step)' }));
+	Type.Literal('loop_until'),
+], { description: 'Step classification: delegation (subagent-owned, auto-advances), orchestrator (self-owned, call advance_plan_step), loop_until (repeating evaluation loop)' }));
+
+/** Configuration for a loop_until step */
+export interface LoopUntilConfig {
+	/** Human-readable success condition */
+	criterion: string;
+	/** Specialist name that evaluates results (default: 'reviewer') */
+	evaluator: string;
+	/** Hard cap on iterations (default: 10) */
+	maxIterations: number;
+	/** Token budget for entire loop (optional) */
+	maxTokens?: number;
+	/** Evaluation mode (default: 'satisficing') */
+	mode: 'single-pass' | 'satisficing';
+	/** Consecutive passes required in satisficing mode (default: 2) */
+	satisficingPasses: number;
+	/** The delegation spec to run each iteration */
+	iterationTemplate: {
+		specialist: string;
+		/** Task text. Use {{iteration.N}} for current iteration number */
+		task: string;
+		scope?: any; // Scope type from scope-manager
+	};
+}
+
+/** Runtime state for a loop step (transient, not persisted) */
+export interface LoopUntilState {
+	currentIteration: number;
+	consecutivePasses: number;
+	rollingSummary: string;
+	status: 'idle' | 'running' | 'completed' | 'max-reached' | 'error';
+	iterations: LoopIteration[];
+}
+
+/** Record of a single loop iteration */
+export interface LoopIteration {
+	index: number;
+	status: 'pass' | 'fail' | 'error';
+	scores?: Record<string, number>;
+	feedback?: string;
+	summary: string;
+}
+
+/** Structured loop step input for plan() */
+export interface LoopUntilStepInput {
+	label: string;
+	kind: 'loop_until';
+	loopUntil: LoopUntilConfig;
+}
 
 /** A step in the plan panel header */
 export interface PlanStep {
@@ -102,7 +151,14 @@ export interface PlanStep {
 	startTime?: number;
 	endTime?: number;
 	kind?: StepKind;
+	/** Present when kind === 'loop_until'. User-provided config. */
+	loopUntil?: LoopUntilConfig;
+	/** Runtime state for loop steps. Transient — not persisted. */
+	loopUntilState?: LoopUntilState;
 }
+
+/** A step in plan() can be a string label or a structured loop input */
+export type PlanStepInput = string | LoopUntilStepInput;
 
 /** Per-delegation tool usage metrics */
 export interface DelegationMetrics {

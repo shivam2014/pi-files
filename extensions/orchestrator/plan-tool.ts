@@ -4,13 +4,49 @@ import { Text } from "@earendil-works/pi-tui";
 import { setupPlanPanel, summarizeGoal, addSteps, resolvePlanPanel, modifyStep, removeStep, insertSteps } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { STEP_KIND_SCHEMA } from "./types.ts";
-import type { SessionContext } from "./types.ts";
+import type { SessionContext, PlanStepInput, LoopUntilStepInput, LoopUntilConfig } from "./types.ts";
 
 function deriveGoal(goal: string | undefined, steps: string[] | undefined, ctx?: SessionContext): string {
     if (goal?.trim()) return goal.trim();
     const stepsText = steps?.filter(Boolean).join(" ").trim();
     if (stepsText) return summarizeGoal(stepsText, ctx) ?? "Untitled plan";
     return "Untitled plan";
+}
+
+// Validation helper for structured loop inputs
+function validateLoopConfig(config: LoopUntilConfig): string | null {
+    if (!config.criterion || config.criterion.trim().length === 0) {
+        return 'Loop criterion must be non-empty';
+    }
+    if (!config.evaluator || config.evaluator.trim().length === 0) {
+        return 'Loop evaluator specialist must be specified';
+    }
+    if (!config.iterationTemplate) {
+        return 'Loop iteration template is required';
+    }
+    if (!config.iterationTemplate.specialist) {
+        return 'Iteration template specialist is required';
+    }
+    if (!config.iterationTemplate.task) {
+        return 'Iteration template task is required';
+    }
+    if (config.maxIterations !== undefined && (config.maxIterations < 1 || config.maxIterations > 50)) {
+        return 'maxIterations must be between 1 and 50';
+    }
+    if (config.satisficingPasses !== undefined && (config.satisficingPasses < 1 || config.satisficingPasses > 10)) {
+        return 'satisficingPasses must be between 1 and 10';
+    }
+    return null;
+}
+
+/** Check if a plan step input is a structured loop input */
+function isLoopStep(step: any): boolean {
+    return typeof step === 'object' && step !== null && 'kind' in step && step.kind === 'loop_until';
+}
+
+/** Extract string labels from mixed step input array */
+function extractLabels(steps: any[]): string[] {
+    return steps.map(s => typeof s === 'string' ? s : (s?.label ?? String(s)));
 }
 
 export const PLAN_TOOLS = ['plan', 'plan_add_steps', 'advance_plan_step', 'insert_step', 'remove_step', 'modify_step'] as const;
@@ -24,9 +60,31 @@ export function registerPlanTool(pi: ExtensionAPI) {
             goal: Type.String({
                 description: "One-line summary of the overall goal",
             }),
-            steps: Type.Array(Type.String(), {
-                description: "Ordered list of steps to accomplish the goal",
-            }),
+            steps: Type.Array(
+                Type.Union([
+                    Type.String(),
+                    Type.Object({
+                        label: Type.String({ description: 'Step label shown in the plan panel' }),
+                        kind: Type.Literal('loop_until', { description: 'Loop step — repeats body with completion condition' }),
+                        loopUntil: Type.Object({
+                            criterion: Type.String({ description: 'Human-readable success condition' }),
+                            evaluator: Type.String({ description: 'Specialist name that evaluates results (default: reviewer)' }),
+                            maxIterations: Type.Optional(Type.Number({ minimum: 1, maximum: 50, description: 'Safety cap on iterations (default: 10)' })),
+                            maxTokens: Type.Optional(Type.Number({ description: 'Token budget for entire loop' })),
+                            mode: Type.Optional(Type.Union([
+                                Type.Literal('single-pass'),
+                                Type.Literal('satisficing'),
+                            ], { description: 'Evaluation mode (default: satisficing)' })),
+                            satisficingPasses: Type.Optional(Type.Number({ minimum: 1, maximum: 10, description: 'Consecutive passes required (default: 2)' })),
+                            iterationTemplate: Type.Object({
+                                specialist: Type.String({ description: 'Specialist to delegate to each iteration' }),
+                                task: Type.String({ description: 'Task template. Use {{iteration.N}} for iteration number.' }),
+                            }),
+                        }),
+                    }),
+                ]),
+                { description: 'Step labels (strings) or structured step objects (for loops)' },
+            ),
             // #100: kind param on plan() is intentional — allows orchestrator to classify
             // initial steps at creation time, not just via plan_add_steps/insert_step.
             // Keeps the API consistent across all plan-modifying tools.
@@ -40,19 +98,43 @@ export function registerPlanTool(pi: ExtensionAPI) {
             "Output: Returns plan registration status with goal and step count in text format",
         ],
         async execute(toolCallId, params, signal, onUpdate, ctx) {
-            const effectiveGoal = deriveGoal(params.goal, params.steps, ctx as SessionContext);
+            const effectiveGoal = deriveGoal(params.goal, extractLabels(params.steps), ctx as SessionContext);
             if (!params.steps || params.steps.length === 0) {
                 setupPlanPanel(effectiveGoal, ["Planning..."], ctx);
                 return { content: [{ type: "text", text: `Plan set (no steps provided): ${effectiveGoal}` }], details: {} };
             }
-            setupPlanPanel(effectiveGoal, params.steps, ctx);
+            const processedSteps: string[] = [];
+            const loopConfigs: Map<number, any> = new Map();
+            for (let i = 0; i < params.steps.length; i++) {
+                const step = params.steps[i];
+                if (typeof step === 'string') {
+                    processedSteps.push(step);
+                } else if (isLoopStep(step)) {
+                    const loopCfg = (step as any).loopUntil;
+                    const error = validateLoopConfig(loopCfg);
+                    if (error) {
+                        return { content: [{ type: 'text', text: `Loop validation error: ${error}` }], details: { error } };
+                    }
+                    processedSteps.push((step as any).label);
+                    loopConfigs.set(i, loopCfg);
+                } else {
+                    processedSteps.push(String(step));
+                }
+            }
+            setupPlanPanel(effectiveGoal, processedSteps, ctx);
+            // Store loop configs for later retrieval by delegate/runner
+            const panel = resolvePlanPanel(ctx as SessionContext);
+            if (panel && loopConfigs.size > 0) {
+                // Attach loop configs to panel metadata for downstream access
+                (panel as any)._loopConfigs = Object.fromEntries(loopConfigs);
+            }
             return {
-                content: [{ type: "text", text: `Plan set: ${effectiveGoal} (${params.steps.length} steps)` }],
-                details: { goal: effectiveGoal, steps: params.steps, kind: params.kind },
+                content: [{ type: "text", text: `Plan set: ${effectiveGoal} (${processedSteps.length} steps)` }],
+                details: { goal: effectiveGoal, steps: processedSteps, kind: params.kind },
             };
         },
         renderCall(args, theme, context) {
-            return new Text(`⠋ Plan: ${deriveGoal(args.goal, args.steps)} (${args.steps.length} steps)`, 0, 0);
+            return new Text(`⠋ Plan: ${deriveGoal(args.goal, extractLabels(args.steps))} (${args.steps.length} steps)`, 0, 0);
         },
         renderResult(result, options, theme, context) {
             const first = result.content?.[0];

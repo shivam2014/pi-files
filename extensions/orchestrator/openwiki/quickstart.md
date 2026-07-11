@@ -16,6 +16,7 @@ The extension lives at `~/.pi/agent/extensions/orchestrator` and is loaded by th
 | **Activity Feed** | Chat blocks (Layer 2) showing live subagent tool calls and progress |
 | **Peek Overlay** | Ctrl+Q overlay (Layer 3) for viewing live subagent conversations |
 | **Fusion** | Optional multi-model analysis — panel of models + judge synthesis |
+| **Loop Mode** | `loop_until` steps let the orchestrator iterate until a criterion is met |
 | **Ask Resolver** | Subagent → orchestrator clarification pipeline (auto-resolves from files/docs before escalating) |
 
 ## Architecture in One Sentence
@@ -34,6 +35,7 @@ orchestrator/
 ├── delegate-tool.ts          # delegate() tool — primary orchestration entry
 ├── delegate-controller.ts    # Delegation lifecycle (validation, abort)
 ├── delegate-pipeline.ts      # End-to-end delegation: scope → run → format → plan
+├── delegate-feed-builder.ts  # Activity feed lifecycle during delegation
 ├── subagent-runner.ts        # Isolated subagent session creation
 ├── subagent-tool-guard.ts    # Tool call enforcement (scope, plan-first, bash intercept)
 ├── subagent-diagnostics.ts   # Post-run diagnostic capture + persistence
@@ -60,14 +62,19 @@ orchestrator/
 │
 ├── ask-resolver.ts           # Subagent clarification pipeline
 ├── bash-interceptor.ts       # Bash → native tool redirection
+├── bash-interceptor-integrated.ts # Specialist-aware bash interception
+├── bash-classifier.ts        # Read/write command classification for bash interception
+├── interactive-shell-tool.ts # Interactive CLI session management (pi, claude, etc.)
 ├── scout-tools.ts            # git-read, gh tool definitions
 ├── introspection-tools.ts    # list_skills, list_tools
 ├── read-skill-tool.ts        # read_skill() — load SKILL.md packs
 ├── skill-resolver.ts         # Skill path resolution
 │
+├── orchestrator-config.ts    # YAML config (~/.pi/agent/orchestrator.yml), delegation mode
 ├── orchestrator-theme.ts     # Theme tokens + status icons
 ├── spinner-state.ts          # Spinner animation state
 ├── ui-utils.ts               # Duration formatting
+├── commands.ts               # Slash commands (/orchestrate, /inspect, /render, etc.)
 ├── debug.ts                  # Debug logging (env-gated)
 ├── debug-path-trace.ts       # Tool call path tracing
 │
@@ -85,7 +92,48 @@ orchestrator/
 - **[Specialists & Skills](domain/specialists-and-skills.md)** — The 5 specialist roster, skill packs, tool access matrix
 - **[Fusion Subsystem](workflows/fusion.md)** — Multi-model panel analysis, judge synthesis, configuration
 - **[Plan & Activity](workflows/plan-and-activity.md)** — Plan panel TUI, activity feed rendering, peek overlay
+- **[Configuration & Operations](operations/configuration.md)** — Orchestrator config, slash commands, debug facilities, diagnostics
+- **[Type Reference](domain/types.md)** — All shared TypeScript interfaces and types
 - **[Testing Guide](testing/guide.md)** — Test infrastructure, patterns, key test files, how to run
+
+## Loop Mode Quick Reference
+
+Loop mode lets the orchestrator iterate on a task until a success criterion is met. The orchestrator IS the loop — no separate controller.
+
+### Creating a Loop Step
+
+```typescript
+plan("Reach 90% test coverage", [
+  { label: "Loop: improve coverage", kind: "loop_until",
+    loopUntil: {
+      criterion: { type: "scored", threshold: 90 },
+      evaluationMode: "satisficing",
+      maxIterations: 10,
+      specialist: "coder"
+    }
+  }
+])
+```
+
+### Loop Lifecycle
+
+```
+setup → iterate → evaluate → feedback → repeat
+```
+
+### Success Criteria
+
+| Type | Use When |
+|------|----------|
+| `binary` | Pass/fail (e.g., "does the test pass?") |
+| `scored` | Numeric target (e.g., coverage > 80%) |
+| `checklist` | All items must pass |
+| `custom` | Arbitrary specialist evaluation |
+
+### Hard Stops
+
+- `maxIterations` — iteration cap
+- Stall detection — `detectStall()` identifies diminishing returns
 
 ## Quick Start for Developers
 
@@ -111,6 +159,7 @@ npx tsc --noEmit
 3. **Self-correction, not crash.** Blocked operations don't terminate the subagent. Block messages teach LLMs to recover in one turn.
 4. **Cache safety.** Tool schemas frozen at `session_start` to preserve prefix cache across turns.
 5. **Fail-closed scope.** Missing/malformed/stale scope.json blocks ALL writes.
+6. **Loop is orchestrator.** `loop_until` steps reuse the orchestrator as the loop controller — no separate module, no new state machine.
 
 ## Project Context
 

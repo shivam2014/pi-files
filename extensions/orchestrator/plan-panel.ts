@@ -2,7 +2,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { truncateLabel } from "../token-saver.ts";
 import { styledSymbol, formatDuration as thFormatDuration } from "./orchestrator-theme.ts";
-import type { PlanStep, StepKind, SessionContext } from "./types.ts";
+import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilState, LoopIteration, LoopUntilStepInput } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
 import { SPINNER_INTERVAL_MS, SPINNER_FRAMES, resetSpinner } from "./spinner-state.ts";
@@ -45,6 +45,9 @@ export interface TimelineEntry {
 const MAX_TIMELINE_FRAMES = 500;
 const WIDGET_KEY = "orchestrator-status";
 const BUDGET = 9;
+
+// Loop state is transient — not persisted to JSON
+const _loopStates = new Map<string, LoopUntilState>(); // keyed by step label
 
 export class PlanPanel {
 	private _cwd: string;
@@ -124,6 +127,24 @@ export class PlanPanel {
 
 	private toFeedState(state: { goal: string; steps: PlanStep[]; startTime: number }): ActivityFeedState {
 		const steps: Step[] = state.steps.map(ps => {
+			// Loop step rendering — shows iteration progress
+			if (ps.kind === 'loop_until' && ps.loopUntilState) {
+				const loopState = ps.loopUntilState;
+				const config = ps.loopUntil!;
+				const progress = `[${loopState.currentIteration}/${config.maxIterations}]`;
+				const mode = config.mode === 'satisficing' ? 'satisficing' : '';
+				return {
+					label: truncateLabel(`⟳ ${ps.label} ${progress} ${mode}`, 120),
+					completed: ps.completed,
+					startTime: ps.startTime,
+					endTime: ps.endTime,
+					substeps: loopState.iterations.slice(-3).map(i => ({
+						label: `Iter ${i.index + 1}: ${i.status === 'pass' ? '✓' : i.status === 'fail' ? '✗' : '○'} ${i.summary}`,
+						completed: i.status === 'pass',
+					})),
+				};
+			}
+
 			const substeps: Substep[] = [];
 			if (ps.completed && ps.detailLines?.length) {
 				for (const line of ps.detailLines) {
@@ -400,6 +421,16 @@ private trimToBudget(lines: string[], budget: number): string[] {
 
 	clearPlanIfComplete(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
+
+		// Check if any step is an active loop — don't stop timers while loop iterates
+		const hasActiveLoop = this.planState.steps.some(
+			s => s.kind === 'loop_until' && !s.completed && s.loopUntilState?.status === 'running'
+		);
+		if (hasActiveLoop) {
+			// Loop is still iterating — keep timers alive
+			return;
+		}
+
 		if (!this.planState.steps.every(s => s.completed)) return;
 		// Keep plan alive — do NOT call clearPlanPanel(). Just stop timer and re-render.
 		this.stopPlanTimer();
@@ -547,6 +578,186 @@ private trimToBudget(lines: string[], budget: number): string[] {
 			debugLog("[timeline] " + this._timeline.length + " frames -> " + path);
 		} catch (e) { debugLog("[timeline] failed to write: " + e); }
 	}
+
+	// ── Loop execution methods ──────────────────────────────────────────
+
+	/** Initialize loop state for a loop_until step. */
+	initLoopState(stepLabel: string, config: LoopUntilConfig): void {
+		const state: LoopUntilState = {
+			currentIteration: 0,
+			consecutivePasses: 0,
+			rollingSummary: '',
+			status: 'running',
+			iterations: [],
+		};
+		_loopStates.set(stepLabel, state);
+		// Also store on step for rendering access
+		const step = this.planState?.steps.find(s => s.label === stepLabel);
+		if (step) {
+			step.loopUntil = config;
+			step.loopUntilState = state;
+		}
+		this._renderWidget();
+	}
+
+	/** Run one iteration of a loop step. Returns { done, reason }. */
+	async runLoopIteration(stepLabel: string): Promise<{ done: boolean; reason?: string }> {
+		const step = this.planState?.steps.find(s => s.label === stepLabel);
+		if (!step || step.kind !== 'loop_until' || !step.loopUntil) {
+			return { done: true, reason: 'Not a loop step' };
+		}
+
+		const state = _loopStates.get(stepLabel);
+		if (!state) return { done: true, reason: 'No loop state' };
+
+		const config = step.loopUntil;
+		state.currentIteration++;
+		state.status = 'running';
+
+		// Build task from template
+		const task = config.iterationTemplate.task
+			.replace(/\{\{iteration\.N\}\}/g, String(state.currentIteration));
+
+		// Add rolling summary to task if available
+		const fullTask = state.rollingSummary
+			? `${task}\n\n## Prior Iterations\n${state.rollingSummary}`
+			: task;
+
+		// Update plan panel detail
+		this.updatePlanStepDetail(`Iteration ${state.currentIteration}/${config.maxIterations}: running...`);
+		this._renderWidget();
+
+		// Check max iterations
+		if (state.currentIteration >= config.maxIterations) {
+			state.status = 'max-reached';
+			this.updatePlanStepDetail(`Max iterations (${config.maxIterations}) reached`);
+			this._renderWidget();
+			return { done: true, reason: 'max-reached' };
+		}
+
+		return { done: false };
+	}
+
+	/** Evaluate loop criterion against iteration result. */
+	evaluateLoopCriterion(
+		result: string,
+		config: LoopUntilConfig,
+		state: LoopUntilState
+	): { pass: boolean; scores?: Record<string, number>; feedback?: string } {
+		// For objective signals: check for success markers in output
+		// For model-based: will be handled by orchestrator delegation
+		const hasError = result.includes('[error]') || result.includes('❌');
+		const hasSuccess = result.includes('✅') || result.includes('completed');
+
+		return {
+			pass: !hasError && hasSuccess,
+			feedback: hasError ? 'Error detected in output' : undefined,
+		};
+	}
+
+	/** Update rolling summary with new iteration data. */
+	updateRollingSummary(
+		state: LoopUntilState,
+		iteration: LoopIteration
+	): void {
+		state.iterations.push(iteration);
+
+		// Build structured facts
+		const facts = state.iterations.map(i =>
+			`- Iter ${i.index + 1}: ${i.status}${i.scores ? ` (${Object.values(i.scores).join('/')})` : ''} — ${i.summary}`
+		).join('\n');
+
+		// Keep narrative for last 2 iterations only
+		const recent = state.iterations.slice(-2);
+		const narrative = recent.map(i =>
+			`Iteration ${i.index + 1}: ${i.summary}`
+		).join('\n');
+
+		// Compose rolling summary
+		if (state.iterations.length > 10) {
+			// Facts only for long loops
+			state.rollingSummary = `## Iteration Facts\n${facts}`;
+		} else {
+			state.rollingSummary = `## Iteration Facts\n${facts}\n\n## Recent Context\n${narrative}`;
+		}
+
+		// Sync back to plan step for rendering
+		// (state is a reference held by the step)
+		this._renderWidget();
+	}
+
+	/** Detect if loop has stalled (no improvement in recent window). */
+	detectStall(state: LoopUntilState, window: number = 3): { stalled: boolean; reason?: string } {
+		if (state.iterations.length < window) return { stalled: false };
+
+		const recent = state.iterations.slice(-window);
+		const allFailed = recent.every(i => i.status === 'fail' || i.status === 'error');
+
+		if (allFailed) {
+			return {
+				stalled: true,
+				reason: `No improvement in last ${window} iterations`,
+			};
+		}
+
+		return { stalled: false };
+	}
+
+	/** Compose human-readable feedback for an iteration evaluation. */
+	composeFeedback(
+		config: LoopUntilConfig,
+		evaluation: { pass: boolean; scores?: Record<string, number>; feedback?: string },
+		state: LoopUntilState
+	): string {
+		const parts: string[] = [];
+
+		if (evaluation.pass) {
+			parts.push('✅ Criterion met!');
+		} else {
+			parts.push('❌ Criterion not met.');
+
+			if (evaluation.feedback) {
+				parts.push(`\nFeedback: ${evaluation.feedback}`);
+			}
+
+			if (evaluation.scores) {
+				const passing = Object.entries(evaluation.scores).filter(([_, v]) => v >= 8);
+				const failing = Object.entries(evaluation.scores).filter(([_, v]) => v < 8);
+
+				if (passing.length > 0) {
+					parts.push(`\nWhat passed: ${passing.map(([k, v]) => `${k} (${v})`).join(', ')}`);
+				}
+				if (failing.length > 0) {
+					parts.push(`\nWhat needs work: ${failing.map(([k, v]) => `${k} (${v})`).join(', ')}`);
+				}
+			}
+		}
+
+		return parts.join('\n');
+	}
+
+	/** Mark loop step as completed with final status. */
+	completeLoopStep(stepLabel: string, finalStatus: LoopUntilState['status']): void {
+		const state = _loopStates.get(stepLabel);
+		if (state) {
+			state.status = finalStatus;
+		}
+		const step = this.planState?.steps.find(s => s.label === stepLabel);
+		if (step) {
+			step.completed = true;
+			step.active = false;
+			step.endTime = Date.now();
+		}
+		this._activateNextPending();
+		this._renderWidget();
+		this.savePlanState();
+		this.recordTimelineFrame('loop_complete');
+	}
+
+	/** Get the module-level loop state map (for orchestrator access). */
+	static getLoopStates(): Map<string, LoopUntilState> {
+		return _loopStates;
+	}
 }
 
 export const _instances = new Map<string, PlanPanel>();
@@ -637,4 +848,50 @@ export function modifyStep(index: number, label: string, kind?: StepKind, ctx?: 
 export function removeStep(index: number, ctx?: unknown) {
 	const panel = resolvePlanPanel(ctx);
 	return panel ? panel.removeStep(index) : { success: false, error: 'No active plan' };
+}
+
+// ── Loop execution proxies ──────────────────────────────────────────────
+
+export function initLoopState(stepLabel: string, config: LoopUntilConfig, ctx: unknown): void {
+	resolvePlanPanel(ctx)?.initLoopState(stepLabel, config);
+}
+
+export async function runLoopIteration(stepLabel: string, ctx: unknown): Promise<{ done: boolean; reason?: string }> {
+	const panel = resolvePlanPanel(ctx);
+	if (!panel) return { done: true, reason: 'No active plan' };
+	return panel.runLoopIteration(stepLabel);
+}
+
+export function evaluateLoopCriterion(
+	result: string,
+	config: LoopUntilConfig,
+	state: LoopUntilState,
+	_ctx?: unknown
+): { pass: boolean; scores?: Record<string, number>; feedback?: string } {
+	const panel = _ctx ? resolvePlanPanel(_ctx) : null;
+	return panel?.evaluateLoopCriterion(result, config, state) ?? { pass: false, feedback: 'No plan panel' };
+}
+
+export function updateRollingSummary(state: LoopUntilState, iteration: LoopIteration, ctx?: unknown): void {
+	const panel = ctx ? resolvePlanPanel(ctx) : null;
+	panel?.updateRollingSummary(state, iteration);
+}
+
+export function detectStall(state: LoopUntilState, window?: number, _ctx?: unknown): { stalled: boolean; reason?: string } {
+	const panel = _ctx ? resolvePlanPanel(_ctx) : null;
+	return panel?.detectStall(state, window) ?? { stalled: false };
+}
+
+export function composeFeedback(
+	config: LoopUntilConfig,
+	evaluation: { pass: boolean; scores?: Record<string, number>; feedback?: string },
+	state: LoopUntilState,
+	_ctx?: unknown
+): string {
+	const panel = _ctx ? resolvePlanPanel(_ctx) : null;
+	return panel?.composeFeedback(config, evaluation, state) ?? '';
+}
+
+export function completeLoopStep(stepLabel: string, finalStatus: LoopUntilState['status'], ctx: unknown): void {
+	resolvePlanPanel(ctx)?.completeLoopStep(stepLabel, finalStatus);
 }

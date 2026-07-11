@@ -17,7 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed } from "./subagent-runner.ts";
-import { clearPlanPanel } from "./plan-panel.ts";
+import { clearPlanPanel, PlanPanel } from "./plan-panel.ts";
 import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
 import { traceToolCallEntry, traceMark } from "./debug-path-trace.ts";
@@ -100,7 +100,15 @@ export default function (pi: ExtensionAPI) {
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
 		new ScopeManager(resolveCwd(ctx)).clearScope();
-		clearPlanPanel(ctx);
+
+		// Don't clear plan panel if a loop is active
+		const loopStates = PlanPanel.getLoopStates();
+		const hasActiveLoop = Array.from(loopStates.values()).some(
+			state => state.status === 'running'
+		);
+		if (!hasActiveLoop) {
+			clearPlanPanel(ctx);
+		}
 
 		const fusionConfig = loadFusionConfig(ctx.cwd);
 		const parentSkills = event.systemPromptOptions?.skills;

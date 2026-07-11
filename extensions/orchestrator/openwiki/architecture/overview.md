@@ -17,6 +17,7 @@ The plan panel is a fixed-height (9-line budget) TUI widget rendered via `pi.set
 - Ordered step list with status icons (pending/active/completed/errored)
 - Active delegation count and elapsed time
 - Spinner animation during active work
+- Loop progress with `⟳` prefix for `loop_until` steps
 
 State lives in `PlanPanel` instances, one per session, stored in a module-scoped `Map<string, PlanPanel>` keyed by `sessionId`.
 
@@ -71,6 +72,51 @@ Active tools are frozen at `session_start` (not `before_agent_start`) to ensure 
 
 **Key file**: `/index.ts`
 
+## Loop Mode (Layer 1 Extension)
+
+The orchestrator doubles as a loop controller via the `loop_until` step kind. No separate loop controller exists — the orchestrator IS the loop.
+
+### Loop Lifecycle
+
+```
+setup → iterate → evaluate → feedback → repeat
+```
+
+1. **Setup**: `initLoopState()` creates `LoopUntilState` with config, iteration history, and rolling summary
+2. **Iterate**: `runLoopIteration()` runs one pass (may delegate or use orchestrator directly)
+3. **Evaluate**: `evaluateLoopCriterion()` checks success criteria (binary, scored, checklist, custom)
+4. **Feedback**: `composeFeedback()` generates structured feedback for the next iteration
+5. **Repeat**: Loop continues until criterion met or hard stop hit
+
+### Success Criteria Modes
+
+| Mode | Description |
+|------|-------------|
+| **binary** | Pass/fail check — criterion returns true/false |
+| **scored** | Numeric score against threshold (e.g., test coverage > 80%) |
+| **checklist** | All items must be checked off |
+| **custom** | Arbitrary evaluation logic via specialist |
+
+### Evaluation Modes
+
+| Mode | Description |
+|------|-------------|
+| **single-pass** | Evaluate once per iteration |
+| **satisficing** | Stop at first "good enough" result, don't optimize further |
+
+### Rolling Summary
+
+Maintained by `updateRollingSummary()` — a structured facts + recent narrative summary visible to the user. Prevents context bloat across iterations while preserving key state.
+
+### Hard Stops
+
+- **max_iterations**: Configurable cap (prevents infinite loops)
+- **stall detection**: `detectStall()` identifies diminishing returns across iterations
+
+### Widget Rendering
+
+Loop steps display with `⟳` prefix in the plan panel to distinguish from regular delegation steps.
+
 ## Module Dependency Graph
 
 ```
@@ -78,6 +124,7 @@ index.ts
   ├── registration-hub.ts (registers all tools + commands)
   │     ├── delegate-tool.ts → delegate-pipeline.ts
   │     ├── plan-tool.ts → plan-panel.ts
+  │     │                    └── loop state management (initLoopState, runLoopIteration, etc.)
   │     ├── fusion-tool.ts → fusion-pipeline.ts
   │     ├── introspection-tools.ts
   │     └── scout-tools.ts
@@ -128,6 +175,7 @@ index.ts
         │
 7. Plan panel step finalized (completed/errored)
    → Delegation count decremented
+   → If loop step, evaluate criterion and iterate or finalize
    → If all steps done, plan auto-clears
         │
 8. Orchestrator receives result, continues reasoning
@@ -150,6 +198,12 @@ Single-file changes use `relaxed` gate mode (fewer restrictions). Multi-file cha
 ### Self-Correction Pattern
 When a subagent hits a scope violation, it receives a block message but continues running. The message is designed to teach the LLM what went wrong and how to recover (e.g., call `ask_orchestrator` to request scope expansion). This is preferred over crashing because the subagent often has partial progress worth preserving.
 
+### Loop-Active Plan Preservation
+`clearPlanIfComplete()` skips timer shutdown when a loop step is active. `before_agent_start` preserves the plan panel state during active loops — the plan is not cleared between iterations.
+
+### Delegate Controller Split
+The delegation pipeline was originally a single `delegate-controller.ts` module. It was split into focused modules: `delegate-tool.ts` (tool definition), `delegate-controller.ts` (thin routing), `delegate-pipeline.ts` (core orchestration + result formatting), and `delegate-feed-builder.ts` (activity feed integration). This split followed the Single Responsibility Principle and made each module independently testable. Documented in `/docs/adr/0005-delegate-controller-split.md`.
+
 ## Module Organization
 
 The codebase is a flat TypeScript module tree — no nested `src/` directories. All `.ts` files are at the root, grouped by domain concern:
@@ -159,7 +213,7 @@ The codebase is a flat TypeScript module tree — no nested `src/` directories. 
 - **Scope**: `scope-*.ts`
 - **Plan/Activity**: `plan-*.ts`, `activity-feed.ts`, `peek-overlay.ts`
 - **Fusion**: `fusion-*.ts`
-- **Tools**: `scout-tools.ts`, `introspection-tools.ts`, `read-skill-tool.ts`, `bash-interceptor.ts`
+- **Tools**: `scout-tools.ts`, `introspection-tools.ts`, `read-skill-tool.ts`, `bash-interceptor.ts`, `bash-interceptor-integrated.ts`, `interactive-shell-tool.ts`
 - **Support**: `types.ts`, `debug*.ts`, `spinner-state.ts`, `ui-utils.ts`, `orchestrator-theme.ts`
 
 ## Testing Strategy

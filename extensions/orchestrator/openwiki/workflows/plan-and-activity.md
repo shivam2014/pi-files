@@ -19,7 +19,7 @@ interface PlanStep {
   detailLines?: string[];   // Multi-line detail
   startTime?: number;
   endTime?: number;
-  kind?: 'delegation' | 'orchestrator';
+  kind?: 'delegation' | 'orchestrator' | 'loop_until';
 }
 ```
 
@@ -61,6 +61,50 @@ The plan panel maintains a timeline of events (max 500 frames). Each frame captu
 
 Timeline is flushed to disk on `agent_end`.
 
+### Loop Until Step Kind
+
+Steps with `kind: 'loop_until'` activate the orchestrator's built-in loop mode. The orchestrator IS the loop — no separate controller module.
+
+#### Loop Lifecycle Methods (in `plan-panel.ts`)
+
+| Method | Description |
+|--------|-------------|
+| `initLoopState()` | Initialize `LoopUntilState` for a step |
+| `runLoopIteration()` | Execute one iteration |
+| `evaluateLoopCriterion()` | Check if success criterion is met |
+| `updateRollingSummary()` | Maintain structured iteration history |
+| `detectStall()` | Detect diminishing returns |
+| `composeFeedback()` | Generate feedback for next iteration |
+| `completeLoopStep()` | Finalize loop step on completion |
+
+#### Creating Loop Steps
+
+```typescript
+plan("Improve test coverage", [
+  { label: "Loop: reach 90% coverage", kind: "loop_until", loopUntil: { ... } }
+])
+```
+
+The `loopUntil` field contains a `LoopUntilConfig` with criterion, evaluation mode, max iterations, and optional specialist.
+
+#### Algorithm Changes
+
+- `clearPlanIfComplete()` — preserves timers when a loop step is active
+- `before_agent_start` — preserves plan panel during active loops
+- Widget rendering — loop steps show `⟳` prefix in the plan panel
+
+### Loop Lifecycle
+
+```
+setup → iterate → evaluate → feedback → repeat
+```
+
+1. **Setup**: `initLoopState()` creates state with config, history, rolling summary
+2. **Iterate**: `runLoopIteration()` runs one pass
+3. **Evaluate**: `evaluateLoopCriterion()` checks success (binary/scored/checklist/custom)
+4. **Feedback**: `composeFeedback()` generates structured feedback for next iteration
+5. **Repeat** until criterion met or hard stop (max iterations, stall detection)
+
 ## Activity Feed (Layer 2)
 
 **File**: `/activity-feed.ts`
@@ -76,6 +120,8 @@ interface ActivityFeedState {
   planParsed: boolean;    // true after planSteps() tool called
   errored?: boolean;
   errorMessage?: string;
+  retryCount?: number;    // Tracks retry attempts
+  retryReason?: string;   // Reason for last retry
 }
 
 interface Step {
@@ -84,6 +130,7 @@ interface Step {
   substeps: Substep[];    // Individual tool calls
   startTime?: number;
   endTime?: number;
+  overflowCount?: number; // Tracks when substeps exceed max visible
 }
 
 interface Substep {
