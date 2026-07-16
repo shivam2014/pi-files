@@ -16,7 +16,7 @@ import { captureDiagnostic, isDiagnosticsEnabled, persistDiagnostic, cleanupOldD
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import os from "os";
 import { statusIcon, styledSymbol, getTheme } from "./orchestrator-theme.ts";
-import { getSessionMode } from "./orchestrator-config";
+import { getSessionMode, loadOrchestratorConfig } from "./orchestrator-config";
 
 /** Result type returned by executeDelegate */
 export interface ExecuteDelegateResult {
@@ -44,6 +44,11 @@ export class DelegatePipeline {
 		ctx: DelegateControllerContext,
 		onUpdate: (update: any) => void,
 	): Promise<ExecuteDelegateResult> {
+		// Ensure config is loaded and available on ctx
+		if (!ctx.config) {
+			ctx.config = loadOrchestratorConfig();
+		}
+
 		// ── Delegation mode guard ──
 		const mode = getSessionMode(ctx);
 		if (mode === "sequential" && params.parallel) {
@@ -130,7 +135,7 @@ export class DelegatePipeline {
 		// ── Apply scope (side-effectful: gate check + write) ──
 		let delegationId: string | null = null;
 		if (scopeToUse !== null) {
-			const gateResult = resolve(params.task, scopeToUse);
+			const gateResult = resolve(params.task, scopeToUse, specialist.name);
 			if (gateResult === "ask" && !isReadOnly) {
 				throw new Error(
 					`⚠️ Scope is vague for ${specialist.name}. Clarify scope before delegating.\n\n` +

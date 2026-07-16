@@ -9,57 +9,8 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-// Legacy tool doc generator — used for module-load-time bootstrap BEFORE pi instance exists.
-// The toolSyntax/toolOutputFormat maps are hand-maintained for SDK built-in tools whose
-// promptGuidelines don't include "Output:" lines by SDK design.
-// Called by _initToolDocs() at module load; replaced at runtime by updateToolDocs(pi).
-// @deprecated Use generateToolDocFromApi after pi is available (from index.ts).
-export function generateToolDoc(tools: string[], constraints?: string): string {
-	const toolSyntax: Record<string, string> = {
-		read: "read({ path, offset?, limit? })",
-		grep: "grep({ pattern, path?, glob?, ignoreCase? })",
-		find: "find({ pattern, path? })",
-		ls: "ls({ path? })",
-		edit: "edit({ path, edits: [{ oldText, newText }] })",
-		write: "write({ path, content })",
-		bash: "bash({ command, timeout? })",
-		lint: "lint({ files? })",
-		"git-read": "git-read({ args })",
-		gh: "gh({ args })",
-		"web_search": "web_search({ query, numResults? })",
-		fetch_content: "fetch_content({ url })",
-	};
-
-	const toolOutputFormat: Record<string, string> = {
-		read: "Returns file content. Text files: content with line numbers. Images: sent as attachment. Truncated to 2000 lines or 50KB. If truncated, output shows '[...N lines truncated. Use offset=N to continue.]' — use offset to read more.",
-		grep: "Returns matching lines as 'path:lineNum: matched text'. Truncated to 100 matches or 50KB. Long lines truncated to 500 chars. When context param used, context lines prefixed with ':' or '-'.",
-		find: "Returns list of matching file paths, one per line. Truncated to 1000 results (or limit param). Respects .gitignore.",
-		ls: "Returns directory listing with file/directory names, sizes, and permissions.",
-		edit: "Returns success with unified diff showing changes applied, or error if oldText not found or not unique in file.",
-		write: "Returns success or error. Creates file and parent directories automatically.",
-		bash: "Returns { output, exitCode, cancelled, truncated, fullOutputPath? }. output = combined stdout+stderr. Truncated to 2000 lines or 50KB. If truncated, full output saved to temp file referenced by fullOutputPath.",
-		lint: "Returns per-file lint results: 'file:line:col severity ruleId message'. Severity: error | warning | info. Empty output = no issues.",
-		"git-read": "Returns file content at a specific git ref/commit. Use args like 'show HEAD:src/index.ts' or 'show main:README.md'.",
-		gh: "Returns raw GitHub CLI output. Use args like 'issue view 3' or 'pr list --state open'.",
-		"web_search": "Returns numbered search results: '1. Title\n   https://url\n   snippet text...'. Typically 10 results. May include AI-generated answer summary before results.",
-		fetch_content: "Returns full webpage content as extracted text/markdown. Output size varies by page. Truncated if very large.",
-	};
-
-	const lines = ["\n\nYour available tools:"];
-	for (const tool of tools) {
-		const syntax = toolSyntax[tool] || tool;
-		const outputFmt = toolOutputFormat[tool];
-		if (outputFmt) {
-			lines.push(`- \`${syntax}\`\n  Output: ${outputFmt}`);
-		} else {
-			lines.push(`- \`${syntax}\``);
-		}
-	}
-	if (constraints) {
-		lines.push(constraints);
-	}
-	return lines.join("\n");
-}
+/** Shared clarification protocol instruction — ask orchestrator before guessing. */
+export const CLARIFICATION_PROTOCOL = `follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info"`;
 
 /**
  * Dynamic tool doc generator sourced from pi.getAllTools().
@@ -239,20 +190,6 @@ export let _researcherToolDoc = "";
 export let _writerToolDoc = "";
 
 /**
- * Initialize tool doc variables at module load using legacy generateToolDoc (hardcoded maps).
- * Called synchronously before SPECIALISTS is evaluated so template literals capture correct values.
- * Callers may later refresh via updateToolDocs(pi) when a pi instance is available.
- */
-function _initToolDocs(): void {
-	_scoutToolDoc = generateToolDoc([...SCOUT_TOOLS], "You do NOT have bash, edit, or write.");
-	_coderToolDoc = generateToolDoc([...CODER_TOOLS], "Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.");
-	_reviewerToolDoc = generateToolDoc([...REVIEWER_TOOLS], "You do NOT have edit or write. You cannot modify files.");
-	_researcherToolDoc = generateToolDoc([...RESEARCHER_TOOLS], "You do NOT have bash, edit, or write.");
-	_writerToolDoc = generateToolDoc([...WRITER_TOOLS], "You do NOT have bash.");
-}
-_initToolDocs();
-
-/**
  * Refresh tool doc variables from the live pi.getAllTools() registry.
  * Uses generateToolDocFromApi which sources output format from each tool's promptGuidelines.
  */
@@ -288,6 +225,7 @@ export function updateToolDocs(pi: { getAllTools: () => { name: string; paramete
 export const SPECIALISTS: Record<string, Specialist> = {
 	scout: {
 		name: "scout",
+		readOnly: true,
 		routingLabel: "Investigate codebase / find files",
 		description: "Read-only codebase investigator. Uses grep/find/ls tools to locate code, read to examine files. Ideal for architecture discovery, bug investigation, code tracing, and verifying file contents.",
 		tools: [...SCOUT_TOOLS],
@@ -309,7 +247,7 @@ Your job:
 - NEVER use \`cat\` — use the \`read\` tool instead.
 - Use \`read\` to examine files. Do NOT use \`ls\` on files — \`ls\` is only for listing directories.
 - Follow the Minimal Action rule above: ONE targeted command per step. If you've read 3+ files without narrowing the question, STOP and call ask_orchestrator. Broad exploration is drift, not diligence.
-- If the task is ambiguous, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer — never "please provide more info".
+- If the task is ambiguous, ${CLARIFICATION_PROTOCOL}.
 
 Output format:
 ## Files Found
@@ -347,6 +285,7 @@ ${TERSE_INSTRUCTION}`,
 	},
 	coder: {
 		name: "coder",
+		readOnly: false,
 		routingLabel: "Implement features / fix bugs",
 		description: "Implementation specialist with full read/write access. Uses edit/write for file changes, bash for verification. Ideal for implementing features and fixing bugs.",
 		tools: [...CODER_TOOLS],
@@ -371,7 +310,7 @@ Rules:
 - Read relevant files first (use \`read\` tool, NOT \`cat\`), then make targeted edits
 - Verify your changes compile/work
 - The \`lint\` tool is available for checking file syntax after edits. It auto-runs after \`edit\`/\`write\`, but you can also call it explicitly.
-- If the task is ambiguous, scope is unclear, or requirements are missing, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info". Self-serve from CONTEXT.md/docs/adr/code before asking.
+- If the task is ambiguous, scope is unclear, or requirements are missing, ${CLARIFICATION_PROTOCOL}. Self-serve from CONTEXT.md/docs/adr/code before asking.
 
 Output format:
 ## Completed
@@ -389,6 +328,7 @@ ${TERSE_INSTRUCTION}${_coderToolDoc}${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 	reviewer: {
 		name: "reviewer",
+		readOnly: true,
 		routingLabel: "Review code changes / run bash diagnostics",
 		description: "Read-only code reviewer with bash access. Checks for bugs, security issues, performance problems, and style violations. Also handles read-only bash diagnostics (curl endpoints, check ports, read configs, run CLIs). Outputs Critical/Warnings/Suggestions.",
 		tools: ["read", "bash", "grep"],
@@ -405,7 +345,7 @@ Your job:
 - Check docs/data: accuracy, completeness, clarity, structure, consistency
 - Compare against the design spec if provided
 - Be thorough but concise
-- If the review scope or acceptance criteria are unclear, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info"
+- If the review scope or acceptance criteria are unclear, ${CLARIFICATION_PROTOCOL}
 
 Output format:
 ## Critical
@@ -431,6 +371,7 @@ ${TERSE_INSTRUCTION}${_reviewerToolDoc}`,
 	},
 	researcher: {
 		name: "researcher",
+		readOnly: true,
 		routingLabel: "Research questions / gather info",
 		description: "Read-only research specialist with web search capabilities. Searches the web, reads docs, configs, and code to answer questions with evidence-based answers and source references.",
 		tools: [...RESEARCHER_TOOLS],
@@ -448,7 +389,7 @@ Your job:
 - Use web_search to find relevant web results — it returns 10 results with titles, URLs, and snippets
 - Use fetch_content to fetch the full content of a webpage after finding relevant URLs
 - Strategy: search first, then fetch the most promising results for detailed content
-- If the research question is ambiguous or you need clarification on what evidence to gather, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info"
+- If the research question is ambiguous or you need clarification on what evidence to gather, ${CLARIFICATION_PROTOCOL}
 
 Output format:
 ## Answer
@@ -482,6 +423,7 @@ ${TERSE_INSTRUCTION}`,
 	},
 	writer: {
 		name: "writer",
+		readOnly: false,
 		routingLabel: "Write / edit documentation",
 		description: "Documentation specialist with read/write access. Creates and edits markdown docs, uses ls/find to browse directories. Ideal for READMEs, API docs, and project documentation.",
 		tools: ["read", "write", "edit", "ls", "find", "git-read"],
@@ -496,7 +438,7 @@ Your job:
 - Edit existing docs for accuracy and completeness
 - Respect scope: only modify/create files listed in the delegated scope
 - Default to doc-friendly boundaries: prefer minimal edits, preserve existing structure, and avoid unrelated rewrites
-- If the doc scope, target audience, or format is unclear, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info"
+- If the doc scope, target audience, or format is unclear, ${CLARIFICATION_PROTOCOL}
 
 Output format:
 ## Completed
@@ -529,6 +471,35 @@ export function getSpecialist(name: string): Specialist | undefined {
 
 export function listSpecialists(): string[] {
 	return Object.keys(SPECIALISTS);
+}
+
+/**
+ * Render the full system prompt for a specialist, including resolved skills and optional task.
+ * This is the test/evaluation harness entry point for prompt-only changes (issue #56).
+ *
+ * @param specialistName - Name of the specialist (e.g. "coder", "scout")
+ * @param task - Optional task description appended as a ## Task section
+ * @param skills - Optional skill name overrides (merged with defaults via getSpecialistSkills)
+ * @returns The full system prompt string
+ */
+export function renderSpecialistPrompt(
+	specialistName: string,
+	task?: string,
+	skills?: string[],
+): string {
+	const spec = SPECIALISTS[specialistName];
+	if (!spec) throw new Error(`Unknown specialist: ${specialistName}`);
+
+	const resolvedSkills = getSpecialistSkills(specialistName, skills);
+	const skillSection = buildSkillSection(spec.name, resolvedSkills);
+
+	let prompt = spec.systemPrompt + skillSection;
+
+	if (task) {
+		prompt += `\n\n## Task\n${task}`;
+	}
+
+	return prompt;
 }
 
 /**

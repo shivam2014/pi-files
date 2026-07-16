@@ -18,7 +18,7 @@ import {
 	formatResult,
 	type LintTool,
 	type LintResult,
-} from "./lint-guard-core";
+} from "./lint-guard/lib/lint-guard-core";
 
 const local = createLocalBashOperations();
 

@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-07-09T13:01:20.381Z",
+  "updatedAt": "2026-07-12T19:35:04.519Z",
   "command": "init",
   "gitHead": "fatal: not a git repository (or any of the parent directories): .git",
   "model": "mimo-v2.5-vision"

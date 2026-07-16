@@ -28,10 +28,18 @@ const WRITE_COMMANDS = new Set([
 export function isWriteCommand(command: string): boolean {
   const trimmed = command.trim();
   
+  // Strip stderr-only redirects (2> or 2>>) before checking for stdout redirects.
+  // These suppress error noise, not redirect output to files.
+  // After stripping, check for remaining stdout redirects (>, >>, &>, 1>) as write indicators.
+  // "cmd > /dev/null 2>&1" → still write (stdout > remains after stripping 2>)
+  // "cmd &> /dev/null" → still write (&> is not a 2> pattern)
+  // "cmd 2>/dev/null" → not write (2> stripped, no stdout redirect remains)
+  const withoutStderrRedirects = trimmed.replace(/\b2>>?/g, '');
+  
   // Check for output redirection (always write)
-  if (trimmed.includes(" > ") || trimmed.endsWith(">") || 
-      trimmed.includes(" >> ") || trimmed.endsWith(">>") ||
-      trimmed.includes(" 2>") || trimmed.includes(" 1>")) {
+  if (withoutStderrRedirects.includes(" > ") || withoutStderrRedirects.endsWith(">") || 
+      withoutStderrRedirects.includes(" >> ") || withoutStderrRedirects.endsWith(">>") ||
+      withoutStderrRedirects.includes(" &>") || withoutStderrRedirects.includes(" 1>")) {
     return true;
   }
   

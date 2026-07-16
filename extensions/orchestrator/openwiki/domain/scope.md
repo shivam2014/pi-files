@@ -263,12 +263,26 @@ Edit `bash-classifier.ts` — the `isWriteCommand()` function. This classifier c
 
 This implements the core principle from this document: *"Tool-level enforcement, not prompt-level."* The prompt instruction ("Do NOT use bash to modify files") is defense-in-depth; the event handler is the actual enforcement.
 
+### Specialist-Aware Interception
+
+**File**: `/bash-interceptor-integrated.ts`
+
+A higher-level interception layer that dynamically reads specialist permissions from the `SPECIALISTS` registry. Unlike the basic interceptor which takes static `readOnly`/`blockDangerous` flags, this layer:
+
+1. Looks up the specialist name from `PI_SPECIALIST_NAME` env var
+2. Checks if the specialist has `edit` or `write` in its tool set
+3. If no write tools → sets `readOnly: true` automatically
+4. Applies dangerous command blocking for all specialists
+
+This means the specialist roster itself drives enforcement — adding or removing `edit`/`write` from a specialist's tools automatically adjusts bash write-command blocking without touching the interceptor code.
+
 ### Source Files
 
 | File | Role |
 |------|------|
 | `bash-interceptor.ts` | `createBashInterceptor()` — SDK tool_call event handler, dangerous command list |
 | `bash-classifier.ts` | `isWriteCommand()` — pure function classifying write commands |
+| `bash-interceptor-integrated.ts` | Specialist-aware interception — dynamically reads specialist permissions |
 | `index.ts` | `isReadOnlySpecialist()` — determines readOnly from specialist name |
 | `subagent-runner.ts` | Sets `PI_SPECIALIST_NAME` env var for specialist identification |
 
@@ -276,14 +290,31 @@ This implements the core principle from this document: *"Tool-level enforcement,
 
 Scope is stored in a single `.pi/scope.json` file per cwd. When multiple delegations run concurrently, the last writer wins. This can cause scope conflicts — a known limitation.
 
+## Delegation Scope Isolation
+
+**File**: `/scope-manager.ts`
+
+In parallel delegation mode, each delegation gets its own isolated scope file to avoid conflicts:
+
+| Function | Description |
+|----------|-------------|
+| `createDelegationScope(delegationId, manifest)` | Writes `.pi/scopes/<delegationId>.json` |
+| `readDelegationScope(delegationId)` | Reads a delegation-specific scope file |
+| `deleteDelegationScope(delegationId)` | Removes the delegation scope file after completion |
+
+This is used by `delegate-pipeline.ts` when running in parallel mode. Each delegation creates a per-delegation scope ID, writes its scope to that path, and the tool guard reads from the delegation-specific file instead of the shared `.pi/scope.json`.
+
+In sequential mode (the default), all delegations share the single `.pi/scope.json` file and the concurrency caveat above applies.
+
 ## Key Source Files
 
 | File | Role |
 |------|------|
-| `/scope-manager.ts` | Concept owner, read/write/normalize scope |
+| `/scope-manager.ts` | Concept owner, read/write/normalize scope, delegation scope isolation |
 | `/scope-guard.ts` | Path enforcement, glob matching, expansion requests |
 | `/scope-policy.ts` | Per-specialist default scope policies |
 | `/types.ts` | `ScopeManifest`, `ResolvedScope` type definitions |
+| `/bash-interceptor-integrated.ts` | Specialist-aware bash interception |
 
 ## Related ADRs
 

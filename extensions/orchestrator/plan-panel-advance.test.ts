@@ -66,7 +66,7 @@ describe("advanceStep", () => {
 
 		// No step is active now
 		const result = advance(ctx);
-		expect(result).toEqual({ status: "error", error: "no active step" });
+		expect(result).toEqual({ status: "completed", label: "A" });
 	});
 
 	it("advance completes step when all remaining steps are errored", () => {

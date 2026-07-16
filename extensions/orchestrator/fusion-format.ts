@@ -1,40 +1,3 @@
-function formatAnalysisBullets(analysis: any, indent: string = "  "): string {
-	let text = "";
-	if (analysis?.consensus?.length) {
-		for (const item of analysis.consensus) {
-			text += `${indent}✓ ${item}\n`;
-		}
-	}
-	if (analysis?.contradictions?.length) {
-		for (const item of analysis.contradictions) {
-			const topic = typeof item === "string" ? item : item.topic || "";
-			text += `${indent}⚡ Contradiction: ${topic}\n`;
-		}
-	}
-	if (analysis?.unique_insights?.length) {
-		for (const item of analysis.unique_insights) {
-			if (typeof item === "object") {
-				const insight = item.insight || "";
-				const prefix = item.model ? `${item.model}: ` : "";
-				text += `${indent}💡 ${prefix}${insight}\n`;
-			} else {
-				text += `${indent}💡 ${item}\n`;
-			}
-		}
-	}
-	if (analysis?.blind_spots?.length) {
-		for (const item of analysis.blind_spots) {
-			text += `${indent}⚠ Blind spot: ${item}\n`;
-		}
-	}
-	if (analysis?.recommendations?.length) {
-		for (const item of analysis.recommendations) {
-			text += `${indent}→ ${item}\n`;
-		}
-	}
-	return text;
-}
-
 export function formatFusionResult(analysis: any, succeeded: any[], failed: any[], panelModels: any[], judgeModel: any): string {
 	let text = "## Fusion Analysis\n\n";
 
@@ -72,10 +35,7 @@ export function formatFusionResult(analysis: any, succeeded: any[], failed: any[
 	text += "### Panel\n\n";
 	for (const r of succeeded) {
 		text += `**${r.model}**:\n`;
-		if (r.analysis) {
-			text += formatAnalysisBullets(r.analysis);
-		} else if (r.reports?.length) {
-			// Fallback: use raw reports
+		if (r.reports?.length) {
 			for (const report of r.reports) {
 				text += `  ✓ ${report}\n`;
 			}
@@ -92,7 +52,27 @@ export function formatFusionResult(analysis: any, succeeded: any[], failed: any[
 	if (analysis) {
 		text += "### Judge\n\n";
 		text += `**${judgeModel.id}**:\n`;
-		text += formatAnalysisBullets(analysis);
+		if (analysis.consensus?.length) {
+			for (const item of analysis.consensus) {
+				text += `  ✓ ${item}\n`;
+			}
+		}
+		if (analysis.contradictions?.length) {
+			for (const item of analysis.contradictions) {
+				const topic = typeof item === "string" ? item : item.topic || "";
+				text += `  ⚡ Contradiction: ${topic}\n`;
+			}
+		}
+		if (analysis.blind_spots?.length) {
+			for (const item of analysis.blind_spots) {
+				text += `  ⚠ Blind spot: ${item}\n`;
+			}
+		}
+		if (analysis.recommendations?.length) {
+			for (const item of analysis.recommendations) {
+				text += `  → ${item}\n`;
+			}
+		}
 		text += "\n";
 	}
 
@@ -107,15 +87,7 @@ export function formatPanelResults(
 ): { content: Array<{ type: "text"; text: string }>; details: { status: string; responses: any[]; errors: any[]; judgeError?: string } } {
 	let text = "## Panel Responses\n\n";
 	if (succeeded.length > 0) {
-		for (const r of succeeded) {
-			text += `### ${r.model}\n`;
-			if (r.analysis) {
-				text += formatAnalysisBullets(r.analysis);
-			} else {
-				text += `${r.content}\n`;
-			}
-			text += "\n";
-		}
+		text += succeeded.map((r: any) => `### ${r.model}\n${r.content}`).join("\n\n");
 	} else {
 		text += "*(No panel model succeeded)*";
 	}

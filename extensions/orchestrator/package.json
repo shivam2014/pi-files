@@ -4,8 +4,7 @@
   "type": "module",
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.3",
-    "picomatch": "^4.0.4",
-    "vitest": "^4.1.10"
+    "picomatch": "^4.0.4"
   },
   "scripts": {
     "test": "npx vitest run",

@@ -129,6 +129,7 @@ describe("handleSubagentToolCall", () => {
 			expect(result).toEqual({
 				block: true,
 				reason: "Scope violation: secret.ts is outside the allowed scope",
+				expansionRequest: null,
 			});
 		});
 
@@ -181,6 +182,7 @@ describe("handleSubagentToolCall", () => {
 			expect(result).toEqual({
 				block: true,
 				reason: "Scope violation: bad.ts is outside the allowed scope",
+				expansionRequest: null,
 			});
 		});
 

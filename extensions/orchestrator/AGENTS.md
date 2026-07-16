@@ -27,6 +27,20 @@ bash ~/.pi/tui-smoke.sh pi "investigate the auth system and add logging"  # scou
 
 Check snapshot files (`/tmp/tui-smoke-*/00-startup.txt` through `04-final-state.txt`).
 
+### Testing lifecycle events
+
+When testing extension behavior that depends on `setActiveTools`, tests must trigger lifecycle events in the correct order:
+
+1. **Trigger `session_start` before `before_agent_start`** — `setActiveTools` only fires during `session_start`. If skipped, `getActiveToolsHistory()` returns `undefined` and tool-freezing behavior is never exercised.
+2. **Mock `createMockPi().trigger()` pattern** — fire both events in order:
+   ```ts
+   await pi.trigger('session_start', {}, { cwd });
+   await pi.trigger('before_agent_start', event, ctx);
+   ```
+3. **Use `ctx.cwd` in `session_start` handlers** — not `process.cwd()`, so config resolution works in test temp directories.
+
+> Reference: [openwiki/testing/guide.md](openwiki/testing/guide.md) for detailed guidance on test setup, snapshots, and init-phase constraints.
+
 ## Anti-Patterns
 
 - Don't weaken scope enforcement to pass tests.

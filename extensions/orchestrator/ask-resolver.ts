@@ -306,21 +306,27 @@ export function hasLiteralSegment(pattern: string): boolean {
  * - filesToModify or filesToCreate entries with at least one literal segment
  * - directories/allowedDirectories set with specific dirs
  */
-export function resolve(request: string, scope: ScopeForResolve | null): ResolveResult {
+export function resolve(request: string, scope: ScopeForResolve | null, specialist?: string): ResolveResult {
 	const s = scope;
 	// No scope defined → ask
 	if (s === null || s === undefined) return "ask";
 
-	// Explicit scope with all empty arrays → deliberate read-only choice, not vague
+	// Empty scope arrays
 	const fMod = s.filesToModify;
 	const fCre = s.filesToCreate;
 	const dirs = s.directories ?? [];
-	if (
-		Array.isArray(fMod) && fMod.length === 0 &&
+	const isEmptyScope = Array.isArray(fMod) && fMod.length === 0 &&
 		Array.isArray(fCre) && fCre.length === 0 &&
-		(!dirs || dirs.length === 0)
-	) {
-		return "proceed";
+		(!dirs || dirs.length === 0);
+
+	if (isEmptyScope) {
+		// Read-only specialists (scout, researcher, reviewer) can have empty scope
+		const readOnlySpecialists = ['scout', 'researcher', 'reviewer'];
+		if (readOnlySpecialists.includes(specialist ?? '')) {
+			return "proceed";
+		}
+		// Non-read-only specialists (coder, writer) with empty scope likely forgot to include paths
+		return "ask";
 	}
 
 	// Concrete file specs → proceed (non-wildcard paths in filesToModify, or any filesToCreate)

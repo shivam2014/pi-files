@@ -2,7 +2,7 @@
  * Vision Router Extension
  *
  * Routes commands/tool calls through a vision-capable model from pi's model registry.
- * Config: ~/.pi/agent/vision-router.json (global) + .pi/vision-router.json (project)
+ * Config: ~/.pi/agent/vision-router.json
  *
  * Commands:
  *   /vision <query>       — route to vision model
@@ -10,7 +10,7 @@
  *   vision_query (tool)   — LLM-routable vision tool
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { complete, getModel } from "@earendil-works/pi-ai/compat";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -28,27 +28,22 @@ interface VisionRouterConfig {
 const DEFAULT_INSTRUCTIONS =
   "You are a vision-specialist model. Analyze images and answer questions about them with detailed, accurate descriptions.";
 
-function loadConfig(cwd: string): VisionRouterConfig {
-  const globalPath = join(getAgentDir(), "vision-router.json");
-  const projectPath = join(cwd, ".pi", "vision-router.json");
-  let config: VisionRouterConfig = {};
-  if (existsSync(globalPath)) {
-    try { config = { ...config, ...JSON.parse(readFileSync(globalPath, "utf-8")) }; }
-    catch (e) { console.error("Failed to load global vision-router config:", e); }
+function loadConfig(_cwd: string): VisionRouterConfig {
+  const configPath = join(getAgentDir(), "vision-router.json");
+  let config: VisionRouterConfig & { provider?: string; model?: string } = {};
+  if (existsSync(configPath)) {
+    try { config = { ...config, ...JSON.parse(readFileSync(configPath, "utf-8")) }; }
+    catch (e) { console.error("Failed to load vision-router config:", e); }
   }
-  if (existsSync(projectPath)) {
-    try { config = { ...config, ...JSON.parse(readFileSync(projectPath, "utf-8")) }; }
-    catch (e) { console.error("Failed to load project vision-router config:", e); }
+  if (config.provider && config.model) {
+    config.visionModel = `${config.provider}/${config.model}`;
   }
-  return config;
+  const { provider, model, ...clean } = config;
+  return clean;
 }
 
-function saveConfig(config: VisionRouterConfig, cwd: string): void {
-  const projectDir = join(cwd, ".pi");
-  if (!existsSync(projectDir)) {
-    try { mkdirSync(projectDir, { recursive: true }); } catch { /* ignore */ }
-  }
-  writeFileSync(join(projectDir, "vision-router.json"), JSON.stringify(config, null, 2));
+function saveConfig(config: VisionRouterConfig): void {
+  writeFileSync(join(getAgentDir(), "vision-router.json"), JSON.stringify(config, null, 2));
 }
 
 /** Parse "provider/modelId" string into [provider, modelId] */
@@ -118,12 +113,16 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     signal?: AbortSignal,
   ): Promise<string> {
+    if (!config.visionModel) {
+      config = loadConfig(ctx.cwd);
+      visionModel = config.visionModel ? resolveVisionModel(config, ctx) : null;
+    }
     const model = visionModel ?? resolveVisionModel(config, ctx);
     if (!model) {
       throw new Error(
         config.visionModel
           ? `Vision model "${config.visionModel}" not found in registry. Run /vision-config to pick a model.`
-          : "No vision model configured. Run /vision-config to pick one.",
+          : "No vision model configured. Run /vision-config to pick one."
       );
     }
 
@@ -273,7 +272,7 @@ export default function (pi: ExtensionAPI) {
 
         config.visionModel = modelRef;
         visionModel = resolveVisionModel(config, ctx);
-        saveConfig(config, ctx.cwd);
+        saveConfig(config);
         updateStatus(ctx);
         ctx.ui.notify(`Vision model set to ${modelRef}`, "info");
       } else {

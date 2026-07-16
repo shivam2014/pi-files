@@ -490,6 +490,77 @@ describe('ScopeGuard', () => {
     });
   });
 
+    describe('/tmp universal paths — always allowed regardless of scope', () => {
+      it('allows /tmp/issue-body.md with zero-file scope', () => {
+        mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+        writeFileSync(
+          join(tmpDir, '.pi', 'scope.json'),
+          JSON.stringify({
+            version: 1,
+            schema: 'scope-file-contract-v1',
+            scope: {
+              filesToModify: [],
+              filesToCreate: [],
+              directories: [],
+              maxFiles: 10,
+              requiresApprovalBeyondScope: true,
+              changeType: 'single-file',
+              maxLinesPerFile: 400,
+              gateMode: 'strict',
+            },
+          })
+        );
+        const result = guard.isPathAllowed('/tmp/issue-body.md', 'write');
+        expect(result.allowed).toBe(true);
+      });
+
+      it('allows /tmp/nested/file.md with zero-file scope', () => {
+        mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+        writeFileSync(
+          join(tmpDir, '.pi', 'scope.json'),
+          JSON.stringify({
+            version: 1,
+            schema: 'scope-file-contract-v1',
+            scope: {
+              filesToModify: [],
+              filesToCreate: [],
+              directories: [],
+              maxFiles: 10,
+              requiresApprovalBeyondScope: true,
+              changeType: 'single-file',
+              maxLinesPerFile: 400,
+              gateMode: 'strict',
+            },
+          })
+        );
+        const result = guard.isPathAllowed('/tmp/nested/file.md', 'write');
+        expect(result.allowed).toBe(true);
+      });
+
+      it('blocks repo path with zero-file scope (existing behavior preserved)', () => {
+        mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+        writeFileSync(
+          join(tmpDir, '.pi', 'scope.json'),
+          JSON.stringify({
+            version: 1,
+            schema: 'scope-file-contract-v1',
+            scope: {
+              filesToModify: [],
+              filesToCreate: [],
+              directories: [],
+              maxFiles: 10,
+              requiresApprovalBeyondScope: true,
+              changeType: 'multi-file',
+              maxLinesPerFile: 400,
+              gateMode: 'strict',
+            },
+          })
+        );
+        const result = guard.isPathAllowed('/Users/foo/repo/file.ts', 'write');
+        expect(result.allowed).toBe(false);
+      });
+    });
+
   describe('checkFileSize', () => {
     it('blocks content exceeding maxLinesPerFile', () => {
       mkdirSync(join(tmpDir, '.pi'), { recursive: true });

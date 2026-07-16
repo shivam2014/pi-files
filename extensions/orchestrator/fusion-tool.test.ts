@@ -89,6 +89,19 @@ function judgeSuccess(): any {
 	};
 }
 
+function panelToolCalls(findings: string[]): any {
+	return {
+		role: "assistant",
+		content: findings.map((finding, i) => ({
+			type: "toolCall" as const,
+			id: `call-${i}`,
+			name: "reportFinding" as const,
+			arguments: { finding },
+		})),
+		stopReason: "end",
+	};
+}
+
 describe("extractText", () => {
 	it("returns text from text-only response", () => {
 		const response = {
@@ -269,18 +282,18 @@ describe("fusion error reporting", () => {
 		expect(result.details.responses).toHaveLength(0);
 	});
 
-	it("reports empty response when panel model returns no text", async () => {
+	it("reports max iterations exceeded when panel model returns only tool calls", async () => {
 		const models = [
-			{ id: "empty-model", provider: "test" },
+			{ id: "loop-model", provider: "test" },
 			{ id: "a", provider: "test" },
 			{ id: "judge", provider: "test" },
 		];
-		const { ctx } = register(models, ["test/empty-model", "test/a"], "test/judge");
+		const { ctx } = register(models, ["test/loop-model", "test/a"], "test/judge");
 
-		// empty-model always returns empty content — no text, no tools
+		// loop-model always returns tool calls — never text
 		vi.mocked(complete).mockImplementation(async (model: any) => {
-			if (model.id === "empty-model") {
-				return { role: "assistant", content: [], stopReason: "end" };
+			if (model.id === "loop-model") {
+				return panelToolCalls(["finding one", "finding two"]);
 			}
 			if (model.id === "judge") return judgeSuccess();
 			return panelSuccess("good analysis from model a");
@@ -295,9 +308,13 @@ describe("fusion error reporting", () => {
 		);
 
 		expect(result.details.status).toBe("ok");
-		// empty-model should be listed as failed with "Empty response from model"
-		expect(result.content[0].text).toContain("empty-model");
-		expect(result.content[0].text).toContain("Empty response from model");
+		// Loop-model should be listed as failed with "Max iterations exceeded"
+		expect(result.content[0].text).toContain("loop-model");
+		expect(result.content[0].text).toContain("Max iterations exceeded");
+		// BUG: loop-model's findings should be present but are lost
+		// After fix, runPanelModel should return reports alongside the error
+		expect(result.content[0].text).toContain("finding one");
+		expect(result.content[0].text).toContain("finding two");
 	});
 });
 

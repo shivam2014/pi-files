@@ -402,8 +402,8 @@ describe("resolve", () => {
 		expect(resolve("fix the bug", null)).toBe("ask");
 	});
 
-	it("returns proceed for empty scope (all arrays empty)", () => {
-		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [] })).toBe("proceed");
+	it("returns proceed for empty scope with scout specialist", () => {
+		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [] }, "scout")).toBe("proceed");
 	});
 
 	it("returns ask for scope with wildcard *", () => {
@@ -422,8 +422,8 @@ describe("resolve", () => {
 		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: ["src/new.ts"] })).toBe("proceed");
 	});
 
-	it("returns proceed for empty scope with only boundaries", () => {
-		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [], boundaries: "Only modify src/" })).toBe("proceed");
+	it("returns proceed for empty scope with only boundaries and scout specialist", () => {
+		expect(resolve("fix the bug", { filesToModify: [], filesToCreate: [], boundaries: "Only modify src/" }, "scout")).toBe("proceed");
 	});
 
 	it("returns proceed for scope with directories", () => {
@@ -438,8 +438,8 @@ describe("resolve", () => {
 		expect(resolve("", { filesToModify: ["src/auth.ts"], filesToCreate: [] })).toBe("proceed");
 	});
 
-	it("returns proceed for short request with empty scope", () => {
-		expect(resolve("hi", { filesToModify: [], filesToCreate: [] })).toBe("proceed");
+	it("returns proceed for short request with scout specialist", () => {
+		expect(resolve("hi", { filesToModify: [], filesToCreate: [] }, "scout")).toBe("proceed");
 	});
 
 	it("returns ask for scope with mixed wildcards and concrete paths — treats wildcards as non-concrete", () => {
@@ -454,4 +454,29 @@ describe("resolve", () => {
 	it("returns proceed for scope with both wildcard files and concrete create files", () => {
 		expect(resolve("fix bug", { filesToModify: ["*"], filesToCreate: ["output.md"] })).toBe("proceed");
 	});
+
+// ─── empty scope specialist behavior ────────────────────────────────────────
+
+describe("empty scope specialist behavior", () => {
+	it("returns 'ask' when scope is empty and specialist is coder", () => {
+		const result = resolve("fix the bug", { filesToModify: [], filesToCreate: [] }, "coder");
+		expect(result).toBe("ask");
+	});
+
+	it("returns 'ask' when scope is empty and specialist is writer", () => {
+		const result = resolve("write docs", { filesToModify: [], filesToCreate: [] }, "writer");
+		expect(result).toBe("ask");
+	});
+
+	it("returns 'proceed' when scope is empty and specialist is scout", () => {
+		const result = resolve("find files", { filesToModify: [], filesToCreate: [] }, "scout");
+		expect(result).toBe("proceed");
+	});
+
+	it("returns 'proceed' when scope is empty and specialist is reviewer", () => {
+		const result = resolve("review code", { filesToModify: [], filesToCreate: [] }, "reviewer");
+		expect(result).toBe("proceed");
+	});
+});
+
 });

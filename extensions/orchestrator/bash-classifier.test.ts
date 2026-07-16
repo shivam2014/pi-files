@@ -28,7 +28,18 @@ describe("isWriteCommand", () => {
   // Output redirection (should return true)
   it("blocks > redirection", () => expect(isWriteCommand("echo hello > file.txt")).toBe(true));
   it("blocks >> redirection", () => expect(isWriteCommand("echo hello >> file.txt")).toBe(true));
-  it("blocks 2> redirection", () => expect(isWriteCommand("cmd 2> error.log")).toBe(true));
+  // Stderr-only redirection should NOT be blocked (just suppressing noise)
+  it("allows ls 2> error.log", () => expect(isWriteCommand("ls 2> error.log")).toBe(false));
+  it("allows find with 2>/dev/null", () => expect(isWriteCommand("find /path -name '*.ts' 2>/dev/null")).toBe(false));
+  
+  // Combined stdout+stderr redirection SHOULD be blocked
+  it("blocks &> combined redirection", () => expect(isWriteCommand("cmd &> /dev/null")).toBe(true));
+  it("blocks > with 2>&1 combined", () => expect(isWriteCommand("cmd > /dev/null 2>&1")).toBe(true));
+  it("blocks stdout+stderr redirect", () => expect(isWriteCommand("echo hello > /tmp/file 2>/dev/null")).toBe(true));
+  
+  // Stderr redirect only on known read commands
+  it("allows echo 2>/dev/null", () => expect(isWriteCommand("echo hello 2>/dev/null")).toBe(false));
+  it("allows cat file 2>/dev/null", () => expect(isWriteCommand("cat file 2>/dev/null")).toBe(false));
   
   // Edge cases
   it("blocks rm -rf /", () => expect(isWriteCommand("rm -rf /")).toBe(true));

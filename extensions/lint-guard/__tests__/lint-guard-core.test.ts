@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { detectFileType, buildLintCommand, formatResult } from "./lint-guard-core";
-import type { LintResult } from "./lint-guard-core";
+import { detectFileType, buildLintCommand, formatResult } from "../lib/lint-guard-core";
+import type { LintResult } from "../lib/lint-guard-core";
 
 describe("lint-guard-core", () => {
 	describe("detectFileType", () => {

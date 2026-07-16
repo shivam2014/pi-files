@@ -1,0 +1,16 @@
+{
+  "goal": "Goal",
+  "steps": [
+    {
+      "label": "Step A",
+      "completed": false,
+      "errored": false
+    },
+    {
+      "label": "Step B",
+      "completed": false,
+      "errored": false
+    }
+  ],
+  "startTime": 1783033494452
+}

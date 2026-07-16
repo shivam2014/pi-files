@@ -160,7 +160,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				if (!pathAllowed.allowed) {
 					const expansion = guard.requestExpansion(rawPath);
 					debugLog("scope-guard: expansion request", expansion);
-					return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope` };
+					return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope`, expansionRequest: expansion };
 				}
 				let fileContent = '';
 				try { fileContent = readFileSync(absolutePath, 'utf-8'); } catch {}

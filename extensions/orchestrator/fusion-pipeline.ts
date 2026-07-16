@@ -1,3 +1,4 @@
+import { Type } from "typebox";
 import { complete } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { FusionConfig, FusionAnalysis } from "./types.ts";
@@ -103,31 +104,15 @@ export async function probeTemperatureSupport(
 	}
 }
 
-// ─── Panel analysis parsing ──────────────────────────────
+// ─── Report-Finding Tool (for panel models) ─────────────
 
-export function parsePanelAnalysis(text: string): {
-	consensus?: string[];
-	contradictions?: Array<{ topic: string; position?: string }>;
-	unique_insights?: string[];
-	blind_spots?: string[];
-	recommendations?: string[];
-} | null {
-	try {
-		const json = extractJsonObject(text);
-		if (!json) return null;
-		const parsed = JSON.parse(json);
-		if (typeof parsed !== "object" || parsed === null) return null;
-		return {
-			consensus: Array.isArray(parsed.consensus) ? parsed.consensus : [],
-			contradictions: Array.isArray(parsed.contradictions) ? parsed.contradictions : [],
-			unique_insights: Array.isArray(parsed.unique_insights) ? parsed.unique_insights : [],
-			blind_spots: Array.isArray(parsed.blind_spots) ? parsed.blind_spots : [],
-			recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
-		};
-	} catch {
-		return null;
-	}
-}
+const reportFindingTool = {
+	name: "reportFinding",
+	description: "Report each distinct finding, key insight, or recommendation during your analysis. You MUST call this tool once for every separate point you identify; do not group multiple findings into a single call.",
+	parameters: Type.Object({
+		finding: Type.String({ description: "The key finding, insight, or recommendation" }),
+	}),
+};
 
 // ─── Panel Model Runner ────────────────────────
 
@@ -144,40 +129,38 @@ async function runPanelModel(
 	}) => void,
 	sessionId?: string,
 	ctx?: FusionRunContext,
-): Promise<{ model: string; content?: string; reports?: string[]; analysis?: ReturnType<typeof parsePanelAnalysis>; error?: string }> {
+): Promise<{ model: string; content?: string; reports?: string[]; error?: string }> {
 	const auth = await registry.getApiKeyAndHeaders(model);
 	if (!auth.ok || !auth.apiKey) {
 		return { model: model.id, error: "No API key configured" };
 	}
 
-	const panelSystemPrompt = systemPrompt + `
-
-## Output Format
-
-Return your analysis as valid JSON with these fields:
-{
-  "consensus": ["point 1", "point 2"],
-  "contradictions": [{"topic": "topic", "position": "position"}],
-  "unique_insights": ["insight 1", "insight 2"],
-  "blind_spots": ["blind spot 1", "blind spot 2"],
-  "recommendations": ["recommendation 1", "recommendation 2"]
-}
-
-Return ONLY the JSON object. No other text.`;
 	const messages: any[] = [
 		{ role: "user", content: [{ type: "text", text: userPrompt }], timestamp: Date.now() },
 	];
+	const reports: string[] = [];
+	const assistantTextParts: string[] = [];
 	const modelId = model.id;
 	debugLog("fusion-tool: panel model start", { model: modelId });
+	const maxLoops = 10;
+	let loopCount = 0;
 
-	const maxAttempts = 3;
-	let lastParseError = "";
+	while (true) {
+		loopCount++;
+		if (loopCount > maxLoops) {
+			const currentText = assistantTextParts.join("\n");
+			debugLog("fusion-tool: panel model exceeded max loops", { model: modelId, loops: loopCount, textLength: currentText.length });
+			if (currentText || reports.length > 0) {
+				return { model: modelId, content: currentText || reports.join("\n"), reports: [...reports, "Error: Max iterations exceeded"] };
+			}
+			return { model: modelId, error: "Max iterations exceeded" };
+		}
 
-	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		try {
 			const response = await tryCompleteWithTemperatureFallback(model, {
-				systemPrompt: panelSystemPrompt,
+				systemPrompt,
 				messages,
+				tools: [reportFindingTool],
 			}, {
 				apiKey: auth.apiKey,
 				headers: auth.headers,
@@ -189,38 +172,71 @@ Return ONLY the JSON object. No other text.`;
 				timeoutMs: 30_000,
 			}, ctx);
 
+			// Handle error/aborted responses
 			if (response.stopReason === "error" || response.stopReason === "aborted") {
 				const errMsg = (response as any).errorMessage || `Model stopped: ${response.stopReason}`;
 				debugLog("fusion-tool: panel model stopped", { model: modelId, stopReason: response.stopReason, error: errMsg });
 				return { model: modelId, error: errMsg };
 			}
 
-			const text = extractText(response);
-			if (!text) {
-				debugLog("fusion-tool: panel model returned empty response", { model: modelId, attempt });
-				if (attempt < maxAttempts) {
-					messages.push({ role: "user", content: [{ type: "text", text: "Your response was empty. Please provide your analysis as structured text." }], timestamp: Date.now() });
-					lastParseError = "Empty response";
-					continue;
+			// Preserve any assistant text present in this response
+			const responseText = extractText(response);
+			if (responseText) {
+				assistantTextParts.push(responseText);
+			}
+
+			const toolCalls = response.content?.filter((c: any) => c.type === "toolCall") || [];
+
+			if (toolCalls.length > 0) {
+				// Push assistant response with tool_calls first (required by OpenAI/DeepSeek format)
+				messages.push(response);
+
+				for (const tc of toolCalls) {
+					const toolCall = tc as any;
+					if (toolCall.name === "reportFinding") {
+						const finding = toolCall.arguments?.finding || "";
+						reports.push(finding);
+					}
+					messages.push({
+						role: "toolResult" as const,
+						toolCallId: toolCall.id,
+						toolName: toolCall.name,
+						content: [{ type: "text" as const, text: "✓ Reported" }],
+						isError: false,
+						timestamp: Date.now(),
+					} as any);
 				}
+				// Continue loop to get final text
+				continue;
+			}
+
+			// No tool calls — use all collected assistant text
+			const text = assistantTextParts.join("\n");
+			if (!text) {
+				debugLog("fusion-tool: panel model returned empty response", { model: modelId, contentTypes: response.content?.map((c: any) => c.type) });
 				return { model: modelId, error: "Empty response from model" };
 			}
 
-			onUpdate?.({
-				content: [{ type: "text", text: `  ── Panel: ${modelId} ──\n  ✓ Analysis received` }],
-				details: { phase: "panel_reports", model: modelId, count: 1 },
-			});
-			debugLog("fusion-tool: panel model complete", { model: modelId, textLength: text.length, attempt });
-			const panelAnalysis = parsePanelAnalysis(text);
-			return { model: modelId, content: text, reports: [text], analysis: panelAnalysis };
+			// Deterministic fallback: ensure every panelist contributes at least one finding
+			if (reports.length === 0) {
+				reports.push(text);
+			}
+
+			if (reports.length > 0) {
+				const reportLines = reports.map(r => `  ✓ ${r}`).join("\n");
+				onUpdate?.({
+					content: [{ type: "text", text: `  ── Panel: ${modelId} ──\n${reportLines}` }],
+					details: { phase: "panel_reports", model: modelId, count: reports.length },
+				});
+			}
+			debugLog("fusion-tool: panel model complete", { model: modelId, textLength: text.length, reports: reports.length });
+			return { model: modelId, content: text, reports };
 
 		} catch (err: any) {
 			debugLog("fusion-tool: panel model error", { model: modelId, error: err.message ?? String(err) });
 			return { model: modelId, error: err.message ?? String(err) };
 		}
 	}
-
-	return { model: modelId, error: `Panel model failed after ${maxAttempts} attempts: ${lastParseError}` };
 }
 
 // ─── FusionPipeline ───────────────────────────────────────

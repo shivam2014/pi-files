@@ -109,6 +109,12 @@ export class ScopeGuard {
       return { allowed: false, reason: `Path escapes working directory: ${filePath}` };
     }
 
+    // Universal allowed paths — always permitted regardless of scope
+    const UNIVERSAL_ALLOWED = ['/tmp/'];
+    if (UNIVERSAL_ALLOWED.some(prefix => normalized.startsWith(prefix))) {
+      return { allowed: true };
+    }
+
     // Check direct file allowlists
     const filesToModify = Array.isArray(scope.filesToModify) ? scope.filesToModify : [];
     const filesToCreate = Array.isArray(scope.filesToCreate) ? scope.filesToCreate : [];

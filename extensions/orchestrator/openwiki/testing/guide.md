@@ -39,6 +39,10 @@ Initializes the SDK theme singleton (`initTheme("dark")`) via `beforeAll`. This 
 
 **Critical**: Tests must trigger `session_start` before `before_agent_start` to exercise the tool-freezing handler. Without this, `setActiveTools` never fires and `getActiveToolsHistory()` returns `undefined`.
 
+### Init-Phase Constraint
+
+The pi SDK throws "Extension runtime not initialized" if action methods (`getAllTools`, `setActiveTools`, `sendMessage`, etc.) are called before `session_start`. Only registration methods (`registerTool`, `registerCommand`, `on`) are safe during extension init. The `init-guard.test.ts` test verifies this by creating a mock API where all action methods throw, then calling the extension's default export and asserting no error occurs.
+
 ### Snapshots
 
 TUI output snapshots are stored in `/__snapshots__/`. Vitest manages these automatically. Update snapshots with:
@@ -57,7 +61,7 @@ npx vitest run --update
 | `delegate-controller.test.ts` | Validation, error handling, specialist lookup |
 | `delegate-pipeline.test.ts` | End-to-end pipeline: scope → run → format → cleanup |
 | `delegate-feed-builder.test.ts` | Activity feed lifecycle: start, tool calls, reports, completion |
-| `delegate-output-formatter.test.ts` | Result formatting, metrics line, audit extraction |
+| `delegate-output-formatter.test.ts` | Result formatting, metrics line, audit extraction (functions now in `delegate-pipeline.ts`) |
 
 ### Scope Enforcement Tests
 
@@ -112,7 +116,8 @@ npx vitest run --update
 | `ask-resolver.test.ts` | Resolution logic: files, docs, context, escalation |
 | `ask-orchestrator.test.ts` | ask_orchestrator tool behavior |
 | `bash-interceptor.test.ts` | Bash→tool redirection (cat→read, grep→grep, etc.) |
-| `init-guard.test.ts` | Subagent context detection |
+| `bash-classifier.test.ts` | Read/write command classification |
+| `init-guard.test.ts` | Init-phase safety: no SDK action methods called during extension load |
 | `introspection-tools.test.ts` | list_skills, list_tools runtime queries |
 | `prompt-builder.test.ts` | System prompt construction, routing table generation |
 | `read-skill-tool.test.ts` | Skill loading, path sandboxing, traversal blocking |

@@ -64,6 +64,11 @@ export class PlanPanel {
 
 	constructor(ctx?: { cwd?: string }) {
 		this._cwd = ctx?.cwd ?? process.cwd();
+		// Restore plan state from disk across conversation turns
+		const restored = this.loadPlanState();
+		if (restored) {
+			this.planState = restored;
+		}
 	}
 
 	incrementDelegationCount(): void { this._activeDelegations++; }
@@ -78,7 +83,17 @@ export class PlanPanel {
 				goal: this.planState.goal,
 				steps: this.planState.steps.map(s => ({ label: s.label, completed: s.completed, errored: s.errored, kind: s.kind })),
 				startTime: this.planState.startTime,
+				sessionId: this._sessionId,
 			}, null, 2));
+		} catch { /* silent */ }
+	}
+
+	private clearSavedPlanState(): void {
+		try {
+			const statePath = join(this._cwd, '.pi', 'orchestrator-plan.json');
+			if (existsSync(statePath)) {
+				writeFileSync(statePath, '{}', 'utf8');
+			}
 		} catch { /* silent */ }
 	}
 
@@ -381,6 +396,11 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		}
 		const activeStep = this.planState.steps.find(s => s.active);
 		if (!activeStep) {
+			// Idempotent: if all steps are completed/errored, return success
+			if (this.planState.steps.length > 0 && this.planState.steps.every(s => s.completed || s.errored)) {
+				const lastCompleted = [...this.planState.steps].reverse().find(s => s.completed);
+				return { status: 'completed', label: lastCompleted?.label ?? '' };
+			}
 			return { status: 'error', error: 'no active step' };
 		}
 		if (activeStep.kind === 'delegation') {
@@ -452,6 +472,16 @@ private trimToBudget(lines: string[], budget: number): string[] {
 	}
 
 	/**
+	 * Validate loaded plan state against a session ID.
+	 * If loaded state is from a different session, clears both in-memory and on-disk state.
+	 */	public validateSessionForRestore(sessionId: string): void {
+		if (this.planState && this.planState.sessionId !== sessionId) {
+			this.planState = null;
+			this.clearSavedPlanState();
+		}
+	}
+
+	/**
 	 * Insert steps into the plan. Supports two modes:
 	 * - `after`: label-based insertion (find by label, insert after)
 	 * - `index`: direct array insertion at that position (0 = beginning, steps.length = end)
@@ -501,8 +531,9 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		return { inserted };
 	}
 
-	addSteps(newSteps: string[]): void {
-		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
+	addSteps(newSteps: string[]): { added: number; error?: string } {
+		if (!this.planState || this.planState.sessionId !== this._sessionId) return { added: 0, error: 'No active plan' };
+		let count = 0;
 		for (const label of newSteps) {
 			if (!this.planState.steps.some(s => s.label === label)) {
 				this.planState.steps.push({
@@ -512,10 +543,12 @@ private trimToBudget(lines: string[], budget: number): string[] {
 					active: false,
 					startTime: Date.now(),
 				});
+				count++;
 			}
 		}
 		this._renderWidget();
 		this.savePlanState();
+		return { added: count };
 	}
 
 	retryPlanStep(): void {
@@ -801,6 +834,8 @@ function _resolveOrCreate(ctx: unknown): PlanPanel {
 	} else if (sessionId) {
 		panel = new PlanPanel(ctx as { cwd?: string });
 		_instances.set(sessionId, panel);
+		// Error recovery: if loaded state is from a different session, clear it
+		panel.validateSessionForRestore(sessionId);
 	} else {
 		// No sessionId — generate synthetic key for test/standalone isolation
 		const anonId = "__anon__" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);

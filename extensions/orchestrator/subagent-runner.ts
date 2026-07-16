@@ -9,7 +9,7 @@
 
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
-	AuthStorage,
+	ModelRuntime,
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
@@ -23,6 +23,7 @@ import { join } from "path";
 
 import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Substep, DelegateControllerContext } from "./types.ts";
+import { resolveSpecialistModel, DEFAULTS } from "./orchestrator-config.ts";
 import type { Scope } from "./scope-manager.ts";
 import { buildSkillSection } from "./specialists.ts";
 import {
@@ -51,6 +52,7 @@ export interface OrchestratorUi {
 	theme: any;
 }
 
+/** @deprecated Use SubagentRunner.SUBAGENT_ENV_KEY internally. Kept for backward-compat. */
 export const SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
 
 /**
@@ -63,9 +65,9 @@ export function resolveSkillPaths(skills: string[], agentDir: string): string[] 
 		.filter(existsSync);
 }
 
-/** Module-level guards for orchestrator registration skipping. */
+/** @deprecated Synced from SubagentRunner instance field. Kept for backward-compat with index.ts / subagent-tool-guard.ts. */
 export let _batchLoadSubagent = 0;
-/** Tracks whether planSteps has been called in the current subagent session */
+/** @deprecated Synced from SubagentRunner instance field. Kept for backward-compat. */
 let _planParsed = false;
 /** Getter for planParsed state — used by index.ts tool_call handler */
 export function isPlanParsed(): boolean { return _planParsed; }
@@ -227,8 +229,7 @@ export interface SubagentRunnerConfig {
 		excludeTools: string[] | undefined;
 		resourceLoader: any;
 		sessionManager: any;
-		authStorage: any;
-		modelRegistry: any;
+		modelRuntime: any;
 	}) => Promise<{ session: any }>;
 }
 
@@ -245,36 +246,35 @@ export type SubagentResult = {
  * SubagentRunner — creates isolated subagent sessions for specialist delegation.
  *
  * Owns an ActivityFeed instance for the run duration.
- * Module-level coordination state (_batchLoadSubagent, _planParsed) is set
- * during run() so external guards (registration, tool-call handler) still work.
+ * Private instance fields track coordination state (_batchLoadSubagent, _planParsed).
+ * Module-level exports are synced from these fields for backward-compat with index.ts
+ * and subagent-tool-guard.ts.
  */
 export class SubagentRunner {
 	private config: SubagentRunnerConfig;
 	private feed: ActivityFeed;
+	private _batchLoadSubagent = 0;
+	private _planParsed = false;
+	private static readonly SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
 
 	constructor(config: SubagentRunnerConfig) {
 		this.config = config;
 		this.feed = new ActivityFeed();
 	}
 
+	/** Snapshot env — delegates to module-level snapshotSubagentEnv. */
 	private snapshotEnv(): NodeJS.ProcessEnv {
-		return { ...process.env };
+		return snapshotSubagentEnv();
 	}
 
+	/** Clean env — delegates to module-level cleanSubagentEnv. */
 	private cleanEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-		const cleaned: NodeJS.ProcessEnv = {};
-		for (const [key, value] of Object.entries(env)) {
-			if (key === SUBAGENT_ENV_KEY || key.startsWith("PI_")) continue;
-			cleaned[key] = value;
-		}
-		return cleaned;
+		return cleanSubagentEnv(env);
 	}
 
+	/** Install env — delegates to module-level installSubagentEnv. */
 	private installEnv(env: NodeJS.ProcessEnv): void {
-		for (const key of Object.keys(process.env)) {
-			delete process.env[key];
-		}
-		Object.assign(process.env, env);
+		installSubagentEnv(env);
 	}
 
 	async run(
@@ -292,17 +292,22 @@ export class SubagentRunner {
 		const feed = this.feed;
 
 		try {
-			const authStorage = AuthStorage.create();
 			const modelRegistry = config.modelRegistry;
 
-			// Resolve model: specialist.model > parent's model > registry fallback
+			// Resolve model: config override > specialist.model > parent's model > registry fallback
 			let model;
-			if (specialist.model) {
-				const slashIdx = specialist.model.indexOf("/");
+			const configModel = resolveSpecialistModel(
+				orchestratorCtx?.config ?? DEFAULTS,
+				specialist.name,
+				specialist.model,
+			);
+
+			if (configModel) {
+				const slashIdx = configModel.indexOf("/");
 				if (slashIdx > 0) {
-					const provider = specialist.model.slice(0, slashIdx);
-					const id = specialist.model.slice(slashIdx + 1);
-					model = getModel(provider as any, id);
+					const provider = configModel.slice(0, slashIdx);
+					const modelId = configModel.slice(slashIdx + 1);
+					model = modelRegistry.find(provider, modelId);
 				}
 			} else if (parentCtx?.model) {
 				model = parentCtx.model;
@@ -330,7 +335,7 @@ export class SubagentRunner {
 
 			// Load extensions for subagent, flag context so orchestrator skips re-registration
 			_batchLoadSubagent++;
-			process.env[SUBAGENT_ENV_KEY] = "1";
+			process.env[SubagentRunner.SUBAGENT_ENV_KEY] = "1";
 			process.env["PI_SPECIALIST_NAME"] = specialist.name;
 			let loader: DefaultResourceLoader | undefined;
 			try {
@@ -368,7 +373,7 @@ export class SubagentRunner {
 			} finally {
 				_batchLoadSubagent--;
 				_planParsed = false;
-				delete process.env[SUBAGENT_ENV_KEY];
+				delete process.env[SubagentRunner.SUBAGENT_ENV_KEY];
 			}
 
 			const excludeTools = (specialist.name === "writer" || specialist.name === "researcher" || specialist.name === "scout")
@@ -494,8 +499,7 @@ export class SubagentRunner {
 				excludeTools,
 				resourceLoader: loader!,
 				sessionManager: SessionManager.inMemory(config.cwd),
-				authStorage,
-				modelRegistry,
+				modelRuntime: await ModelRuntime.create(),
 			});
 
 			const { signal } = config;
@@ -805,7 +809,7 @@ export async function runSubagent(
 	const agentDir = getAgentDir();
 	const runner = new SubagentRunner({
 		cwd,
-		modelRegistry: parentCtx?.modelRegistry ?? ModelRegistry.create(AuthStorage.create()),
+		modelRegistry: parentCtx?.modelRegistry ?? new ModelRegistry(await ModelRuntime.create()),
 		agentDir,
 		signal,
 		onUpdate,

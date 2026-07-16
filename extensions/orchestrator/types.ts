@@ -69,8 +69,10 @@ export interface Specialist {
 	suggestedSkills?: string[];
 	/** Optional model override (e.g. "anthropic/claude-sonnet-4") */
 	model?: string;
-	/** Optional human-readable label used in the task routing UI */
+	/** Human-readable label used in the task routing UI */
 	routingLabel?: string;
+	/** Whether this specialist has write access (false = read-only) */
+	readOnly: boolean;
 	/** Full system prompt used when creating the subagent session */
 	systemPrompt: string;
 }
@@ -78,6 +80,7 @@ export interface Specialist {
 /** Context passed to subagent runner */
 export interface SubagentContext {
 	modelRegistry?: any;
+	modelRuntime?: any;
 	model?: any;
 	/** Resolver for ask_orchestrator clarifications. Pauses the subagent until resolved. */
 	onAskOrchestrator?: (question: string, context?: string) => Promise<string>;
@@ -216,12 +219,15 @@ export interface MinimalModelRegistry {
 	getModels?: () => any[];
 }
 
+import type { OrchestratorConfig } from "./orchestrator-config.ts";
+
 /** Context for delegate-controller — thin typed wrapper over raw ExtensionContext */
 export interface DelegateControllerContext {
 	cwd: string;
 	sessionId?: string;
 	modelRegistry?: MinimalModelRegistry;
 	model?: string;
+	config?: OrchestratorConfig;
 	ui?: {
 		notify?: (msg: string, level: string) => void;
 		setWorkingMessage: (msg?: string) => void;

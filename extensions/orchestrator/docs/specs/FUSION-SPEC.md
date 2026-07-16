@@ -151,9 +151,9 @@ All model calls use the existing `complete()` function from `@earendil-works/pi-
 
 **Panel invocation:**
 - `complete()` with the panel model's ID
-- **No tools** — panel models receive no tool definitions; they produce JSON output directly in their response
-- System prompt includes JSON output schema: `{consensus, contradictions, unique_insights, blind_spots, recommendations}`
-- No conversation history — each panel call is stateless
+- **Tools enabled** — each panel model receives `tools: [reportFinding]` and streams findings as it thinks
+- System prompt: `"You are a planning advisor. Review the context and draft plan, then provide constructive criticism. Identify blind spots, suggest alternatives, and flag risks."`
+- No conversation history — each panel call is stateless, but a single panel turn may involve multiple `reportFinding` calls followed by a final analysis
 - Parallelized via `mapWithConcurrencyLimit()` with a concurrency limit of 2. Limiting concurrent requests protects rate-limited models from throttling and token-per-minute penalties while still overlapping network latency.
 
 **Judge invocation:**
@@ -226,44 +226,29 @@ Configured panel and judge models are resolved against the runtime model registr
 - The `/fusion` TUI filters its picker list to only models returned by `ctx.modelRegistry.getAvailable()`.
 - If a saved config contains a model ID that is no longer available, the TUI shows a warning (e.g., `"glm-5.1-legacy is no longer available; select a replacement"`) and does not persist the stale ID on save unless the user explicitly re-selects it.
 
-### Panel Output Protocol
+### Panel Reporting Mechanism
 
-Panel models receive **no tools** — they respond with structured JSON directly in their output.
-
-**JSON output structure:**
-```json
-{
-  "consensus": ["point 1", "point 2"],
-  "contradictions": [
-    { "topic": "topic", "stances": [{ "model": "model-id", "position": "stance" }] }
-  ],
-  "unique_insights": ["insight 1", "insight 2"],
-  "blind_spots": ["spot 1", "spot 2"],
-  "recommendations": ["rec 1", "rec 2"]
-}
-```
+Panel models now have access to the `reportFinding` tool during their analysis, identical to the mechanism used by subagent specialists.
 
 **Flow:**
-1. Panel model receives context (findings, draft plan, task prompt) with no tool definitions
-2. Model produces JSON response following the five-field schema above
-3. Orchestrator parses JSON; on success, extracts structured findings
-4. If JSON parsing fails, falls back to raw text as single finding
-5. Empty responses trigger retry (max 3 attempts)
+1. Each panel model receives `tools: [reportFinding]` via `context.tools` in `complete()`
+2. During analysis, the model deterministically calls `reportFinding("key finding")` for each noteworthy insight
+3. The orchestrator executes the tool call: adds a `✓ Report:` entry to the activity feed (same visual as subagent reports)
+4. The tool result is returned to the model, which continues its analysis
+5. Once no more tool calls, the final analysis text is extracted
 
 **Benefits:**
-- Structured output enables deterministic extraction — no regex or truncation
-- JSON schema enforces completeness across five analysis dimensions
-- Consistent format across all panel models regardless of provider
-- Raw text fallback ensures no panel contribution is lost
+- Model decides what's report-worthy (not code parsing/truncation)
+- Reports appear in the activity feed as `✓ Report:` — same deterministic mechanism as subagents
+- No 300-char truncation of raw responses
+- Reports stream as the model thinks, not as a final dump; the UI/appends each one under the emitting model's section in real time
 
-**Fallback for non-JSON panelists:** If a panel model returns non-JSON text or parsing fails, the full response is captured as a single finding. This ensures no panel contribution is lost when a model ignores the format instruction.
+**Fallback for non-reporting panelists:** If a panel model completes without calling `reportFinding`, its full response text is captured as a single finding. This ensures no panel contribution is lost when a model ignores the tool or produces only prose.
 
 **Implementation:**
-- `fusion-tool.ts` wraps each panel `complete()` call and parses JSON response
-- JSON parsing attempts to extract structured fields from panel output
-- Falls back to raw text capture if JSON parsing fails
-- Empty responses trigger retry (max 3 attempts)
-- Parsed findings forwarded to `onUpdate` for activity feed display
+- `fusion-tool.ts` wraps each panel `complete()` call in a multi-turn loop
+- Reports are **streamed live** — each `reportFinding` call is forwarded to `onUpdate` as soon as it is emitted, and the UI/appends it under the emitting model's section in real time
+- Fixed tool call message pairing bug: assistant response with `tool_calls` pushed before toolResult messages
 - `stopReason` checked for `"error"`/`"aborted"` to prevent silent failures
 - Empty-content guard: skips reports with empty `content` field
 
@@ -537,7 +522,7 @@ typebox                          → Type.Object, Type.String, Type.Optional
 - **Tool uses existing pi-fusion patterns**: `ctx.modelRegistry.find()` for model resolution, `complete()` for LLM calls, `mapWithConcurrencyLimit()` for parallel execution
 - **Panel runs with bounded concurrency**: Panel models are called via `mapWithConcurrencyLimit()` with concurrency of 2. Limiting simultaneous requests protects rate-limited models from throttling while still overlapping network latency.
 - **Judge runs after all panel responses collected**: The judge receives the concatenated panel outputs and original context
-- **Panel models use JSON output**: Each panel `complete()` call receives no tools. Panel models produce structured JSON with five fields: `consensus`, `contradictions`, `unique_insights`, `blind_spots`, `recommendations`. Orchestrator parses JSON; falls back to raw text on parse failure. Empty responses retry up to 3 times.
+- **Panel models use `reportFinding` tool**: Each panel `complete()` call is wrapped in a multi-turn loop. Panel models receive `tools: [reportFinding]` and deterministically call it for key insights. Reports appear in the activity feed as `✓ Report:` entries. Loop continues while `stopReason === "toolUse"`, then final analysis text is extracted.
 - **Error handling**: If 1+ panelists succeed, the judge still runs to produce a structured `FusionResult`. If all panelists fail, return a descriptive error. If judge extraction fails after retries, return raw panel responses.
 - **Structured output from judge**: The judge must produce JSON with four top-level keys and one optional executive-summary field:
 
@@ -571,17 +556,6 @@ Provide constructive criticism focusing on:
 Be specific, direct, and practical. Reference code or patterns from the context
 where relevant. Do not repeat what the plan already does well — focus on
 improvement.
-
-Output your analysis as a JSON object with the following structure:
-{
-  "consensus": ["points all advisors would agree on"],
-  "contradictions": [
-    { "topic": "topic description", "stances": [{ "model": "model-id", "position": "stance" }] }
-  ],
-  "unique_insights": ["valuable points from your analysis"],
-  "blind_spots": ["issues the plan might miss"],
-  "recommendations": ["actionable suggestions for improvement"]
-}
 ```
 
 **Judge system prompt (JUDGE_SYSTEM_PROMPT):**
@@ -687,8 +661,8 @@ The fusion implementation follows pi SDK patterns precisely:
 **Cache optimization (per pi-cache-optimizer rules):**
 - `sessionId` passed to each `complete()` call for provider-side KV cache affinity
 - Static system prompts — stable prefix for prompt caching
-- Panel responses are parsed once and cached per model
-- JSON output format ensures consistent structure across all panel models
+- Reports **streamed per finding** — each `reportFinding` call produces an immediate `onUpdate`, keeping the activity feed responsive while the panel is still running
+- `reportFindingTool` definition hoisted to module-level constant — identical across turns
 
 **Debug command:** See [section 7.7](#77-debuggability) for how `/debug-orchestrator status` surfaces Fusion panel/judge interactions.
 
@@ -705,30 +679,24 @@ Fusion output uses a structured display format for clarity in the activity feed.
   ```
 
 **Per-model status indicators:**
-- `⠋ thinking` — model is generating
+- `⠋ thinking` — model is generating or calling `reportFinding`
 - `✓ done` — model completed successfully
 - `⚠ error` — model failed or timed out
 - `⏸ skipped` — model was skipped (e.g., resolved to nothing and no backfill available)
 
 **Panel phase display:**
 - Each panel model gets its own section under the header
-- Model status shows `⠋ thinking` until complete, then `✓ done` or `⚠ error`
-- Panel output is displayed after completion as structured JSON or raw text fallback
-- Panel output uses `✓ Report:` prefix for parsed JSON findings; raw text fallback shown as single block
+- As a model thinks it emits `✓ Report:` entries, which are appended under that model's section in real time
+- Panel output uses only the `✓ Report:` prefix; consensus/conflict/unique-insight/blind-spot labels are reserved for the judge
 
 **Per-model reports (streamed):**
-- Each panel model's output is displayed upon completion:
+- Each `reportFinding` call is emitted as it happens:
   ```
   ── Panel: kimi-k2.6-2 ──
-    ✓ Consensus: point 1
-    ✓ Consensus: point 2
-    ⚡ Contradiction: topic — model-a says X, model-b says Y
-    ✓ Insight: valuable point
-    ⚠ Blind spot: issue the plan missed
-    → Recommendation: actionable suggestion
+    ✓ Report: key finding 1
+    ✓ Report: key finding 2
   ```
-- JSON fields map to distinct prefix icons for visual scanning
-- Raw text fallback displayed as single block without field parsing
+- Reports are streamed individually so the user sees the panel thinking in parallel
 
 **Judge analysis display:**
 - Judge output is formatted as structured report entries:
@@ -748,7 +716,7 @@ Fusion interactions can be inspected with the `/debug-orchestrator status` comma
 
 - Which panel models were invoked and their raw responses
 - Judge synthesis input/output and any retry attempts
-- Per-model report timing and JSON parsing results
+- Per-model report timing and `reportFinding` calls
 - Current orchestrator state, including active tools and session flags
 
 This is useful for diagnosing malformed judge JSON, unexpected panel failures, or rate-limit behavior.

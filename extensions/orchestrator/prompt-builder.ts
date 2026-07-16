@@ -79,6 +79,7 @@ const DELEGATION_INSTRUCTIONS_TEMPLATE = `
 | plan(goal, steps) | Declare a plan. Steps can be strings or objects with kind |
 | plan_add_steps(steps) | Add steps mid-workflow |
 | insert_step(steps, after) | Insert steps at specific position in plan |
+| advance_plan_step() | Mark orchestrator step complete, advance to next |
 | delegate(specialist, task, scope?) | Delegate to a specialist |
 | fusion(context, task, draft_plan?) | Multi-model analysis |
 | read_skill(name) | Load skill instructions |
@@ -176,12 +177,23 @@ After a loop step completes:
 
 delegate() auto-creates a minimal plan if none exists, but calling plan() first gives better structure and multi-step visibility.
 
+### Step Advancement (dual path):
+Plan steps advance differently depending on their kind:
+
+- **Delegation steps** (kind="delegation" or string steps delegated via delegate()): The delegate() pipeline automatically advances the step after the specialist completes. Do NOT call advance_plan_step() for these.
+- **Orchestrator steps** (kind="orchestrator"): You own these — analysis, synthesis, decision, writing. When you finish the work, call advance_plan_step() to mark the step complete and activate the next pending step. Without this call, the plan stalls.
+- **Loop steps** (kind="loop_until"): The loop mechanism manages the entire iteration lifecycle — counting iterations, evaluating, feeding back, and stopping. The loop auto-advances the plan step when the criterion is met or maxIterations is exhausted. Do NOT call advance_plan_step() for loop steps.
+
+Summary: only call advance_plan_step() for orchestrator-owned steps.
+
 {{FUSION}}
 
 ### Scope requirement:
 When calling delegate(coder|writer, ...), include \`scope\`: { filesToModify, filesToCreate, directories, maxFiles, maxLinesPerFile, changeType, boundaries, requiresApprovalBeyondScope }.
 Get scope from scout's or researcher's \`## Scope\` output. Reuse cached scope across delegations for the same task.
 Writers: default to doc-friendly scope (only mentioned docs, minimal edits, preserve structure).
+
+Include ALL file paths the specialist will touch — not just repo files. If the task involves writing to /tmp, temp directories, or any non-repo path, include those paths in filesToModify or filesToCreate. Scope is a safety net, not a repo-only filter.
 
 ### Routing bash diagnostics:
 - Read-only bash diagnostics (curl, lsof, cat, run CLIs, check ports) → use **reviewer** (has bash + auto-defaulted read-only scope)

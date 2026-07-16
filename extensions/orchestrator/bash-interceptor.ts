@@ -95,6 +95,15 @@ function hasFileWriteIndicator(text: string): boolean {
     /\b(writeFile|appendFile)(Sync)?\s*\(/i.test(text);
 }
 
+// Design rationale: We intercept at the *mutation boundary*, not at the command
+// usage boundary. `sed -i` and `perl -i` write edits back to files on disk — that
+// is the mutation, and it warrants routing through the edit tool. By contrast,
+// stream-processing sed/awk/perl (piping stdin→stdout without `-i`) perform a
+// read-only transformation: data flows through the process but never touches a
+// file. Blocking those would choke legitimate one-liners that just filter text.
+// hasFileWriteIndicator() catches the same boundary for Python/Node scripts that
+// open files for writing. The principle: if the command can reach the filesystem,
+// intercept; if it only touches the stream, let it through.
 function isMutatingEditor(name: string, text: string): boolean {
   if ((name === "sed" || name === "perl") && /(^|\s)-i/.test(text)) return true;
   return hasFileWriteIndicator(text);

@@ -153,11 +153,10 @@ Multiple delegations can run concurrently. The plan panel tracks `activeDelegati
 |------|------|
 | `/delegate-tool.ts` | Tool definition, parameter schema |
 | `/delegate-controller.ts` | Validation, abort handling |
-| `/delegate-pipeline.ts` | End-to-end orchestration |
+| `/delegate-pipeline.ts` | End-to-end orchestration (includes result formatting + metrics extraction) |
 | `/subagent-runner.ts` | Session creation, tool registration |
 | `/subagent-tool-guard.ts` | Tool call interception |
 | `/bash-interceptor.ts` | Bash command redirection |
 | `/ask-resolver.ts` | Clarification pipeline |
 | `/subagent-diagnostics.ts` | Post-run diagnostics |
 | `/delegate-feed-builder.ts` | Activity feed integration |
-| `/delegate-output-formatter.ts` | Result parsing |

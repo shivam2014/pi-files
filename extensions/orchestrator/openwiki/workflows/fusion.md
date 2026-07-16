@@ -30,7 +30,7 @@ interface FusionConfig {
 
 **Config loading**: `/fusion-config.ts` — loads, validates, and sanitizes config. Handles missing files gracefully (defaults to disabled).
 
-**Toggle**: `/fusion-commands.ts` — registers `/fusion-toggle` and `/fusion-status` CLI commands.
+**Toggle**: `/fusion-commands.ts` — registers `/fusion on|off|status` CLI commands. See [Configuration & Operations](../operations/configuration.md) for full command list.
 
 ## Pipeline
 
@@ -103,6 +103,6 @@ Optional TUI widget showing fusion status (enabled/disabled, active models, last
 | `/fusion-models.ts` | Model resolution |
 | `/fusion-judge.ts` | Judge prompt + analysis parsing |
 | `/fusion-format.ts` | Result formatting |
-| `/fusion-commands.ts` | /fusion-toggle, /fusion-status |
+| `/fusion-commands.ts` | /fusion on\|off\|status commands |
 | `/fusion-tui.ts` | Status TUI widget |
 | `/fusion-utils.ts` | Shared utilities (extractText, concurrency) |
