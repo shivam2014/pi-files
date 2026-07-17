@@ -161,6 +161,9 @@ export class ScopeGuard {
   checkFileSize(filePath: string, content: string, operation?: string): { allowed: boolean; reason?: string } {
     // Reads are always safe — don't block large file reads
     if (operation === 'read') return { allowed: true };
+    // Edits are surgical patches (oldText→newText), not full file writes.
+    // maxLinesPerFile limits new file content size, not edits to existing large files.
+    if (operation === 'edit') return { allowed: true };
     const scope = this._readScope();
     if (!scope) return { allowed: false, reason: 'No scope file found' };
     if (scope.gateMode === 'relaxed') return { allowed: true };
