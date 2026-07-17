@@ -152,8 +152,10 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
 					}
 					// Test runner and compiler commands are read-only — skip file path extraction
+					// Strip leading "cd <path> && " before checking test runner prefixes
 					const TEST_RUNNER_PREFIXES = ['npx vitest', 'npx jest', 'npm test', 'npx playwright', 'npx mocha', 'npx cypress', 'yarn test', 'pnpm test', 'npx tsc', 'node --test'];
-					const isTestRunner = TEST_RUNNER_PREFIXES.some(prefix => cmd.startsWith(prefix));
+					const cmdForCheck = cmd.replace(/^cd\s+\S+\s*&&\s*/, '');
+					const isTestRunner = TEST_RUNNER_PREFIXES.some(prefix => cmdForCheck.startsWith(prefix));
 					if (!isTestRunner) {
 						const pathMatches = input.command.match(/(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g);
 						if (pathMatches) filePaths.push(...pathMatches);
@@ -178,7 +180,12 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope`, expansionRequest: expansion };
 				}
 				let fileContent = '';
-				try { fileContent = readFileSync(absolutePath, 'utf-8'); } catch {}
+				if (operation === 'write' && input.content) {
+					// For write operations, check the NEW content size, not existing file
+					fileContent = input.content;
+				} else {
+					try { fileContent = readFileSync(absolutePath, 'utf-8'); } catch {}
+				}
 				const sizeCheck = guard.checkFileSize(absolutePath, fileContent, operation);
 				if (!sizeCheck.allowed) {
 					return { block: true, reason: sizeCheck.reason || `File too large: ${rawPath}` };

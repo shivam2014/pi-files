@@ -155,4 +155,42 @@ describe("Bug fixes phase 1", () => {
       expect(logContent).toContain("original-file.ts");
     });
   });
+
+  describe("Bug A: cd-prefixed test runner commands should not be blocked", () => {
+    it("should NOT block 'cd /tmp && npx vitest run some-file.test.ts'", () => {
+      const event = {
+        toolName: "bash",
+        input: { command: "cd /tmp && npx vitest run some-file.test.ts" },
+      };
+
+      const result = handleSubagentToolCall(event, true, { cwd: '/tmp' }, subagentState());
+
+      expect(result?.block).toBeFalsy();
+    });
+
+    it("should NOT call isPathAllowed with the test file name from cd-prefixed command", () => {
+      const event = {
+        toolName: "bash",
+        input: { command: "cd /tmp && npx vitest run some-file.test.ts" },
+      };
+
+      handleSubagentToolCall(event, true, { cwd: '/tmp' }, subagentState());
+
+      const instance = ScopeGuardMock.mock.instances[0];
+      expect(instance).toBeDefined();
+      const calls = instance.isPathAllowed.mock.calls.map((c: any[]) => String(c[0]));
+      expect(calls.some((c: string) => c.includes("some-file.test.ts"))).toBe(false);
+    });
+
+    it("should NOT block 'cd /project && npm test -- foo.test.ts'", () => {
+      const event = {
+        toolName: "bash",
+        input: { command: "cd /project && npm test -- foo.test.ts" },
+      };
+
+      const result = handleSubagentToolCall(event, true, { cwd: '/tmp' }, subagentState());
+
+      expect(result?.block).toBeFalsy();
+    });
+  });
 });
