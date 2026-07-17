@@ -18,7 +18,7 @@ import {
 	defineTool,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { existsSync } from "fs";
+import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
 import { subagentSessions } from "./subagent-sessions.ts";
@@ -735,6 +735,31 @@ export class SubagentRunner {
 				}
 				_lastRenderText = null;
 				if (signal) signal.removeEventListener("abort", abortHandler);
+
+				// ── Flight Recorder: dump full session conversation for post-hoc debugging ──
+				try {
+					const debugDir = '/tmp/orchestrator-debug';
+					try { mkdirSync(debugDir, { recursive: true }); } catch {}
+					const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+					const filename = `delegation-${timestamp}-${specialist.name}.json`;
+					const dump = {
+						specialist: specialist.name,
+						task,
+						timestamp: new Date().toISOString(),
+						sessionId,
+						model: (model as any)?.id ?? (model as any)?.model ?? undefined,
+						turns,
+						elapsedMs: Date.now() - startTime,
+						stopReason: lastStopReason,
+						errorMessage: lastErrorMessage,
+						finalStatus,
+						messages: session.messages,
+					};
+					writeFileSync(join(debugDir, filename), JSON.stringify(dump, null, 2));
+				} catch (e) {
+					// Best-effort — never let debugging dump failure break the delegation
+				}
+
 				session.dispose();
 				clearViewerState();
 			}
