@@ -41,10 +41,19 @@ function resolveCwd(ctx?: { cwd?: string }): string {
 const READ_ONLY_WITH_BASH = new Set(["reviewer"]);
 
 export default function (pi: ExtensionAPI) {
-	// ── Guard: Skip orchestrator registration when loading inside a subagent session ──
-	if (process.env[SUBAGENT_ENV_KEY] === "1") {
-		return;
+	// ── Defensive: clear stale subagent env var from previous delegations ──
+	// The env var is set during subagent extension loading and deleted in finally.
+	// But if the process persists between delegations, a stale value would skip
+	// all orchestrator registration. Clear it defensively on every entry.
+	// (Subagent loads set it AFTER this point, via SubagentRunner.run())
+	if (process.env[SUBAGENT_ENV_KEY] === "1" && subagentSessions.size === 0) {
+		delete process.env[SUBAGENT_ENV_KEY];
 	}
+
+	// ── Subagent context: skip orchestrator-specific handlers, but still register tools ──
+	// Tools must always be registered (SDK wipes handlers on loader.reload()).
+	// Orchestrator-specific event handlers check env var internally.
+	const isSubagentLoad = process.env[SUBAGENT_ENV_KEY] === "1";
 
 	// ── Advisory entry-point detection ──
 	/**
@@ -70,6 +79,7 @@ export default function (pi: ExtensionAPI) {
 	//      await pi.trigger("before_agent_start", event, ctx)
 	//    Without this, setActiveTools never fires and getActiveToolsHistory() returns undefined.
 	pi.on("session_start", async (_event, ctx) => {
+		if (isSubagentLoad) return;  // Skip orchestrator tool freezing in subagent context
 		const cwd = ctx?.cwd ?? process.cwd();
 		const fusionConfig = loadFusionConfig(cwd);
 		const activeTools: string[] = [...PLAN_TOOLS, "delegate"];
@@ -89,6 +99,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
+		if (isSubagentLoad) return;  // Skip orchestrator prompt injection in subagent context
 		new ScopeManager(resolveCwd(ctx)).clearScope();
 
 		// Don't clear plan panel if a loop is active
@@ -112,6 +123,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Resources: Register ask-matt skills for SDK skill discovery (issue #41) ──
 	pi.on("resources_discover", async (event, ctx) => {
+		if (isSubagentLoad) return;  // Skip orchestrator skill discovery in subagent context
 		// getAgentDir() returns ~/.pi/agent — skills live under that directory
 		const skillsDir = join(getAgentDir(), "skills");
 		// Dynamically resolve skill paths from the specialist roster

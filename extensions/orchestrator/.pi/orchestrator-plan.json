@@ -1,17 +1,12 @@
 {
-  "goal": "🔄 Goal",
+  "goal": "🔄 G2",
   "steps": [
     {
-      "label": "Step A",
-      "completed": false,
-      "errored": false
-    },
-    {
-      "label": "Step B",
+      "label": "s2",
       "completed": false,
       "errored": false
     }
   ],
-  "startTime": 1784247404695,
-  "sessionId": "mro6u4k7my3ghf"
+  "startTime": 1784248580003,
+  "sessionId": "mro7jbfnoyw61x"
 }
