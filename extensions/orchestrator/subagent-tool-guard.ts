@@ -164,7 +164,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				}
 				let fileContent = '';
 				try { fileContent = readFileSync(absolutePath, 'utf-8'); } catch {}
-				const sizeCheck = guard.checkFileSize(absolutePath, fileContent);
+				const sizeCheck = guard.checkFileSize(absolutePath, fileContent, operation);
 				if (!sizeCheck.allowed) {
 					return { block: true, reason: sizeCheck.reason || `File too large: ${rawPath}` };
 				}

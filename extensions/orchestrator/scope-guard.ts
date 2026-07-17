@@ -153,7 +153,9 @@ export class ScopeGuard {
    * Check if file content exceeds maxLinesPerFile limit.
    * Skipped when gateMode is 'relaxed' or maxLines <= 0.
    */
-  checkFileSize(filePath: string, content: string): { allowed: boolean; reason?: string } {
+  checkFileSize(filePath: string, content: string, operation?: string): { allowed: boolean; reason?: string } {
+    // Reads are always safe — don't block large file reads
+    if (operation === 'read') return { allowed: true };
     const scope = this._readScope();
     if (!scope) return { allowed: false, reason: 'No scope file found' };
     if (scope.gateMode === 'relaxed') return { allowed: true };
