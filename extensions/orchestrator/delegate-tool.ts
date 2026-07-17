@@ -26,14 +26,14 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate",
 		label: "delegate",
-		description: "Delegate work to a specialist subagent. Provides specialist name and task.",
+		description: "Delegate work to a specialist subagent. Provides specialist name and task. When batch is provided, runs multiple delegations concurrently. Use for independent tasks only.",
 		parameters: Type.Object({
-			specialist: Type.String({
-				description: "Specialist: scout, coder, reviewer, researcher, writer",
-			}),
-			task: Type.String({
-				description: "Task description for the specialist to execute",
-			}),
+			specialist: Type.Optional(Type.String({
+				description: "Specialist: scout, coder, reviewer, researcher, writer. Required when batch is not provided.",
+			})),
+			task: Type.Optional(Type.String({
+				description: "Task description for the specialist to execute. Required when batch is not provided.",
+			})),
 			skills: Type.Optional(Type.Array(Type.String(), {
 				description: "Override the specialist's default skill pack(s) for this delegation (e.g. ['tdd', 'review']). Replaces defaults, does not append.",
 			})),
@@ -65,14 +65,33 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			}, {
 				description: "Structured scope constraints. REQUIRED when specialist=coder. Get this from scout's ## Scope output or declare it yourself based on your analysis.",
 			})),
+			batch: Type.Optional(Type.Array(Type.Object({
+				specialist: Type.String({ description: "Specialist name for this batch entry" }),
+				task: Type.String({ description: "Task description for this batch entry" }),
+				skills: Type.Optional(Type.Array(Type.String())),
+				scope: Type.Optional(Type.Object({
+					filesToModify: Type.Array(Type.String()),
+					filesToCreate: Type.Array(Type.String()),
+					directories: Type.Optional(Type.Array(Type.String())),
+					maxFiles: Type.Optional(Type.Number()),
+					requiresApprovalBeyondScope: Type.Optional(Type.Boolean()),
+					changeType: Type.Optional(Type.String()),
+					maxLinesPerFile: Type.Optional(Type.Number()),
+					boundaries: Type.Optional(Type.String()),
+				})),
+			}), {
+				description: "Run multiple delegations concurrently. Each entry has specialist + task. Use for independent tasks only.",
+			})),
 		}),
 
 		promptGuidelines: [
 			"PREREQUISITE: plan() must be called before delegate(). delegate() rejects if no active plan exists.",
-			"Delegate: delegate({ specialist: 'coder', task: 'fix auth', scope: { filesToModify: ['src/auth.ts'] } })",
+			"Single: delegate({ specialist: 'coder', task: 'fix auth', scope: { filesToModify: ['src/auth.ts'] } })",
+			"Batch: delegate({ batch: [{ specialist: 'scout', task: 'investigate auth' }, { specialist: 'scout', task: 'investigate db' }] })",
 			"Spawns a subagent specialist to do the work",
-			"Scope required for coder, writer — optional for scout, researcher, reviewer (reviewer gets auto-defaulted read-only scope and has bash for diagnostics)",
+			"Scope required for coder, writer — optional for scout, researcher, reviewer",
 			"Optional skills: delegate({ specialist: 'coder', task: '...', skills: ['tdd'] })",
+			"Batch runs concurrent delegations — independent tasks only",
             "Output: Returns specialist output with findings, audit trail, and completion status; may include partial streaming updates during execution",
 		],
 
@@ -133,6 +152,15 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 		},
 
 		async execute(toolCallId: string, params: any, signal: any, onUpdate: any, ctx: any) {
+			// Batch mode: delegate to controller which routes to runBatch()
+			if (params.batch && params.batch.length > 0) {
+				return executeDelegate(
+					{ batch: params.batch, signal },
+					ctx,
+					onUpdate,
+				);
+			}
+			// Single delegation mode
 			return executeDelegate(
 				{ specialist: params.specialist, task: params.task, skills: params.skills, scope: params.scope, signal },
 				ctx,

@@ -5,6 +5,7 @@
  */
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { Scope } from "./scope-manager.ts";
 
 /** A step in the orchestration plan (Layer 1 header) */
 export interface OrchestratorStep {
@@ -84,6 +85,8 @@ export interface SubagentContext {
 	model?: any;
 	/** Resolver for ask_orchestrator clarifications. Pauses the subagent until resolved. */
 	onAskOrchestrator?: (question: string, context?: string) => Promise<string>;
+	/** Questions the subagent asked that the orchestrator needs to address. */
+	pendingQuestions?: string[];
 }
 
 export type StepKind = 'delegation' | 'orchestrator' | 'loop_until';
@@ -217,6 +220,27 @@ export interface ReadSkillParams {
 /** Minimal model registry interface — avoids coupling to full pi-coding-agent types */
 export interface MinimalModelRegistry {
 	getModels?: () => any[];
+}
+
+/** A single entry in a batch delegation */
+export interface BatchDelegationEntry {
+	specialist: string;
+	task: string;
+	skills?: string[];
+	scope?: Scope;
+}
+
+/** Aggregated result from a batch delegation */
+export interface BatchDelegationResult {
+	results: Array<{
+		specialist: string;
+		success: boolean;
+		output: string;
+		error?: string;
+		elapsed_ms?: number;
+	}>;
+	totalElapsed_ms: number;
+	concurrent: number;
 }
 
 import type { OrchestratorConfig } from "./orchestrator-config.ts";

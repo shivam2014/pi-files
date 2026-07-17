@@ -53,6 +53,14 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 	if (subagentState) {
 		const cwd = ctx?.cwd ?? process.cwd();
 		const guard = new ScopeGuard(cwd);
+		// gh write command enforcement — runs for ALL subagents, even without scope
+		if (event.toolName === 'bash') {
+			const input = event.input || {};
+			const command = input.command;
+			if (command && command.startsWith('gh ') && isWriteCommand(command)) {
+				return { block: true, reason: `\u26D4 gh write command blocked. Use the dedicated gh tool instead.\nCommand: ${command}\nHint: gh write operations (create, merge, delete, push) are not permitted via bash.` };
+			}
+		}
 		if (guard.isScopeValid()) {
 			const input = event.input || {};
 			const filePaths: string[] = [];
@@ -180,9 +188,14 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 		return;
 	}
 	// Read-only bash enforcement (orchestrator context)
-	if (event.toolName === 'bash' && ctx?.readOnly) {
+	if (event.toolName === 'bash') {
 		const command = isToolCallEventType('bash', event) ? event.input.command : event.input?.command;
-		if (command && isWriteCommand(command)) {
+		if (command && command.startsWith('gh ') && isWriteCommand(command)) {
+			const blockResult = { block: true, reason: `⛔ gh write command blocked. Use the dedicated gh tool instead.\nCommand: ${command}\nHint: gh write operations (create, merge, delete, push) are not permitted via bash.` };
+			traceDecision('handleSubagentToolCall', event, blockResult);
+			return blockResult;
+		}
+		if (ctx?.readOnly && command && isWriteCommand(command)) {
 			const blockResult = { block: true, reason: `⛔ Bash write command blocked for read-only specialist.\nCommand: ${command}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
 			traceDecision('handleSubagentToolCall', event, blockResult);
 			return blockResult;

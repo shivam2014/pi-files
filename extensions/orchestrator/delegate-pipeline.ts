@@ -2,7 +2,7 @@
  * DelegatePipeline — orchestrates specialist subagent delegation end-to-end.
  * Inlined from handle-diagnostics.ts and delegate-result-processor.ts.
  */
-import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext } from "./types.ts";
+import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext, BatchDelegationEntry } from "./types.ts";
 import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills } from "./specialists.ts";
 import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
 import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
@@ -120,6 +120,12 @@ export class DelegatePipeline {
 
 		const { signal } = params;
 
+		// ── Timeout signal: combine user signal with config timeout ──
+		const timeoutMs = ctx.config?.delegation?.parallel?.timeoutMs;
+		const effectiveSignal = timeoutMs
+			? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)].filter(Boolean) as AbortSignal[])
+			: signal;
+
 		// ── Resolve scope (pure) ──
 		let scopeToUse: Scope | null = ScopeManager.resolveScope(params, specialist, ctx.cwd);
 
@@ -147,7 +153,10 @@ export class DelegatePipeline {
 			if (mode === "parallel") {
 				delegationId = createDelegationScope(scopeToUse);
 			}
-			this.deps.scopeManager.writeScope(scopeToUse);
+			// Skip shared file write in parallel mode — scope already isolated in per-delegation Map
+			if (!delegationId) {
+				this.deps.scopeManager.writeScope(scopeToUse);
+			}
 		}
 
 		// ── Plan panel check ──
@@ -216,19 +225,28 @@ export class DelegatePipeline {
 		} catch {}
 
 		// ── Build subagent context + run ──
+		const pendingQuestions: string[] = [];
 		const parentCtx: SubagentContext = {
 			modelRegistry: ctx.modelRegistry,
 			model: ctx.model,
-			onAskOrchestrator: createAskOrchestratorResolver(ctx),
+			onAskOrchestrator: createAskOrchestratorResolver(ctx, pendingQuestions),
 		};
 
 		const result = await runSubagent(
 			specialist, params.task, ctx.cwd,
 			parentCtx,
-			signal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
+			effectiveSignal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
 			ctx, // orchestratorCtx: thread session context to plan-panel calls
 		);
 		const elapsedMs = Date.now() - startTime;
+
+		// Surface any questions the subagent couldn't resolve
+		if (pendingQuestions.length > 0 && result?.output) {
+			const questionsText = pendingQuestions.map((q, i) =>
+				`  ${i + 1}. ${q}`
+			).join('\n');
+			result.output += `\n\n## Pending Questions\nThe subagent had questions that needed orchestrator input:\n${questionsText}\n`;
+		}
 
 		// Dynamic status: subagent completed
 		try {
@@ -238,7 +256,7 @@ export class DelegatePipeline {
 		} catch {}
 
 		// ── Check for errors/abort ──
-		const isAborted = (signal?.aborted || false) || (result?.output?.startsWith("[aborted]") ?? false);
+		const isAborted = (effectiveSignal?.aborted || false) || (result?.output?.startsWith("[aborted]") ?? false);
 		let isError = !result || !result.output || result.output.startsWith("[error]") || result.output.startsWith("[aborted]");
 		if (!isError && result?.stopReason === "error") {
 			isError = true;
@@ -340,6 +358,116 @@ export class DelegatePipeline {
 				status: "done",
 				turns: result?.turns || 0,
 				outputLength: result?.output?.length || 0,
+			},
+		};
+	}
+
+	/**
+	 * Execute multiple delegations concurrently via batch parameter.
+	 * Each entry runs as an independent delegation through this.run(),
+	 * which already handles scope, timeout, diagnostics, and plan panel.
+	 */
+	async runBatch(
+		entries: BatchDelegationEntry[],
+		ctx: DelegateControllerContext,
+		onUpdate: (update: any) => void,
+		signal?: AbortSignal,
+	): Promise<ExecuteDelegateResult> {
+		const maxConcurrent = ctx.config?.delegation?.parallel?.maxConcurrent ?? 4;
+		const batchStart = Date.now();
+
+		onUpdate?.({
+			content: [{ type: "text", text: `Starting batch delegation: ${entries.length} entries (max ${maxConcurrent} concurrent)` }],
+			details: { status: "batch_start", count: entries.length, maxConcurrent },
+		});
+
+		// Process in chunks of maxConcurrent
+		const allResults: Array<{
+			specialist: string;
+			success: boolean;
+			output: string;
+			error?: string;
+			elapsed_ms?: number;
+		}> = [];
+
+		for (let i = 0; i < entries.length; i += maxConcurrent) {
+			const chunk = entries.slice(i, i + maxConcurrent);
+			const chunkResults = await Promise.allSettled(
+				chunk.map(async (entry) => {
+					const entryStart = Date.now();
+					try {
+						const result = await this.run(
+							{
+								specialist: entry.specialist,
+								task: entry.task,
+								skills: entry.skills,
+								scope: entry.scope,
+								signal,
+								parallel: true,
+							},
+							ctx,
+							onUpdate,
+						);
+						const output = result.content?.[0]?.type === "text" ? result.content[0].text : "";
+						return {
+							specialist: entry.specialist,
+							success: true,
+							output,
+							elapsed_ms: Date.now() - entryStart,
+						};
+					} catch (e) {
+						return {
+							specialist: entry.specialist,
+							success: false,
+							output: "",
+							error: String(e),
+							elapsed_ms: Date.now() - entryStart,
+						};
+					}
+			})
+			);
+
+			for (const r of chunkResults) {
+				if (r.status === "fulfilled") {
+					allResults.push(r.value);
+				} else {
+					// Promise rejected — shouldn't happen since run() errors are caught, but defensive
+					allResults.push({
+						specialist: "unknown",
+						success: false,
+						output: "",
+						error: r.status === "rejected" ? String(r.reason) : "Unknown error",
+					});
+				}
+			}
+		}
+
+		// Aggregate into single output
+		const output = allResults.map((r, i) => {
+			const header = `## Batch Delegation ${i + 1}: ${r.specialist}`;
+			if (r.success) {
+				return `${header}\n${r.output}`;
+			} else {
+				return `${header}\n❌ Error: ${r.error}`;
+			}
+		}).join("\n\n---\n\n");
+
+		const totalElapsed = Date.now() - batchStart;
+
+		onUpdate?.({
+			content: [{ type: "text", text: `Batch delegation complete: ${allResults.filter(r => r.success).length}/${allResults.length} succeeded in ${(totalElapsed / 1000).toFixed(1)}s` }],
+			details: { status: "batch_complete", total: allResults.length, succeeded: allResults.filter(r => r.success).length },
+		});
+
+		return {
+			content: [{ type: "text", text: output }],
+			details: {
+				status: "batch_complete",
+				total: allResults.length,
+				succeeded: allResults.filter(r => r.success).length,
+				failed: allResults.filter(r => !r.success).length,
+				totalElapsed_ms: totalElapsed,
+				maxConcurrent,
 			},
 		};
 	}

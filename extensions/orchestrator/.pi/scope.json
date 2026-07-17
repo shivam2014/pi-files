@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "schema": "scope-file-contract-v1",
+  "scope": {
+    "boundaries": "Run sync script and git operations only. Do not modify source files.",
+    "changeType": "single-file",
+    "directories": [
+      "/Users/shivam94/.pi/agent/extensions/orchestrator/",
+      "/Users/shivam94/pi-files/"
+    ],
+    "filesToCreate": [],
+    "filesToModify": [],
+    "maxFiles": 1,
+    "maxLinesPerFile": 10,
+    "requiresApprovalBeyondScope": true,
+    "gateMode": "relaxed"
+  }
+}

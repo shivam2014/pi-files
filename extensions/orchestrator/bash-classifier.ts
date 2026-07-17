@@ -8,6 +8,16 @@ const READ_COMMANDS = new Set([
   "ls", "cat", "grep", "find", "head", "tail", "wc", "echo", "pwd", "date",
   "git status", "git log", "git diff", "git show", "git branch", "git remote",
   "git tag", "git blame", "git reflog", "git describe",
+  // gh read-only commands
+  "gh issue list", "gh issue view", "gh issue status",
+  "gh pr list", "gh pr view", "gh pr status", "gh pr diff", "gh pr checks",
+  "gh release list", "gh release view", "gh release download",
+  "gh repo view", "gh repo list", "gh repo clone",
+  "gh auth status",
+  "gh secret list", "gh variable list",
+  "gh label list",
+  "gh workflow list", "gh workflow view",
+  "gh run list", "gh run view", "gh run watch",
   "which", "whoami", "hostname", "uname", "env", "printenv",
   "python3", "node", "cd", "sort", "du", "df", "stat", "file", "man", "type",
   "readlink", "realpath", "dirname", "basename", "xargs", "awk", "sed", "jq",
@@ -18,6 +28,16 @@ const WRITE_COMMANDS = new Set([
   "rm", "mv", "cp", "tee", "chmod", "chown", "mkdir", "touch", "ln",
   "git push", "git commit", "git checkout", "git reset", "git stash",
   "git merge", "git rebase", "git add", "git rm", "git mv",
+  // gh write commands
+  "gh issue create", "gh issue edit", "gh issue close", "gh issue reopen",
+  "gh pr create", "gh pr merge", "gh pr close", "gh pr edit", "gh pr ready", "gh pr review",
+  "gh release create", "gh release delete", "gh release edit",
+  "gh repo create", "gh repo delete", "gh repo edit",
+  "gh auth login", "gh auth logout", "gh auth refresh",
+  "gh secret set", "gh secret delete",
+  "gh variable set", "gh variable delete",
+  "gh label create", "gh label edit", "gh label delete",
+  "gh workflow run", "gh workflow enable", "gh workflow disable",
 ]);
 
 /**
@@ -68,7 +88,17 @@ export function isWriteCommand(command: string): boolean {
       if (READ_COMMANDS.has(gitCmd)) return false;
     }
   }
-  
+
+  // Check for gh subcommands (typically 3-word: gh <resource> <action>)
+  if (baseCommand === "gh") {
+    const parts = trimmed.split(/\s+/);
+    const ghCmd = parts.slice(0, 3).join(" ");
+    if (READ_COMMANDS.has(ghCmd)) return false;
+    if (WRITE_COMMANDS.has(ghCmd)) return true;
+    // Unknown gh subcommands default to write (safe default)
+    return true;
+  }
+
   // Unknown commands — default to blocking (safe default)
   return true;
 }

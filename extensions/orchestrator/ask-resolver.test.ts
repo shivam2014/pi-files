@@ -273,7 +273,7 @@ describe("createAskOrchestratorResolver", () => {
 		const uiInput = vi.fn().mockResolvedValue("ask the user");
 		const resolver = createAskOrchestratorResolver({
 			cwd,
-			recentContext: "assistant: Specialist prompts are stored in specialists.ts.",
+			recentContext: "assistant: The specialist prompts file is stored in specialists.ts.",
 			ui: { input: uiInput },
 		});
 
@@ -292,7 +292,7 @@ describe("createAskOrchestratorResolver", () => {
 		});
 
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
+		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
 		expect(input).not.toHaveBeenCalled();
 	});
 
@@ -304,14 +304,14 @@ describe("createAskOrchestratorResolver", () => {
 		});
 
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
+		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
 		expect(input).not.toHaveBeenCalled();
 	});
 
 	it("returns orchestrator clarification when no UI is available", async () => {
 		const resolver = createAskOrchestratorResolver({ cwd });
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
+		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
 	});
 
 	it("handles empty question gracefully", async () => {
@@ -322,7 +322,7 @@ describe("createAskOrchestratorResolver", () => {
 		});
 
 		const answer = await resolver("");
-		expect(answer).toBe("[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.");
+		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
 		expect(input).not.toHaveBeenCalled();
 	});
 

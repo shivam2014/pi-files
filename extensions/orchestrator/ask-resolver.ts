@@ -220,7 +220,7 @@ export function tryAnswerFromContext(question: string, recentContext: string | u
 	const q = question.toLowerCase();
 	const qWords = [...new Set(q.split(/[^a-z0-9]+/))]
 		.filter((w) => w.length > 3 && !CONTEXT_STOP_WORDS.has(w));
-	if (qWords.length === 0) return undefined;
+	if (qWords.length < 2) return undefined;
 
 	const lines = recentContext.split(/\n/).map((l) => l.trim()).filter((l) => l.length > 0);
 	let bestLine: string | undefined;
@@ -230,8 +230,8 @@ export function tryAnswerFromContext(question: string, recentContext: string | u
 		const lower = line.toLowerCase();
 		const hits = qWords.filter((w) => lower.includes(w)).length;
 		if (hits === 0) continue;
-		// Require either 2+ keyword hits or a strong fraction of the question words.
-		if (hits < 2 && hits / qWords.length < 0.4) continue;
+		// Require 3+ keyword hits or 60%+ fraction of question words.
+		if (hits < 3 && hits / qWords.length < 0.6) continue;
 		if (hits > bestScore) {
 			bestScore = hits;
 			bestLine = line;
@@ -252,10 +252,12 @@ export function tryAnswerFromContext(question: string, recentContext: string | u
  * 3. Recent orchestrator conversation context
  * 4. Orchestrator escalation
  */
-export function createAskOrchestratorResolver(ctx: any): (question: string, context?: string) => Promise<string> {
+export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[]): (question: string, context?: string) => Promise<string> {
 	const cwd = ctx?.cwd ?? process.cwd();
-	const recentContext = ctx?.recentContext ?? buildRecentContext(ctx);
 	return async (question: string, context?: string) => {
+		// Lazy: rebuild on each call so we never serve a stale snapshot
+		const recentContext = ctx?.recentContext ?? buildRecentContext(ctx);
+
 		const combined = context ? `${question}\n\nContext: ${context}` : question;
 
 		// 1. Answer from explicitly referenced files
@@ -275,8 +277,11 @@ export function createAskOrchestratorResolver(ctx: any): (question: string, cont
 		const contextAnswer = tryAnswerFromContext(question, contextToSearch);
 		if (contextAnswer) return contextAnswer;
 
-		// 4. Escalate to orchestrator
-		return "[orchestrator clarification needed] Could not answer from available context. Report this question back to the orchestrator in your final output.";
+		// 4. Escalate — record question in buffer so orchestrator can handle it
+		if (questionBuffer) {
+			questionBuffer.push(question);
+		}
+		return "Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.";
 	};
 }
 

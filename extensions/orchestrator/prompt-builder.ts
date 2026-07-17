@@ -206,6 +206,8 @@ You decide next step AFTER seeing previous result. NOT before.
 When delegating, CHECK each specialist's ⚠ CANNOT field against task requirements.
 A task needing a tool a specialist CANNOT use will fail at runtime.
 
+## Delegation Mode: {{DELEGATION_MODE}}
+
 {{ROSTER}}
 {{ROUTING}}{{SKILLS}}
 
@@ -277,8 +279,10 @@ export function buildOrchestratorPrompt(options: {
 	fusionEnabled?: boolean;
 	/** SDK reference for dynamic tool documentation generation */
 	pi?: ExtensionAPI;
+	/** Delegation mode: 'parallel' or 'sequential' */
+	mode?: string;
 }): { systemPrompt: string } {
-	const { basePrompt, skills, fusionEnabled, pi } = options;
+	const { basePrompt, skills, fusionEnabled, pi, mode } = options;
 
 	// Dedup guard: if already has orchestrator prompt (new or old format), return unchanged immediately
 	if (basePrompt.includes("You are an orchestrator") || basePrompt.includes("## Orchestrator Mode")) {
@@ -346,12 +350,18 @@ Pi SDK docs (for reference — delegate to specialists who can read these):
 		? generateRoutingFromSpecialists()
 		: ROUTING_TABLE;
 
+	// Build mode section
+	const modeSection = mode === "parallel"
+		? `You are in **parallel delegation mode**. You can use the \`batch\` parameter on delegate() to run multiple independent delegations concurrently. This is useful for:\n- Investigating multiple files or systems simultaneously\n- Running independent research tasks in parallel\n- Reviewing different parts of the codebase at once\n\nUse batch ONLY for independent tasks. Tasks with dependencies must be sequential.\n\nExample:\ndelegate({ batch: [\n  { specialist: "scout", task: "investigate auth system" },\n  { specialist: "scout", task: "investigate database layer" }\n]})`
+		: `You are in **sequential delegation mode**. One delegation at a time. Use delegate() with specialist and task for each step.`;
+
 	// Assemble instructions
 	const instructions = DELEGATION_INSTRUCTIONS_TEMPLATE
 		.replace("{{ROSTER}}", rosterLines)
 		.replace("{{ROUTING}}", routingSection)
 		.replace("{{SKILLS}}", skillsSection)
-		.replace("{{FUSION}}", fusionSection);
+		.replace("{{FUSION}}", fusionSection)
+		.replace("{{DELEGATION_MODE}}", modeSection);
 
 	// Token measurement: added ~500 chars (tool docs, scope shape), removed ~2300 chars
 	// (TERSE_INSTRUCTION trimmed from ~700 to ~280 × 5 specialists, bash sections removed).

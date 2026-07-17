@@ -66,7 +66,8 @@ export function resolveSkillPaths(skills: string[], agentDir: string): string[] 
 		.filter(existsSync);
 }
 
-const OUTPUT_CAP = 30_000;
+export const OUTPUT_CAP = 80_000;
+const PER_RESULT_CAP = 2000;
 
 /**
  * Extract the last occurrence of a markdown section starting with `heading`.
@@ -599,14 +600,22 @@ export class SubagentRunner {
 					}
 					let outputPreview: string | undefined;
 					let rawResult: any;
+					let stripped: string | undefined;
 					try {
 						rawResult = event.result ?? (event as any).output;
 						if (rawResult != null) {
 							const raw = typeof rawResult === "string" ? rawResult : JSON.stringify(rawResult);
-							const stripped = compressOutput(raw);
+							stripped = compressOutput(raw);
 							outputPreview = stripped.length > 80 ? stripped.slice(0, 77) + "..." : stripped || undefined;
 						}
 					} catch {}
+					// Append tool result to output for complete delegation results
+					if (rawResult != null && stripped != null) {
+						const cappedResult = stripped.length > PER_RESULT_CAP
+							? stripped.slice(0, PER_RESULT_CAP - 50) + "\n...[tool result truncated at " + PER_RESULT_CAP + " chars]"
+							: stripped;
+						output += "\n[tool result]\n" + cappedResult + "\n[/tool result]\n";
+					}
 					const isError = (event as any).isError === true;
 					if (isError && rawResult != null) {
 						if (typeof rawResult === "string") {
@@ -651,7 +660,7 @@ export class SubagentRunner {
 				}
 
 				if (event.type === "turn_end") {
-					const results = (event as any).toolResults;
+					// No-op: turn_end handler kept for future use
 				}
 			});
 
