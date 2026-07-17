@@ -6,7 +6,7 @@
 import { getBashToolReplacement } from "./bash-interceptor.ts";
 import { isWriteCommand } from "./bash-classifier.ts";
 import { ScopeGuard } from "./scope-guard.ts";
-import { _batchLoadSubagent, isPlanParsed } from "./subagent-runner.ts";
+import type { SubagentState } from "./subagent-sessions.ts";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { debugLog } from "./debug.ts";
@@ -39,17 +39,17 @@ function checkBashInterception(
 	return undefined;
 }
 
-export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true, ctx?: { cwd?: string; readOnly?: boolean }) {
+export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true, ctx?: { cwd?: string; readOnly?: boolean }, subagentState?: SubagentState) {
 	traceToolCallEntry('handleSubagentToolCall', event, ctx);
 	if (!fusionEnabled && event.toolName === 'fusion') {
 		return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 	}
-	if (_batchLoadSubagent > 0 && !isPlanParsed()) {
+	if (subagentState && !subagentState.planParsed) {
 		if (event.toolName !== "planSteps") {
 			return { block: true, reason: `Call planSteps({ goal, steps }) first before using ${event.toolName}.` };
 		}
 	}
-	if (_batchLoadSubagent > 0) {
+	if (subagentState) {
 		const cwd = ctx?.cwd ?? process.cwd();
 		const guard = new ScopeGuard(cwd);
 		if (guard.isScopeValid()) {

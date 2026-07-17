@@ -3,16 +3,6 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mutable mock state — getter proxy lets us change _batchLoadSubagent at runtime
-const mockState = { batchLoad: 0, planParsed: false };
-
-vi.mock("./subagent-runner.ts", () => ({
-	get _batchLoadSubagent() {
-		return mockState.batchLoad;
-	},
-	isPlanParsed: () => mockState.planParsed,
-}));
-
 vi.mock("./bash-interceptor.ts", () => ({
 	getBashToolReplacement: vi.fn(),
 }));
@@ -39,6 +29,7 @@ import { handleSubagentToolCall } from "./subagent-tool-guard";
 import { getBashToolReplacement } from "./bash-interceptor";
 import { isWriteCommand } from "./bash-classifier";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import type { SubagentState } from "./subagent-sessions";
 
 // Mock ScopeGuard — vi.fn() acts as constructor, mockImplementation replaces per-test
 const ScopeGuardMock = vi.hoisted(() => vi.fn() as any);
@@ -50,9 +41,12 @@ ScopeGuardMock.mockImplementation(function (this: any, _cwd: string) {
 });
 vi.mock("./scope-guard.ts", () => ({ ScopeGuard: ScopeGuardMock }));
 
+/** Helper: create a SubagentState for subagent-context tests */
+function subagentCtx(planParsed = true): SubagentState {
+	return { specialistName: "test-specialist", planParsed };
+}
+
 beforeEach(() => {
-	mockState.batchLoad = 0;
-	mockState.planParsed = false;
 	vi.clearAllMocks();
 });
 
@@ -60,16 +54,13 @@ beforeEach(() => {
 
 describe("handleSubagentToolCall", () => {
 	describe("planSteps-first enforcement", () => {
-		beforeEach(() => {
-			mockState.batchLoad = 1;
-			mockState.planParsed = false;
-		});
+		const state = () => subagentCtx(false);
 
 		it("blocks non-planSteps calls when plan not parsed", () => {
 			const result = handleSubagentToolCall({
 				toolName: "read",
 				input: { path: "file.ts" },
-			});
+			}, true, undefined, state());
 			expect(result).toEqual({
 				block: true,
 				reason: "Call planSteps({ goal, steps }) first before using read.",
@@ -80,7 +71,7 @@ describe("handleSubagentToolCall", () => {
 			const result = handleSubagentToolCall({
 				toolName: "bash",
 				input: { command: "ls" },
-			});
+			}, true, undefined, state());
 			expect(result).toEqual({
 				block: true,
 				reason: "Call planSteps({ goal, steps }) first before using bash.",
@@ -91,16 +82,13 @@ describe("handleSubagentToolCall", () => {
 			const result = handleSubagentToolCall({
 				toolName: "planSteps",
 				input: { goal: "test", steps: ["step1"] },
-			});
+			}, true, undefined, state());
 			expect(result).toBeUndefined();
 		});
 	});
 
 	describe("scope enforcement (subagent context)", () => {
-		beforeEach(() => {
-			mockState.batchLoad = 1;
-			mockState.planParsed = true;
-		});
+		const state = () => subagentCtx(true);
 
 		it("passes through when scope is invalid (no scope file)", () => {
 			ScopeGuardMock.mockImplementationOnce(function (this: any, _cwd: string) {
@@ -110,7 +98,7 @@ describe("handleSubagentToolCall", () => {
 			const result = handleSubagentToolCall({
 				toolName: "edit",
 				input: { filePath: "src/file.ts" },
-			});
+			}, true, undefined, state());
 			expect(result).toBeUndefined();
 		});
 
@@ -125,7 +113,7 @@ describe("handleSubagentToolCall", () => {
 			const result = handleSubagentToolCall({
 				toolName: "edit",
 				input: { filePath: "secret.ts" },
-			});
+			}, true, undefined, state());
 			expect(result).toEqual({
 				block: true,
 				reason: "Scope violation: secret.ts is outside the allowed scope",
@@ -143,7 +131,7 @@ describe("handleSubagentToolCall", () => {
 			const result = handleSubagentToolCall({
 				toolName: "write",
 				input: { path: "big-file.ts" },
-			});
+			}, true, undefined, state());
 			expect(result).toEqual({
 				block: true,
 				reason: "File too large: 5000 lines",
@@ -160,7 +148,7 @@ describe("handleSubagentToolCall", () => {
 			const result = handleSubagentToolCall({
 				toolName: "edit",
 				input: { filePath: "src/file.ts" },
-			});
+			}, true, undefined, state());
 			expect(result).toBeUndefined();
 		});
 
@@ -178,7 +166,7 @@ describe("handleSubagentToolCall", () => {
 			const result = handleSubagentToolCall({
 				toolName: "write",
 				input: { path: "ok.ts", file: "bad.ts" },
-			});
+			}, true, undefined, state());
 			expect(result).toEqual({
 				block: true,
 				reason: "Scope violation: bad.ts is outside the allowed scope",
@@ -198,17 +186,14 @@ describe("handleSubagentToolCall", () => {
 			handleSubagentToolCall({
 				toolName: "bash",
 				input: { command: "cat src/auth.ts > backup.ts" },
-			});
+			}, true, undefined, state());
 			// Should have tried to check paths extracted from the command
 			expect(mockIsPathAllowed).toHaveBeenCalled();
 		});
 	});
 
 	describe("operation mapping", () => {
-		beforeEach(() => {
-			mockState.batchLoad = 1;
-			mockState.planParsed = true;
-		});
+		const state = () => subagentCtx(true);
 
 		// edit tool uses filePath in its input
 		it("passes 'edit' operation for edit tool", () => {
@@ -223,7 +208,7 @@ describe("handleSubagentToolCall", () => {
 			handleSubagentToolCall({
 				toolName: "edit",
 				input: { filePath: "src/file.ts" },
-			});
+			}, true, undefined, state());
 			expect(mockIsPathAllowed).toHaveBeenCalledWith(
 				expect.stringContaining("src/file.ts"),
 				"edit",
@@ -243,7 +228,7 @@ describe("handleSubagentToolCall", () => {
 			handleSubagentToolCall({
 				toolName: "write",
 				input: { path: "src/file.ts" },
-			});
+			}, true, undefined, state());
 			expect(mockIsPathAllowed).toHaveBeenCalledWith(
 				expect.stringContaining("src/file.ts"),
 				"write",
@@ -263,7 +248,7 @@ describe("handleSubagentToolCall", () => {
 			handleSubagentToolCall({
 				toolName: "read",
 				input: { path: "src/file.ts" },
-			});
+			}, true, undefined, state());
 			expect(mockIsPathAllowed).toHaveBeenCalledWith(
 				expect.stringContaining("src/file.ts"),
 				"read",
@@ -272,10 +257,6 @@ describe("handleSubagentToolCall", () => {
 	});
 
 	describe("bash command interception (orchestrator context)", () => {
-		beforeEach(() => {
-			mockState.batchLoad = 0;
-		});
-
 		it("passes through non-bash tools", () => {
 			const result = handleSubagentToolCall({
 				toolName: "read",
@@ -336,33 +317,30 @@ describe("handleSubagentToolCall", () => {
 	});
 
 	describe("bash command interception (subagent context)", () => {
-		beforeEach(() => {
-			mockState.batchLoad = 1;
-			mockState.planParsed = true;
-		});
+		const state = () => subagentCtx(true);
 
-		it("intercepts bash cat command and redirects to read when batchLoad > 0", () => {
+		it("intercepts bash cat command and redirects to read in subagent context", () => {
 			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true, tool: "read" });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
 			const result = handleSubagentToolCall({
 				toolName: "bash",
 				input: { command: "cat src/auth.ts" },
-			});
+			}, true, undefined, state());
 			expect(result).toEqual({
 				block: true,
 				reason: "Use read instead of bash (command: cat). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).",
 			});
 		});
 
-		it("allows bash with no replacement when batchLoad > 0", () => {
+		it("allows bash with no replacement in subagent context", () => {
 			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
 			const result = handleSubagentToolCall({
 				toolName: "bash",
 				input: { command: "docker build ." },
-			});
+			}, true, undefined, state());
 			expect(result).toBeUndefined();
 		});
 
@@ -373,16 +351,12 @@ describe("handleSubagentToolCall", () => {
 			const result = handleSubagentToolCall({
 				toolName: "bash",
 				input: { command: "cat file.txt", override: true },
-			});
+			}, true, undefined, state());
 			expect(getBashToolReplacement).toHaveBeenCalledWith("cat file.txt", true);
 		});
 	});
 
 	describe("fusion allow-list enforcement", () => {
-		beforeEach(() => {
-			mockState.batchLoad = 0;
-		});
-
 		it("blocks fusion when explicitly disabled", () => {
 			const result = handleSubagentToolCall(
 				{ toolName: "fusion", input: { prompt: "analyze" } },
@@ -413,7 +387,6 @@ describe("handleSubagentToolCall", () => {
 
 	describe("readOnly bash blocking", () => {
 		beforeEach(() => {
-			mockState.batchLoad = 0;
 			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 			vi.mocked(isWriteCommand).mockReturnValue(false);

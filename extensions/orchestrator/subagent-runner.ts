@@ -21,6 +21,7 @@ import { Type } from "typebox";
 import { existsSync } from "fs";
 import { join } from "path";
 
+import { subagentSessions } from "./subagent-sessions.ts";
 import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Substep, DelegateControllerContext } from "./types.ts";
 import { resolveSpecialistModel, DEFAULTS } from "./orchestrator-config.ts";
@@ -64,13 +65,6 @@ export function resolveSkillPaths(skills: string[], agentDir: string): string[] 
 		.map(s => join(agentDir, 'skills', s, 'SKILL.md'))
 		.filter(existsSync);
 }
-
-/** @deprecated Synced from SubagentRunner instance field. Kept for backward-compat with index.ts / subagent-tool-guard.ts. */
-export let _batchLoadSubagent = 0;
-/** @deprecated Synced from SubagentRunner instance field. Kept for backward-compat. */
-let _planParsed = false;
-/** Getter for planParsed state — used by index.ts tool_call handler */
-export function isPlanParsed(): boolean { return _planParsed; }
 
 const OUTPUT_CAP = 30_000;
 
@@ -125,9 +119,6 @@ export function truncateSubagentOutput(output: string, cap = OUTPUT_CAP): string
 	return cleanHead + "\n\n" + markerText + tailBlock;
 }
 
-export function isSubagentContext(): boolean {
-	return process.env[SUBAGENT_ENV_KEY] === "1";
-}
 
 
 
@@ -246,15 +237,10 @@ export type SubagentResult = {
  * SubagentRunner — creates isolated subagent sessions for specialist delegation.
  *
  * Owns an ActivityFeed instance for the run duration.
- * Private instance fields track coordination state (_batchLoadSubagent, _planParsed).
- * Module-level exports are synced from these fields for backward-compat with index.ts
- * and subagent-tool-guard.ts.
  */
 export class SubagentRunner {
 	private config: SubagentRunnerConfig;
 	private feed: ActivityFeed;
-	private _batchLoadSubagent = 0;
-	private _planParsed = false;
 	private static readonly SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
 
 	constructor(config: SubagentRunnerConfig) {
@@ -288,6 +274,7 @@ export class SubagentRunner {
 	): Promise<SubagentResult> {
 		const startTime = Date.now();
 		let envSnapshot: NodeJS.ProcessEnv;
+		let sessionId: string | undefined;
 		const { config } = this;
 		const feed = this.feed;
 
@@ -334,9 +321,7 @@ export class SubagentRunner {
 				.filter(existsSync);
 
 			// Load extensions for subagent, flag context so orchestrator skips re-registration
-			_batchLoadSubagent++;
 			process.env[SubagentRunner.SUBAGENT_ENV_KEY] = "1";
-			process.env["PI_SPECIALIST_NAME"] = specialist.name;
 			let loader: DefaultResourceLoader | undefined;
 			try {
 				loader = new DefaultResourceLoader({
@@ -371,8 +356,6 @@ export class SubagentRunner {
 				});
 				await loader.reload();
 			} finally {
-				_batchLoadSubagent--;
-				_planParsed = false;
 				delete process.env[SubagentRunner.SUBAGENT_ENV_KEY];
 			}
 
@@ -409,7 +392,6 @@ export class SubagentRunner {
 							currentStep: 0,
 							planParsed: true
 						};
-						_planParsed = true;
 						const text = feed.render(specialist.name);
 						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "plan_set" } });
 					}
@@ -501,6 +483,10 @@ export class SubagentRunner {
 				sessionManager: SessionManager.inMemory(config.cwd),
 				modelRuntime: await ModelRuntime.create(),
 			});
+
+			// Register session in per-session Map for concurrent-safe routing
+			const sessionId = session.sessionId as string;
+			subagentSessions.set(sessionId, { specialistName: specialist.name, planParsed: false });
 
 			const { signal } = config;
 
@@ -778,6 +764,7 @@ export class SubagentRunner {
 				turns: 0,
 			};
 		} finally {
+			subagentSessions.delete(sessionId!);
 			this.installEnv(envSnapshot!);
 		}
 	}

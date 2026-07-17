@@ -16,7 +16,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-import { isSubagentContext, _batchLoadSubagent, SUBAGENT_ENV_KEY, isPlanParsed } from "./subagent-runner.ts";
+import { SUBAGENT_ENV_KEY } from "./subagent-runner.ts";
+import { subagentSessions, type SubagentState } from "./subagent-sessions.ts";
 import { clearPlanPanel, PlanPanel } from "./plan-panel.ts";
 import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
@@ -40,30 +41,19 @@ function resolveCwd(ctx?: { cwd?: string }): string {
 const READ_ONLY_WITH_BASH = new Set(["reviewer"]);
 
 export default function (pi: ExtensionAPI) {
-	// ── Guard: Skip full orchestrator registration when loading for a subagent session ──
+	// ── Guard: Skip orchestrator registration when loading inside a subagent session ──
+	if (process.env[SUBAGENT_ENV_KEY] === "1") {
+		return;
+	}
+
+	// ── Advisory entry-point detection ──
 	/**
 	 * Check if current specialist is read-only with bash access.
 	 * These specialists have bash but no edit/write — need tool-level enforcement.
 	 */
-	function isReadOnlySpecialist(): boolean {
-		const name = process.env["PI_SPECIALIST_NAME"];
-		return !!name && READ_ONLY_WITH_BASH.has(name);
-	}
-
-	if (_batchLoadSubagent > 0 || isSubagentContext()) {
-		debugLog("SKIPPING orchestrator registration (subagent context)", {
-			batchLoad: _batchLoadSubagent,
-			envGuard: process.env[SUBAGENT_ENV_KEY],
-		});
-		pi.on("tool_call", (event, ctx) => {
-			traceToolCallEntry('index:subagent-tool_call', event, ctx);
-			const cwd = resolveCwd(ctx);
-			const fusionConfig = loadFusionConfig(cwd);
-			const result = handleSubagentToolCall(event, fusionConfig.enabled, { ...ctx, readOnly: isReadOnlySpecialist() });
-			traceMark('index:subagent-tool_call.result', { tool: event.toolName, input_path: (event.input as any)?.path, result });
-			return result;
-		});
-		return;
+	function isReadOnlySpecialist(sessionId: string): boolean {
+		const state = subagentSessions.get(sessionId);
+		return !!state && READ_ONLY_WITH_BASH.has(state.specialistName);
 	}
 
 	// ── Freeze active tools at session_start for prefix-cache stability ──
@@ -134,26 +124,35 @@ export default function (pi: ExtensionAPI) {
 		return { skillPaths };
 	});
 
-	// ── Safety net: Block non-delegation tool calls ──
+	// ── Unified tool_call handler — routes by per-session Map ──
 	pi.on("tool_call", async (event, ctx) => {
-		traceToolCallEntry('index:orchestrator-tool_call', event, ctx);
+		traceToolCallEntry('index:tool_call', event, ctx);
+		const sessionId = (ctx as any)?.sessionManager?.getSessionId?.();
+		const subagentState: SubagentState | undefined = sessionId ? subagentSessions.get(sessionId) : undefined;
 
-		// Delegation mode safety net (primary blocking in delegate-pipeline)
+		if (subagentState) {
+			// Subagent session — route to subagent enforcement
+			const cwd = resolveCwd(ctx);
+			const fusionConfig = loadFusionConfig(cwd);
+			const result = handleSubagentToolCall(event, fusionConfig.enabled, { ...ctx, readOnly: isReadOnlySpecialist(sessionId) }, subagentState);
+			// Mark plan as parsed when planSteps is called
+			if (event.toolName === "planSteps" && !subagentState.planParsed) {
+				subagentState.planParsed = true;
+			}
+			traceMark('index:tool_call.result', { tool: event.toolName, input_path: (event.input as any)?.path, result });
+			return result;
+		}
+
+		// Orchestrator session — apply whitelist
 		if (event.toolName === "delegate") {
 			const currentMode = getSessionMode(ctx);
 			debugLog("[orchestrator] delegate call in mode:", currentMode);
 		}
 
-		// Subagent: enforce planSteps-first before any other tool
-		if (_batchLoadSubagent > 0 && !isPlanParsed()) {
-			if (event.toolName !== "planSteps") {
-				return { block: true, reason: `Call planSteps({ goal, steps }) first before using ${event.toolName}.` };
-			}
-		}
-		if (_batchLoadSubagent > 0) return; // Don't block other subagent tools
 		if (event.toolName === "fusion" && !pi.getAllTools().some((t: any) => t.name === "fusion")) {
 			return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 		}
+
 		if (event.toolName !== "delegate" && !PLAN_TOOLS.includes(event.toolName as typeof PLAN_TOOLS[number]) && event.toolName !== "fusion" && event.toolName !== "read_skill" && event.toolName !== "list_skills" && event.toolName !== "list_tools" && event.toolName !== "vision_query" && event.toolName !== "interactive_shell") {
 			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
 		}

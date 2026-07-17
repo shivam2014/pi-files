@@ -16,6 +16,7 @@ import { createActivityFeed, addStep, completeCurrentStep, markFeedError } from 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { subagentSessions } from "./subagent-sessions.ts";
 
 describe("truncateSubagentOutput", () => {
 	it("returns output unchanged when under cap", () => {
@@ -189,6 +190,50 @@ describe("finalization loop", () => {
 		expect(feed.errored).toBe(true);
 		expect(feed.errorMessage).toBe("Something broke");
 		expect(feed.steps[1].completed).toBe(false);
+	});
+});
+
+describe("subagentSessions Map lifecycle", () => {
+	beforeEach(() => {
+		subagentSessions.clear();
+	});
+
+	it("starts empty", () => {
+		expect(subagentSessions.size).toBe(0);
+	});
+
+	it("populates and retrieves per-session state", () => {
+		subagentSessions.set("session-1", { specialistName: "scout", planParsed: false });
+		expect(subagentSessions.size).toBe(1);
+		const state = subagentSessions.get("session-1");
+		expect(state?.specialistName).toBe("scout");
+		expect(state?.planParsed).toBe(false);
+	});
+
+	it("supports concurrent sessions without interference", () => {
+		subagentSessions.set("session-a", { specialistName: "scout", planParsed: false });
+		subagentSessions.set("session-b", { specialistName: "coder", planParsed: true });
+		expect(subagentSessions.size).toBe(2);
+		expect(subagentSessions.get("session-a")?.specialistName).toBe("scout");
+		expect(subagentSessions.get("session-b")?.specialistName).toBe("coder");
+	});
+
+	it("mutates planParsed in-place (reference sharing)", () => {
+		const state = { specialistName: "scout", planParsed: false };
+		subagentSessions.set("session-1", state);
+		state.planParsed = true;
+		expect(subagentSessions.get("session-1")?.planParsed).toBe(true);
+	});
+
+	it("cleans up on delete (simulating finally block)", () => {
+		subagentSessions.set("session-1", { specialistName: "scout", planParsed: false });
+		subagentSessions.delete("session-1");
+		expect(subagentSessions.size).toBe(0);
+		expect(subagentSessions.get("session-1")).toBeUndefined();
+	});
+
+	it("delete of non-existent key is a no-op", () => {
+		expect(() => subagentSessions.delete("ghost")).not.toThrow();
 	});
 });
 
