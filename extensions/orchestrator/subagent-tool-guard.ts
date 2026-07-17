@@ -151,9 +151,13 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					if (ctx?.readOnly && isWriteCommand(input.command)) {
 						return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
 					}
-					// Non-git bash command - use file extension regex
-					const pathMatches = input.command.match(/(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g);
-					if (pathMatches) filePaths.push(...pathMatches);
+					// Test runner and compiler commands are read-only — skip file path extraction
+					const TEST_RUNNER_PREFIXES = ['npx vitest', 'npx jest', 'npm test', 'npx playwright', 'npx mocha', 'npx cypress', 'yarn test', 'pnpm test', 'npx tsc', 'node --test'];
+					const isTestRunner = TEST_RUNNER_PREFIXES.some(prefix => cmd.startsWith(prefix));
+					if (!isTestRunner) {
+						const pathMatches = input.command.match(/(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g);
+						if (pathMatches) filePaths.push(...pathMatches);
+					}
 				}
 			}
 
