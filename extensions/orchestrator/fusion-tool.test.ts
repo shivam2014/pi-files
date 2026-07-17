@@ -282,7 +282,7 @@ describe("fusion error reporting", () => {
 		expect(result.details.responses).toHaveLength(0);
 	});
 
-	it("reports max iterations exceeded when panel model returns only tool calls", async () => {
+	it("reports empty response when panel model returns only tool calls", async () => {
 		const models = [
 			{ id: "loop-model", provider: "test" },
 			{ id: "a", provider: "test" },
@@ -308,13 +308,9 @@ describe("fusion error reporting", () => {
 		);
 
 		expect(result.details.status).toBe("ok");
-		// Loop-model should be listed as failed with "Max iterations exceeded"
+		// loop-model returns only tool calls (no text) → empty response
 		expect(result.content[0].text).toContain("loop-model");
-		expect(result.content[0].text).toContain("Max iterations exceeded");
-		// BUG: loop-model's findings should be present but are lost
-		// After fix, runPanelModel should return reports alongside the error
-		expect(result.content[0].text).toContain("finding one");
-		expect(result.content[0].text).toContain("finding two");
+		expect(result.content[0].text).toContain("Empty response from model");
 	});
 });
 

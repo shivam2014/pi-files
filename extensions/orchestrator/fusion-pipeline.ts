@@ -1,4 +1,3 @@
-import { Type } from "typebox";
 import { complete } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { FusionConfig, FusionAnalysis } from "./types.ts";
@@ -104,16 +103,6 @@ export async function probeTemperatureSupport(
 	}
 }
 
-// ─── Report-Finding Tool (for panel models) ─────────────
-
-const reportFindingTool = {
-	name: "reportFinding",
-	description: "Report each distinct finding, key insight, or recommendation during your analysis. You MUST call this tool once for every separate point you identify; do not group multiple findings into a single call.",
-	parameters: Type.Object({
-		finding: Type.String({ description: "The key finding, insight, or recommendation" }),
-	}),
-};
-
 // ─── Panel Model Runner ────────────────────────
 
 async function runPanelModel(
@@ -138,104 +127,51 @@ async function runPanelModel(
 	const messages: any[] = [
 		{ role: "user", content: [{ type: "text", text: userPrompt }], timestamp: Date.now() },
 	];
-	const reports: string[] = [];
-	const assistantTextParts: string[] = [];
 	const modelId = model.id;
 	debugLog("fusion-tool: panel model start", { model: modelId });
-	const maxLoops = 10;
-	let loopCount = 0;
 
-	while (true) {
-		loopCount++;
-		if (loopCount > maxLoops) {
-			const currentText = assistantTextParts.join("\n");
-			debugLog("fusion-tool: panel model exceeded max loops", { model: modelId, loops: loopCount, textLength: currentText.length });
-			if (currentText || reports.length > 0) {
-				return { model: modelId, content: currentText || reports.join("\n"), reports: [...reports, "Error: Max iterations exceeded"] };
-			}
-			return { model: modelId, error: "Max iterations exceeded" };
+	try {
+		const response = await tryCompleteWithTemperatureFallback(model, {
+			systemPrompt,
+			messages,
+		}, {
+			apiKey: auth.apiKey,
+			headers: auth.headers,
+			signal,
+			maxTokens: config.maxTokens,
+			temperature: config.temperature,
+			sessionId,
+			reasoningEffort: model.reasoning ? getDefaultReasoningEffort(model) : undefined,
+			timeoutMs: 30_000,
+		}, ctx);
+
+		// Handle error/aborted responses
+		if (response.stopReason === "error" || response.stopReason === "aborted") {
+			const errMsg = (response as any).errorMessage || `Model stopped: ${response.stopReason}`;
+			debugLog("fusion-tool: panel model stopped", { model: modelId, stopReason: response.stopReason, error: errMsg });
+			return { model: modelId, error: errMsg };
 		}
 
-		try {
-			const response = await tryCompleteWithTemperatureFallback(model, {
-				systemPrompt,
-				messages,
-				tools: [reportFindingTool],
-			}, {
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				signal,
-				maxTokens: config.maxTokens,
-				temperature: config.temperature,
-				sessionId,
-				reasoningEffort: model.reasoning ? getDefaultReasoningEffort(model) : undefined,
-				timeoutMs: 30_000,
-			}, ctx);
-
-			// Handle error/aborted responses
-			if (response.stopReason === "error" || response.stopReason === "aborted") {
-				const errMsg = (response as any).errorMessage || `Model stopped: ${response.stopReason}`;
-				debugLog("fusion-tool: panel model stopped", { model: modelId, stopReason: response.stopReason, error: errMsg });
-				return { model: modelId, error: errMsg };
-			}
-
-			// Preserve any assistant text present in this response
-			const responseText = extractText(response);
-			if (responseText) {
-				assistantTextParts.push(responseText);
-			}
-
-			const toolCalls = response.content?.filter((c: any) => c.type === "toolCall") || [];
-
-			if (toolCalls.length > 0) {
-				// Push assistant response with tool_calls first (required by OpenAI/DeepSeek format)
-				messages.push(response);
-
-				for (const tc of toolCalls) {
-					const toolCall = tc as any;
-					if (toolCall.name === "reportFinding") {
-						const finding = toolCall.arguments?.finding || "";
-						reports.push(finding);
-					}
-					messages.push({
-						role: "toolResult" as const,
-						toolCallId: toolCall.id,
-						toolName: toolCall.name,
-						content: [{ type: "text" as const, text: "✓ Reported" }],
-						isError: false,
-						timestamp: Date.now(),
-					} as any);
-				}
-				// Continue loop to get final text
-				continue;
-			}
-
-			// No tool calls — use all collected assistant text
-			const text = assistantTextParts.join("\n");
-			if (!text) {
-				debugLog("fusion-tool: panel model returned empty response", { model: modelId, contentTypes: response.content?.map((c: any) => c.type) });
-				return { model: modelId, error: "Empty response from model" };
-			}
-
-			// Deterministic fallback: ensure every panelist contributes at least one finding
-			if (reports.length === 0) {
-				reports.push(text);
-			}
-
-			if (reports.length > 0) {
-				const reportLines = reports.map(r => `  ✓ ${r}`).join("\n");
-				onUpdate?.({
-					content: [{ type: "text", text: `  ── Panel: ${modelId} ──\n${reportLines}` }],
-					details: { phase: "panel_reports", model: modelId, count: reports.length },
-				});
-			}
-			debugLog("fusion-tool: panel model complete", { model: modelId, textLength: text.length, reports: reports.length });
-			return { model: modelId, content: text, reports };
-
-		} catch (err: any) {
-			debugLog("fusion-tool: panel model error", { model: modelId, error: err.message ?? String(err) });
-			return { model: modelId, error: err.message ?? String(err) };
+		// Extract text response (matches judge pattern)
+		const text = extractText(response);
+		if (!text) {
+			debugLog("fusion-tool: panel model returned empty response", { model: modelId, contentTypes: response.content?.map((c: any) => c.type) });
+			return { model: modelId, error: "Empty response from model" };
 		}
+
+		const reports = [text];
+
+		onUpdate?.({
+			content: [{ type: "text", text: `  ── Panel: ${modelId} ──\n  ✓ ${text}` }],
+			details: { phase: "panel_reports", model: modelId, count: 1 },
+		});
+
+		debugLog("fusion-tool: panel model complete", { model: modelId, textLength: text.length, reports: 1 });
+		return { model: modelId, content: text, reports };
+
+	} catch (err: any) {
+		debugLog("fusion-tool: panel model error", { model: modelId, error: err.message ?? String(err) });
+		return { model: modelId, error: err.message ?? String(err) };
 	}
 }
 
@@ -259,15 +195,6 @@ export class FusionPipeline {
 		onUpdate?: any,
 		sessionId?: string,
 	): Promise<{ succeeded: any[]; failed: any[] }> {
-		// Pre-flight temperature probe: test each unique model once before panel runs.
-		const uniqueModelIds = [...new Set(panelModels.map((m: any) => m.id))];
-		for (const modelId of uniqueModelIds) {
-			const model = panelModels.find((m: any) => m.id === modelId);
-			if (model) {
-				await probeTemperatureSupport(model, this.config.temperature, this.registry, this.ctx);
-			}
-		}
-
 		const panelResults = await mapWithConcurrencyLimit(panelModels, 2, async (model: any) => {
 			onUpdate?.({
 				content: [{ type: "text", text: `  ⏳ Panel: ${model.id}...` }],
