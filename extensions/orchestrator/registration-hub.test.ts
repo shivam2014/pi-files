@@ -43,6 +43,7 @@ describe('registerAllTools', () => {
 			on: vi.fn(),
 			setActiveTools: vi.fn(),
 			registerShortcut: vi.fn(),
+			registerCommand: vi.fn(),
 		};
 	}
 
