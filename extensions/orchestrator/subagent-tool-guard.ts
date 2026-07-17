@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { debugLog } from "./debug.ts";
 import { traceToolCallEntry, tracePathsExtracted, tracePathResolved, traceScopeCheck, traceDecision } from "./debug-path-trace.ts";
 import { resolve } from "node:path";
+import * as os from 'os';
 
 /** Tools that never modify state — always safe to allow */
 const readOnlyTools = new Set(['read', 'grep', 'find', 'ls', 'git-read', 'head', 'tail', 'wc', 'file']);
@@ -124,7 +125,8 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						const paths = args.filter((arg: string) => !arg.startsWith('-'));
 
 						for (const rawPath of paths) {
-							const absolutePath = resolve(cwd, rawPath);
+							const expandedPath = rawPath.startsWith('~/') ? rawPath.replace(/^~/, os.homedir()) : rawPath;
+							const absolutePath = resolve(cwd, expandedPath);
 							const pathAllowed = guard.isPathAllowed(absolutePath, 'write');
 							if (!pathAllowed.allowed) {
 								return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope` };
@@ -153,7 +155,8 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					: 'write'; // fail-closed: unknown tools treated as mutations
 
 			for (const rawPath of filePaths) {
-				const absolutePath = resolve(cwd, rawPath);
+				const expandedPath = rawPath.startsWith('~/') ? rawPath.replace(/^~/, os.homedir()) : rawPath;
+				const absolutePath = resolve(cwd, expandedPath);
 				tracePathResolved('scope-guard', rawPath, absolutePath, operation);
 				const pathAllowed = guard.isPathAllowed(absolutePath, operation);
 				traceScopeCheck('scope-guard', absolutePath, pathAllowed.allowed, pathAllowed.reason);

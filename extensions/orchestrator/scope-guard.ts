@@ -1,3 +1,4 @@
+import * as os from 'os';
 import { join, relative, isAbsolute, resolve, posix } from 'path';
 import picomatch from 'picomatch';
 import { parseScopeFile, type ResolvedScope } from './scope-manager';
@@ -14,7 +15,10 @@ export interface ScopeExpansionRequest {
   suggestedExpansion?: { directories?: string[]; filesToModify?: string[] };
 }
 
-function normalizePath(filePath: string, cwd: string): string {
+export function normalizePath(filePath: string, cwd: string): string {
+  if (filePath.startsWith('~/')) {
+    filePath = filePath.replace(/^~/, os.homedir());
+  }
   const absolute = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
   const rel = relative(cwd, absolute);
   // If relative starts with '..', the path escapes cwd — return absolute
@@ -139,7 +143,8 @@ export class ScopeGuard {
 
     // Check directory-level allowlist
     const directories = Array.isArray(scope.directories) ? scope.directories : [];
-    for (const dir of directories) {
+    for (let dir of directories) {
+      if (dir.startsWith('~/')) dir = dir.replace(/^~/, os.homedir());
       const normalizedDir = dir.replace(/\/$/, '') + '/';
       if (normalized.startsWith(normalizedDir) || normalized === dir) {
         return { allowed: true };

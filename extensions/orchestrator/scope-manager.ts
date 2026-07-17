@@ -127,6 +127,7 @@ export class ScopeManager {
     // Normalize file paths to absolute
     scope.filesToModify = scope.filesToModify.map(normalizeScopePath);
     scope.filesToCreate = scope.filesToCreate.map(normalizeScopePath);
+    scope.directories = scope.directories.map(d => normalizeScopePath(d));
     const dir = join(this.cwd, '.pi');
     mkdirSync(dir, { recursive: true });
     const contract: ScopeFileContract = {
