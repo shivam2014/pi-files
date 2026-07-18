@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key } from "@earendil-works/pi-tui";
 import { styledSymbol, getTheme } from "./orchestrator-theme.ts";
-import { loadOrchestratorConfig, saveOrchestratorConfig } from "./orchestrator-config.ts";
+import { loadOrchestratorConfig, saveOrchestratorConfig, resolveSpecialistModel } from "./orchestrator-config.ts";
 import type { OrchestratorConfig } from "./orchestrator-config.ts";
 import { SPECIALISTS } from "./specialists.ts";
 
@@ -115,7 +115,7 @@ export async function showModelTUI(ctx: ExtensionCommandContext): Promise<void> 
 							if (row.type === "separator") return;
 							if (row.type === "mode") {
 								// Toggle delegation mode
-								state.config.delegation = state.config.delegation || { mode: "sequential", parallel: { maxConcurrent: 4, timeoutMs: 120000 } };
+								state.config.delegation = state.config.delegation || { mode: "sequential", maxTurns: 30, parallel: { maxConcurrent: 4, timeoutMs: 600000 } };
 								state.config.delegation.mode = state.config.delegation.mode === "sequential" ? "parallel" : "sequential";
 								state.rows = buildRows(state.config);
 								return;
@@ -130,11 +130,8 @@ export async function showModelTUI(ctx: ExtensionCommandContext): Promise<void> 
 								if (state.editingTarget === "all") {
 									state.config.models = state.config.models || {};
 									state.config.models.delegate = selectedModel;
-									// Also apply to all specialist overrides
-									state.config.models.specialists = state.config.models.specialists || {};
-									for (const name of Object.keys(SPECIALISTS)) {
-										state.config.models.specialists[name] = selectedModel;
-									}
+									// Clear individual specialist overrides — delegate is the new baseline
+									state.config.models.specialists = {};
 								} else {
 									state.config.models = state.config.models || {};
 									state.config.models.specialists = state.config.models.specialists || {};
@@ -232,13 +229,16 @@ function buildRows(config: OrchestratorConfig): ModelRow[] {
 	return [
 		{ type: "mode", name: "Delegation mode", value: config.delegation?.mode ?? "sequential" },
 		{ type: "separator", name: "", value: "" },
-		{ type: "all", name: "Set all delegates", value: config.models?.delegate ?? "(inherited)" },
+		{ type: "all", name: "Set all delegates", value: config.models?.delegate ?? "(inherit from parent)" },
 		{ type: "separator", name: "", value: "" },
-		...specialistNames.map((name) => ({
-			type: "specialist" as const,
-			name,
-			value: config.models?.specialists?.[name] ?? "(inherited)",
-		})),
+		...specialistNames.map((name) => {
+			const resolved = resolveSpecialistModel(config, name, SPECIALISTS[name]?.model);
+			return {
+				type: "specialist" as const,
+				name,
+				value: resolved ?? "(inherit from parent)",
+			};
+		}),
 	];
 }
 
