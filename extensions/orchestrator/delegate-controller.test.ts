@@ -294,6 +294,92 @@ describe("executeDelegate", () => {
     });
   });
 
+  describe("error status", () => {
+    it("returns status 'error' when stopReason is 'error'", async () => {
+      mockRunSubagent.mockResolvedValueOnce(
+        createSubagentResult({
+          output: "[error] Task failed",
+          stopReason: "error",
+          errorMessage: "Task failed",
+          turns: 2,
+        }),
+      );
+      const r = await executeDelegate({ specialist: "test", task: "fail" }, createMockCtx(), vi.fn());
+      expect(r.details.status).toBe("error");
+    });
+
+    it("includes stopReason in details when error", async () => {
+      mockRunSubagent.mockResolvedValueOnce(
+        createSubagentResult({
+          output: "[error] Task failed",
+          stopReason: "error",
+          errorMessage: "Task failed",
+          turns: 1,
+        }),
+      );
+      const r = await executeDelegate({ specialist: "test", task: "fail" }, createMockCtx(), vi.fn());
+      expect(r.details.stopReason).toBe("error");
+    });
+
+    it("includes errorMessage in details when error", async () => {
+      mockRunSubagent.mockResolvedValueOnce(
+        createSubagentResult({
+          output: "[error] Task failed",
+          stopReason: "error",
+          errorMessage: "Task failed",
+          turns: 1,
+        }),
+      );
+      const r = await executeDelegate({ specialist: "test", task: "fail" }, createMockCtx(), vi.fn());
+      expect(r.details.errorMessage).toBe("Task failed");
+    });
+
+    it("sets partialResults false when output is pure error text", async () => {
+      mockRunSubagent.mockResolvedValueOnce(
+        createSubagentResult({
+          output: "[error] Some partial work",
+          stopReason: "error",
+          errorMessage: "crashed",
+          turns: 3,
+        }),
+      );
+      const r = await executeDelegate({ specialist: "test", task: "fail" }, createMockCtx(), vi.fn());
+      expect(r.details.partialResults).toBe(false);
+    });
+
+    it("sets partialResults true when error has non-error output", async () => {
+      mockRunSubagent.mockResolvedValueOnce(
+        createSubagentResult({
+          output: "Some useful work done",
+          stopReason: "error",
+          errorMessage: "crashed",
+          turns: 3,
+        }),
+      );
+      const r = await executeDelegate({ specialist: "test", task: "fail" }, createMockCtx(), vi.fn());
+      expect(r.details.partialResults).toBe(true);
+    });
+
+    it("sets partialResults false when error has no output", async () => {
+      mockRunSubagent.mockResolvedValueOnce(
+        createSubagentResult({
+          output: "",
+          stopReason: "error",
+          errorMessage: "crashed",
+          turns: 0,
+        }),
+      );
+      const r = await executeDelegate({ specialist: "test", task: "fail" }, createMockCtx(), vi.fn());
+      expect(r.details.partialResults).toBe(false);
+    });
+
+    it("returns status 'done' and no partialResults on success", async () => {
+      const r = await executeDelegate({ specialist: "test", task: "succeed" }, createMockCtx(), vi.fn());
+      expect(r.details.status).toBe("done");
+      expect(r.details.partialResults).toBeFalsy();
+    });
+  });
+
   describe("ask-resolver gate", () => {
     it("returns structured result when resolve() returns 'ask' instead of throwing", async () => {
       // Force resolve to return "ask" (vague scope)

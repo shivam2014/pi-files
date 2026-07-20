@@ -129,15 +129,26 @@ export interface BashReplacementResult {
  * what tool to use instead, or why it was blocked.
  */
 export function getBashToolReplacement(command: string | undefined, override?: boolean): BashReplacementResult {
-  if (!command) return { allowed: true };
-  if (override) return { allowed: true };
+	if (!command) return { allowed: true };
 
-  if (isBlockedRmRecursive(command)) {
-    return {
-      allowed: false,
-      reason: "rm -rf is blocked. Set override:true in bash tool input to bypass. Use edit/write to modify files, or ask orchestrator for destructive operation approval."
-    };
-  }
+	// ALWAYS check dangerous commands first, even with override
+	if (isDangerousCommand(command)) {
+		return {
+			allowed: false,
+			reason: "Dangerous command blocked. This command cannot be executed even with override:true.",
+		};
+	}
+
+	// Override bypasses tool redirection (but not dangerous commands)
+	if (override) return { allowed: true };
+
+	// Block rm -rf even if not caught by dangerous command check
+	if (isBlockedRmRecursive(command)) {
+		return {
+			allowed: false,
+			reason: "rm -rf is blocked. Set override:true in bash tool input to bypass. Use edit/write to modify files, or ask orchestrator for destructive operation approval."
+		};
+	}
 
   const cmd = firstCommandName(command);
   if (!cmd) return { allowed: true };

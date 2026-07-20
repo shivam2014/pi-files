@@ -36,7 +36,7 @@ import { handleSubagentToolCall } from "./subagent-tool-guard";
 import type { SubagentState } from "./subagent-sessions";
 
 function subagentState(planParsed = true): SubagentState {
-  return { specialistName: "coder", planParsed };
+  return { specialistName: "coder", planParsed, blockedCalls: [] };
 }
 
 // Correct signature: handleSubagentToolCall(event, fusionEnabled, ctx?, subagentState?)

@@ -21,6 +21,83 @@ const GIT_READ_COMMANDS = new Set([
 // ── Helpers ────────────────────────────────────────────────────────────
 
 /**
+ * Parse a git command string into an array of git-safe arguments.
+ * Handles quoted strings (single and double), strips shell redirects
+ * (2>/dev/null, >/dev/null, &>/dev/null), and strips pipe + everything after.
+ */
+export function parseGitArgs(input: string): string[] {
+	const tokens: string[] = [];
+	let i = 0;
+	let current = "";
+	let inSingle = false;
+	let inDouble = false;
+
+	while (i < input.length) {
+		const ch = input[i];
+
+		// Handle pipe — stop entirely
+		if (ch === "|" && !inSingle && !inDouble) {
+			if (current.trim()) tokens.push(current);
+			break;
+		}
+
+		// Detect redirect start (>, digit+>, &>) — skip until whitespace
+		if ((ch === ">" || (ch >= "0" && ch <= "9") || ch === "&") && !inSingle && !inDouble) {
+			// Check if this is a redirect (>file, N>file, &>file)
+			let isRedirect = false;
+			let lookahead = i;
+			// Consume digits for N> syntax
+			while (lookahead < input.length && input[lookahead] >= "0" && input[lookahead] <= "9") {
+				lookahead++;
+			}
+			if (lookahead < input.length && input[lookahead] === ">") {
+				isRedirect = true;
+			} else if (lookahead < input.length && input[lookahead] === "&" && lookahead + 1 < input.length && input[lookahead + 1] === ">") {
+				isRedirect = true;
+			}
+			if (isRedirect) {
+				if (current.trim()) tokens.push(current);
+				current = "";
+				// Skip the entire redirect token (e.g., "2>/dev/null", ">&1", "&>/dev/null")
+				while (i < input.length && input[i] !== " " && input[i] !== "\t") {
+					i++;
+				}
+				continue;
+			}
+		}
+
+		if (ch === "'" && !inDouble) {
+			inSingle = !inSingle;
+			i++;
+			continue;
+		}
+		if (ch === '"' && !inSingle) {
+			inDouble = !inDouble;
+			i++;
+			continue;
+		}
+
+		if ((ch === " " || ch === "\t") && !inSingle && !inDouble) {
+			if (current) {
+				tokens.push(current);
+				current = "";
+			}
+			i++;
+			continue;
+		}
+
+		current += ch;
+		i++;
+	}
+
+	if (current) {
+		tokens.push(current);
+	}
+
+	return tokens;
+}
+
+/**
  * Find the git subcommand by skipping over global git options (flags like
  * -C <path>, --git-dir=<path>, -c <name>=<value>, etc.) that precede it.
  * Returns null if no subcommand is found.
@@ -68,7 +145,7 @@ export const gitReadTool = defineTool({
 				details: { exitCode: null },
 			};
 		}
-		const tokens = args.split(/\s+/);
+		const tokens = parseGitArgs(args);
 		const subcommand = findGitSubcommand(tokens);
 		if (!subcommand || !GIT_READ_COMMANDS.has(subcommand)) {
 			const allowed = [...GIT_READ_COMMANDS].sort().join(", ");
@@ -79,7 +156,7 @@ export const gitReadTool = defineTool({
 			};
 		}
 		try {
-			const result = spawnSync("git", args.split(/\s+/), {
+			const result = spawnSync("git", tokens, {
 				encoding: "utf8",
 				maxBuffer: 1024 * 1024,
 				timeout: 15000,

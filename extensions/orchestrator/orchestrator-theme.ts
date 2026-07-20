@@ -178,6 +178,21 @@ export function formatDuration(ms: number): string {
 }
 
 /**
+ * Format a token count as a compact human-readable string.
+ *
+ * - <1k   → "N"
+ * - <10k  → "N.Nk"
+ * - <1M   → "Nk"
+ * - ≥1M   → "N.NM"
+ */
+export function formatTokens(count: number): string {
+  if (count < 1000) return `${count}`;
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1000000) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1000000).toFixed(1)}M`;
+}
+
+/**
  * Build a one-line status string with optional icon, badge, and meta.
  *
  * ```

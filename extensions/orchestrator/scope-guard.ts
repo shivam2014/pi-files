@@ -50,7 +50,7 @@ function hasGlobChars(s: string): boolean {
  * The orchestrator (not the subagent) decides whether to expand.
  *
  * ## Metrics
- * Each blocked call increments `scopeViolations` in the delegation metrics,
+ * Each blocked call increments `scopeNotes` in the delegation metrics,
  * surfaced in the subagent's diagnostic output.
  *
  * ## Fail-closed

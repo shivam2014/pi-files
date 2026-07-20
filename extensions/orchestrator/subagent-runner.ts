@@ -123,6 +123,16 @@ export function truncateSubagentOutput(output: string, cap = OUTPUT_CAP): string
 
 
 
+
+/**
+ * Determine whether a subagent that stopped early should be nudged to continue.
+ * Returns true only when the stop is non-error, steps remain incomplete,
+ * and we haven't already nudged this session.
+ */
+export function shouldNudge(lastStopReason: string, stepsIncomplete: boolean, alreadyNudged: boolean): boolean {
+	return lastStopReason === "stop" && stepsIncomplete && !alreadyNudged;
+}
+
 /**
  * Build the flight recorder dump object for post-hoc debugging.
  */
@@ -775,6 +785,8 @@ export class SubagentRunner {
 
 			let finalStatus = "completed";
 
+			let nudged = false;
+
 			try {
 				await session.prompt(task);
 
@@ -789,6 +801,11 @@ export class SubagentRunner {
 						details: { specialist: specialist.name, status: "error", error: errorMsg, model: modelLabel, provider },
 					});
 				} else {
+					const stepsIncomplete = feed.planParsed && feed.currentStep < feed.steps.length;
+					if (shouldNudge(lastStopReason ?? "", stepsIncomplete, nudged)) {
+						nudged = true;
+						await session.prompt("You stopped before completing the task. Continue: finish all remaining steps, then report the final result.");
+					}
 					finalStatus = "completed";
 				}
 			} catch (error) {

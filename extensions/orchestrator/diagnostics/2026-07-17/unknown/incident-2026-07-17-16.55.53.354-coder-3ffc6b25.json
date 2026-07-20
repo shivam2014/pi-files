@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-17T16:55:53.354Z",
+  "specialist": "coder",
+  "task": "Fix prompt-builder.ts lines 96-101. The current text falsely documents `kind: \"delegation\"` and `kind: \"orchestrator\"` as valid plan step kinds, but the plan() tool schema only accepts `kind: \"loop_until\"` for structured step objects.\n\nCurrent text (lines 96-101):\n```\nStep input format:\n- String: \"do something\" → step label. Orchestrator decides at runtime whether to delegate() or handle it as an orchestrator task.\n- Object: { label, kind, ... } → structured step with explicit kind\n  - kind: \"delegation\" → forces delegate() call\n  - kind: \"orchestrator\" → forces self-owned task (analysis, synthesis, decision, writing)\n  - kind: \"loop_until\" → repeats until criterion met (requires loopUntil config)\n```\n\nReplace with:\n```\nStep input format:\n- String: \"do something\" → step label. Orchestrator decides at runtime whether to delegate() or handle it as an orchestrator task.\n- Object: { label, kind: \"loop_until\", loopUntil: {...} } → structured step for iterative loops ONLY. No other kind values are accepted by the tool schema.\n```\n\nThis aligns the prompt with the actual tool schema (plan-tool.ts uses Type.Literal('loop_until'), not a union of delegation/orchestrator/loop_until).",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 3576,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-17T16:55:53.354Z-coder-6da55384",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "mimo-v2.5-vision",
+  "stopReason": "aborted",
+  "errorMessage": "Request was aborted"
+}

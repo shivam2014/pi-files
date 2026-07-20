@@ -48,3 +48,18 @@ describe("isWriteCommand", () => {
   it("allows git diff", () => expect(isWriteCommand("git diff")).toBe(false));
   it("blocks git checkout (can modify files)", () => expect(isWriteCommand("git checkout .")).toBe(true));
 });
+
+describe("package manager test runners", () => {
+  it("allows npx vitest", () => expect(isWriteCommand("npx vitest run")).toBe(false));
+  it("allows npx jest", () => expect(isWriteCommand("npx jest")).toBe(false));
+  it("allows npm test", () => expect(isWriteCommand("npm test")).toBe(false));
+  it("allows npm run test", () => expect(isWriteCommand("npm run test")).toBe(false));
+  it("allows yarn test", () => expect(isWriteCommand("yarn test")).toBe(false));
+  it("allows pnpm vitest", () => expect(isWriteCommand("pnpm vitest")).toBe(false));
+  it("allows npx tsc --noEmit", () => expect(isWriteCommand("npx tsc --noEmit")).toBe(false));
+  it("allows npx eslint", () => expect(isWriteCommand("npx eslint src/")).toBe(false));
+  it("allows npx vitest no args", () => expect(isWriteCommand("npx vitest")).toBe(false));
+  it("blocks npm publish", () => expect(isWriteCommand("npm publish")).toBe(true));
+  it("blocks npm run build", () => expect(isWriteCommand("npm run build")).toBe(true));
+  it("blocks npx some-random-binary", () => expect(isWriteCommand("npx some-binary")).toBe(true));
+});

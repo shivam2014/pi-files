@@ -10,11 +10,24 @@
  * enforcement path.
  */
 
+export interface BlockedToolCall {
+  /** Name of the tool that was blocked (e.g., "write", "edit", "bash") */
+  tool: string;
+  /** The file path that was targeted */
+  target: string;
+  /** Why it was blocked */
+  reason: string;
+  /** When the block occurred */
+  timestamp: number;
+}
+
 export interface SubagentState {
   /** Name of the specialist running in this subagent session */
   specialistName: string;
   /** Whether the subagent has called planSteps() at least once */
   planParsed: boolean;
+  /** Tool calls blocked by the scope guard during this session */
+  blockedCalls: BlockedToolCall[];
 }
 
 /**

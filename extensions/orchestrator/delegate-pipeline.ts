@@ -24,6 +24,66 @@ export interface ExecuteDelegateResult {
 	details: Record<string, unknown>;
 }
 
+/** Full universe of known tool names */
+const TOOL_UNIVERSE = ["read","grep","find","ls","git-read","gh","web_search","fetch_content","bash","edit","write","lint"] as const;
+
+/** Regex patterns keyed by tool name — each tests the task text for actions requiring that tool */
+const TOOL_PATTERNS: Record<string, RegExp[]> = {
+	write: [
+		/\b(write|create|save|append|edit|modify)\b.*\b(file|files|a file)\b/i,
+		/\b(write|create|save|edit)\b.*\bto\b/i,
+		/\bwrite\s+(a\s+|the\s+)?file\b/i,
+	],
+	edit: [
+		/\b(write|create|save|append|edit|modify)\b.*\b(file|files|a file)\b/i,
+		/\b(write|create|save|edit)\b.*\bto\b/i,
+		/\bwrite\s+(a\s+|the\s+)?file\b/i,
+	],
+	bash: [
+		/\b(run|execute|invoke|shell|bash|sh\s|npm\s|yarn\s|pip\s|git\s(?!read|log|diff|show|status|clone))\b/i,
+	],
+	web_search: [
+		/\b(search|fetch|scrape|curl|download)\b/i,
+	],
+	fetch_content: [
+		/\b(search|fetch|scrape|curl|download)\b/i,
+	],
+};
+
+/**
+ * Validate that a task description does not require tools the specialist lacks.
+ * Returns { ok: true } if the task is compatible, or { ok: false, warning } if not.
+ */
+export function validateTaskCapabilities(
+	specialistName: string,
+	task: string,
+): { ok: boolean; warning?: string } {
+	const specialist = SPECIALISTS[specialistName];
+	if (!specialist) {
+		// Unknown specialist — let the existing validation handle it
+		return { ok: true };
+	}
+
+	const specialistTools = new Set(specialist.tools);
+	const missing = TOOL_UNIVERSE.filter(t => !specialistTools.has(t));
+	const taskLower = task.toLowerCase();
+
+	for (const tool of missing) {
+		const patterns = TOOL_PATTERNS[tool];
+		if (!patterns) continue;
+		for (const re of patterns) {
+			if (re.test(taskLower)) {
+				return {
+					ok: false,
+					warning: `⚠ Specialist "${specialistName}" cannot ${tool}: task requires it. Choose a specialist that has it, or rephrase.`,
+				};
+			}
+		}
+	}
+
+	return { ok: true };
+}
+
 /**
  * Full delegation pipeline — scope resolution, subagent execution, diagnostics,
  * result formatting, plan-panel lifecycle.
@@ -72,6 +132,15 @@ export class DelegatePipeline {
 
 		// Read-only specialists (no edit/write tools) don't need strict scope validation
 		const isReadOnly = !specialist.tools.includes('edit') && !specialist.tools.includes('write');
+
+		// ── Capability check: block tasks requiring tools the specialist lacks ──
+		const capCheck = validateTaskCapabilities(specialist.name, params.task);
+		if (!capCheck.ok) {
+			return {
+				content: [{ type: "text", text: capCheck.warning! }],
+				details: { status: "error", specialist: specialist.name, task: params.task },
+			};
+		}
 
 		// Normalize specialist name for case-insensitive comparison downstream
 		params = { ...params, specialist: specialist.name };

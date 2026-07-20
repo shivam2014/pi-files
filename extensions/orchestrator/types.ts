@@ -166,6 +166,26 @@ export interface PlanStep {
 /** A step in plan() can be a string label or a structured loop input */
 export type PlanStepInput = string | LoopUntilStepInput;
 
+/** A tool call blocked by the scope guard */
+export interface BlockedToolCall {
+  tool: string;
+  target: string;
+  reason: string;
+  timestamp: number;
+}
+
+/** Scope compliance summary for a subagent delegation */
+export interface ScopeNotes {
+  /** Tool calls that were blocked by the scope guard */
+  blockedTools: BlockedToolCall[];
+  /** Heuristic assessment of scope compliance */
+  assessment: 'in-scope' | 'minor-deviation' | 'significant-deviation';
+  /** Human-readable summary for the orchestrator */
+  summary: string;
+}
+
+export type ScopeAssessment = 'in-scope' | 'minor-deviation' | 'significant-deviation';
+
 /** Per-delegation tool usage metrics */
 export interface DelegationMetrics {
 	readCalls: number;
@@ -175,12 +195,13 @@ export interface DelegationMetrics {
 	writeCalls: number;
 	bashCalls: number;
 	lsCalls: number;
-	scopeViolations: number;
+	scopeNotes?: ScopeNotes;
 }
 
 /** Format DelegationMetrics as a single-line summary string (SSOT for metrics formatting). */
 export function formatMetricsLine(m: DelegationMetrics): string {
-	return `[Metrics: read=${m.readCalls}, grep=${m.grepCalls}, find=${m.findCalls}, edit=${m.editCalls}, write=${m.writeCalls}, bash=${m.bashCalls}, ls=${m.lsCalls}, scopeViolations=${m.scopeViolations}]`;
+  const scopePart = m.scopeNotes ? `, scopeNotes=${m.scopeNotes.summary}` : '';
+  return `[Metrics: read=${m.readCalls}, grep=${m.grepCalls}, find=${m.findCalls}, edit=${m.editCalls}, write=${m.writeCalls}, bash=${m.bashCalls}, ls=${m.lsCalls}${scopePart}]`;
 }
 
 export interface FusionConfig {
@@ -280,7 +301,7 @@ export interface SubagentDiagnostic {
 		editCalls: number;
 		writeCalls: number;
 		lsCalls: number;
-		scopeViolations: number;
+		scopeNotes?: ScopeNotes;
 	};
 	kind: 'silent_failure' | 'crash';
 	diagnosticId: string;

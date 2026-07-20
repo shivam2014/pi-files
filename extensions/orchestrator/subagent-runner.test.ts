@@ -1,7 +1,7 @@
 /**
  * Unit tests for subagent-runner safety helpers.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
 	truncateSubagentOutput,
 	snapshotSubagentEnv,
@@ -9,14 +9,27 @@ import {
 	installSubagentEnv,
 	SUBAGENT_ENV_KEY,
 	resolveSkillPaths,
+	createFlightRecorderDump,
+	SubagentRunner,
 } from "./subagent-runner.ts";
+import { DEFAULTS } from "./orchestrator-config.ts";
 import { shortenLabel, truncateLabel } from "../token-saver.ts";
 import { registerFusionTool } from "./fusion-tool.ts";
 import { createActivityFeed, addStep, completeCurrentStep, markFeedError } from "./activity-feed.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { subagentSessions } from "./subagent-sessions.ts";
+import { SubagentState, subagentSessions } from "./subagent-sessions.ts";
+
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+  const actual = await vi.importActual("@earendil-works/pi-coding-agent");
+  return {
+    ...actual,
+    ModelRuntime: {
+      create: vi.fn().mockResolvedValue({}),
+    },
+  };
+});
 
 describe("truncateSubagentOutput", () => {
 	it("returns output unchanged when under cap", () => {
@@ -203,7 +216,7 @@ describe("subagentSessions Map lifecycle", () => {
 	});
 
 	it("populates and retrieves per-session state", () => {
-		subagentSessions.set("session-1", { specialistName: "scout", planParsed: false });
+		subagentSessions.set("session-1", { specialistName: "scout", planParsed: false, blockedCalls: [] });
 		expect(subagentSessions.size).toBe(1);
 		const state = subagentSessions.get("session-1");
 		expect(state?.specialistName).toBe("scout");
@@ -211,22 +224,22 @@ describe("subagentSessions Map lifecycle", () => {
 	});
 
 	it("supports concurrent sessions without interference", () => {
-		subagentSessions.set("session-a", { specialistName: "scout", planParsed: false });
-		subagentSessions.set("session-b", { specialistName: "coder", planParsed: true });
+		subagentSessions.set("session-a", { specialistName: "scout", planParsed: false, blockedCalls: [] });
+		subagentSessions.set("session-b", { specialistName: "coder", planParsed: true, blockedCalls: [] });
 		expect(subagentSessions.size).toBe(2);
 		expect(subagentSessions.get("session-a")?.specialistName).toBe("scout");
 		expect(subagentSessions.get("session-b")?.specialistName).toBe("coder");
 	});
 
 	it("mutates planParsed in-place (reference sharing)", () => {
-		const state = { specialistName: "scout", planParsed: false };
+		const state: SubagentState = { specialistName: "scout", planParsed: false, blockedCalls: [] };
 		subagentSessions.set("session-1", state);
 		state.planParsed = true;
 		expect(subagentSessions.get("session-1")?.planParsed).toBe(true);
 	});
 
 	it("cleans up on delete (simulating finally block)", () => {
-		subagentSessions.set("session-1", { specialistName: "scout", planParsed: false });
+		subagentSessions.set("session-1", { specialistName: "scout", planParsed: false, blockedCalls: [] });
 		subagentSessions.delete("session-1");
 		expect(subagentSessions.size).toBe(0);
 		expect(subagentSessions.get("session-1")).toBeUndefined();
@@ -281,5 +294,108 @@ describe("registerFusionTool — idempotency keyed by cwd", () => {
 		// already containing the tool and relying on the idempotency path.
 		registerFusionTool(pi, "/enabled-project");
 		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(true);
+	});
+});
+
+// ─── Flight Recorder Dump ─────────────────────────────────────
+
+describe("createFlightRecorderDump", () => {
+	it("includes scope when scope is provided", () => {
+		const params = {
+			specialist: "test-spec",
+			task: "do something",
+			sessionId: "session-1",
+			model: "claude-3",
+			turns: 5,
+			elapsedMs: 1000,
+			stopReason: "done" as const,
+			errorMessage: undefined as string | undefined,
+			finalStatus: "completed" as const,
+			messages: [],
+			scope: {
+				filesToModify: ["src/test.ts"],
+				filesToCreate: [],
+				directories: ["src"],
+				maxFiles: 5,
+				requiresApprovalBeyondScope: false,
+				changeType: "single-file" as const,
+				maxLinesPerFile: 400,
+				gateMode: "relaxed" as const,
+			},
+		};
+
+		const dump = createFlightRecorderDump(params);
+		expect(dump).toHaveProperty("scope");
+		expect(dump.scope).toEqual(params.scope);
+	});
+
+	it("includes scope as undefined when scope is not provided", () => {
+		const params = {
+			specialist: "test-spec",
+			task: "do something",
+			sessionId: "session-1",
+			model: "claude-3",
+			turns: 5,
+			elapsedMs: 1000,
+			stopReason: "done" as const,
+			errorMessage: undefined as string | undefined,
+			finalStatus: "completed" as const,
+			messages: [],
+		};
+
+		const dump = createFlightRecorderDump(params);
+		expect(dump).toHaveProperty("scope");
+		expect(dump.scope).toBeUndefined();
+	});
+});
+
+// ─── maxTurns Enforcement ─────────────────────────────────
+
+describe("maxTurns enforcement", () => {
+	it("RED: aborts session when turns exceed DEFAULTS.delegation.maxTurns", async () => {
+		let subscribeCb: ((event: any) => void) | null = null;
+		const abortSpy = vi.fn(() => {
+			const err = new Error("Aborted");
+			err.name = "AbortError";
+			throw err;
+		});
+
+		const mockSession = {
+			sessionId: "test-maxTurns",
+			messages: [] as any[],
+			subscribe: vi.fn((cb: any) => {
+				subscribeCb = cb;
+				return () => {};
+			}),
+			abort: abortSpy,
+			prompt: vi.fn(async () => {
+				const maxTurns = DEFAULTS.delegation.maxTurns ?? 30;
+				for (let i = 0; i < maxTurns + 1; i++) {
+					subscribeCb?.({ type: "message_end", message: { role: "assistant" } });
+				}
+			}),
+			dispose: vi.fn(),
+		};
+
+		const mockModel = {};
+		const mockModelRegistry = {
+			find: vi.fn(() => mockModel),
+			getAvailable: vi.fn(() => [mockModel]),
+			getAll: vi.fn(() => [mockModel]),
+		} as any;
+
+		const runner = new SubagentRunner({
+			cwd: "/tmp",
+			modelRegistry: mockModelRegistry,
+			agentDir: "/Users/shivam94/.pi/agent",
+			agentSessionFactory: async () => ({ session: mockSession }),
+		} as any);
+
+		const specialist = { name: "test-spec", tools: ["read"], systemPrompt: "test prompt" } as any;
+		const result = await runner.run("test task", specialist);
+
+		expect(abortSpy).toHaveBeenCalled();
+		expect(result.turns).toBe(DEFAULTS.delegation.maxTurns ?? 30);
+		expect(result.output).toContain("aborted");
 	});
 });

@@ -99,6 +99,19 @@ export function isWriteCommand(command: string): boolean {
     return true;
   }
 
+  // Check for test runner and type-check commands via package managers
+  if (baseCommand === 'npx' || baseCommand === 'npm' || baseCommand === 'yarn' || baseCommand === 'pnpm' || baseCommand === 'bun') {
+    const secondWord = trimmed.split(/\s+/)[1];
+    const readOnlySubcommands = new Set(['test', 'vitest', 'jest', 'mocha', 'cypress', 'playwright', 'tsc', 'typecheck', 'type-check', 'lint', 'eslint', 'prettier', '--version', '-v', '--help', '-h']);
+    const readOnlyScripts = new Set(['test', 'test:unit', 'test:integration', 'typecheck', 'type-check', 'lint', 'typecheck:watch']);
+    if (readOnlySubcommands.has(secondWord)) return false;
+    if ((baseCommand === 'npm' || baseCommand === 'pnpm' || baseCommand === 'yarn') && secondWord === 'run') {
+      const scriptName = trimmed.split(/\s+/)[2];
+      if (readOnlyScripts.has(scriptName)) return false;
+    }
+    if (baseCommand === 'yarn' && readOnlyScripts.has(secondWord)) return false;
+  }
+
   // Unknown commands — default to blocking (safe default)
   return true;
 }

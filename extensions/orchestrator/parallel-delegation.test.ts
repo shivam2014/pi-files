@@ -58,6 +58,7 @@ vi.mock("./scope-manager.ts", () => ({
 	),
 	createDelegationScope: vi.fn(() => "delegation-id-1"),
 	clearDelegationScope: vi.fn(),
+	generateScopeDocumentation: vi.fn(() => ''),
 }));
 
 // ── Mock ask resolver ─────────────────────────────────────────────────

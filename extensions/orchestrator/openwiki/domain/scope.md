@@ -120,7 +120,7 @@ When a write/edit targets a path outside scope:
 - Returns `{ block: true, reason: "Scope violation: <path> is outside the allowed scope" }`
 - The subagent **continues running** (does NOT terminate)
 - The blocked operation simply does not execute
-- `scopeViolations` counter incremented in delegation metrics
+- `scopeNotes` counter incremented in delegation metrics
 
 ### Expansion Requests
 

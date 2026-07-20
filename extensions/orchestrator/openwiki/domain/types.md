@@ -150,7 +150,7 @@ interface DelegationMetrics {
   write: number;
   bash: number;
   ls: number;
-  scopeViolations: number;
+  scopeNotes: number;
 }
 ```
 

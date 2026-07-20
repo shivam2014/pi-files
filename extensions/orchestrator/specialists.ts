@@ -77,7 +77,7 @@ How to handle:
 3. Do NOT retry the same blocked path — it will fail again
 4. If scope expansion is denied, complete your task within the allowed scope
 
-Metrics: each blocked call increments the \`scopeViolations\` counter in your delegation metrics.
+Metrics: each blocked call is recorded in \`blockedCalls\` in your session state and included in delegation results as \`scopeNotes\`.
 `;
 
 // Inlined minimal-action discipline (formerly in skill-packs.ts, now removed per issue #41)
@@ -115,7 +115,7 @@ When given a task, follow this workflow:
 
 6. **Complete your plan BEFORE making any tool calls.** The plan is your roadmap.
 
-7. **Use offset for truncated output** — If \`read\` output shows "[...N lines truncated]", use the \`offset\` parameter to continue reading.
+7. **Use offset for truncated output** — Tool results may be truncated at 2000 chars — if a tool result ends with "[tool result truncated at", use offset/limit to paginate
 
 CRITICAL: You MUST call planSteps() before doing any work. This is REQUIRED for the orchestrator to track your progress. You have access to four special tools:
 
@@ -279,7 +279,7 @@ Be realistic about changeType:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${_scoutToolDoc}
+You do NOT have: bash, edit, write, web_search, fetch_content, lint.
 
 ${TERSE_INSTRUCTION}`,
 	},
@@ -306,6 +306,7 @@ Rules:
 - Focus on making exactly the described changes, unless the task explicitly asks for restructuring or you discover dead code or critical information/flow that changes the defined task. Adapt then and report it to the orchestrator without fail.
 - For file edits, always use \`edit\` or \`write\` — never \`sed\`/\`awk\`/\`perl\`/\`python\` via bash (enforced at tool level, see tool constraint)
 - Use the \`grep\` tool (which wraps ripgrep) to search code — NOT \`bash\`+\`rg\` or \`bash\`+\`grep\`
+- Tool results may be truncated at 2000 chars — use offset/limit on read() to paginate larger files
 - Use \`bash\` to run \`gh\` (GitHub CLI) for GitHub operations instead of \`git commit/push/branch\`
 - Read relevant files first (use \`read\` tool, NOT \`cat\`), then make targeted edits
 - Verify your changes compile/work
@@ -324,7 +325,7 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}${_coderToolDoc}${SCOPE_VIOLATION_GUIDANCE}`,
+${TERSE_INSTRUCTION}You do NOT have: git-read, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 	reviewer: {
 		name: "reviewer",
@@ -367,7 +368,7 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}${_reviewerToolDoc}`,
+${TERSE_INSTRUCTION}You do NOT have: edit, write, find, ls, git-read, gh, web_search, fetch_content, lint.`,
 	},
 	researcher: {
 		name: "researcher",
@@ -417,7 +418,7 @@ Be realistic about changeType:
 - "multi-file": change spans multiple files, architectural impact
 
 ${FINDINGS_AUDIT_TEMPLATE}
-${_researcherToolDoc}
+You do NOT have: bash, edit, write, lint.
 
 ${TERSE_INSTRUCTION}`,
 	},
@@ -452,7 +453,7 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}${_writerToolDoc}${SCOPE_VIOLATION_GUIDANCE}`,
+${TERSE_INSTRUCTION}You do NOT have: bash, grep, lint, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}`,
 	},
 };
 

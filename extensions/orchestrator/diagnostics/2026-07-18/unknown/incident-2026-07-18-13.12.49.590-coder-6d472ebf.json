@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-18T13:12:49.590Z",
+  "specialist": "coder",
+  "task": "Add tool schema sanitization to nyro-sync for kimi and deepseek models.\n\nFile: /Users/shivam94/.pi/agent/extensions/nyro-sync/index.ts\n\nIn the `before_provider_request` hook (the one that strips temperature for kimi), extend it to also sanitize tool schemas for kimi and deepseek models.\n\nThe current hook is:\n```typescript\n    pi.on(\"before_provider_request\", (event: any, ctx: any) => {\n      const model = ctx?.model;\n      if (!model || model.provider !== \"nyro\") return;\n      const id = model.id?.toLowerCase() ?? \"\";\n      if (id.includes(\"kimi\")) {\n        const payload = event?.payload;\n        if (payload && typeof payload === \"object\") {\n          delete payload.temperature;\n          delete payload.top_p;\n        }\n      }\n    });\n```\n\nReplace it with:\n\n```typescript\n    // Sanitize tool schemas and strip unsupported params for kimi/deepseek\n    pi.on(\"before_provider_request\", (event: any, ctx: any) => {\n      const model = ctx?.model;\n      if (!model || model.provider !== \"nyro\") return;\n      const id = model.id?.toLowerCase() ?? \"\";\n      const payload = event?.payload;\n      if (!payload || typeof payload !== \"object\") return;\n\n      // Kimi: strip temperature/top_p (fixed per Kimi API docs)\n      if (id.includes(\"kimi\")) {\n        delete payload.temperature;\n        delete payload.top_p;\n      }\n\n      // Kimi + DeepSeek: sanitize tool schemas (Moonshot rejects non-standard JSON Schema)\n      if ((id.includes(\"kimi\") || id.includes(\"deepseek\")) && payload.tools && Array.isArray(payload.tools)) {\n        for (const tool of payload.tools) {\n          if (tool?.function?.parameters) {\n            sanitizeSchema(tool.function.parameters);\n          }\n        }\n      }\n    });\n```\n\nThen add the `sanitizeSchema` function OUTSIDE the `export default async function` (at module level, after the GLM_COMPAT constant):\n\n```typescript\n// Recursively sanitize JSON Schema for Moonshot/Kimi compatibility.\n// Moonshot rejects: anyOf with parent type, if/then/else, description after $ref.\nfunction sanitizeSchema(schema: any): void {\n  if (!schema || typeof schema !== \"object\") return;\n\n  // Move parent type into each anyOf/oneOf branch\n  if (schema.type && (schema.anyOf || schema.oneOf)) {\n    const key = schema.anyOf ? \"anyOf\" : \"oneOf\";\n    const parentType = schema.type;\n    delete schema.type;\n    for (const branch of schema[key]) {\n      if (!branch.type) branch.type = parentType;\n      sanitizeSchema(branch);\n    }\n  }\n\n  // Remove if/then/else (Moonshot doesn't support conditional schemas)\n  delete schema.if;\n  delete schema.then;\n  delete schema.else;\n\n  // Recurse\n  if (schema.properties) {\n    for (const prop of Object.values(schema.properties)) {\n      sanitizeSchema(prop as any);\n    }\n  }\n  if (schema.items) sanitizeSchema(schema.items);\n  if (schema.anyOf) schema.anyOf.forEach(sanitizeSchema);\n  if (schema.oneOf) schema.oneOf.forEach(sanitizeSchema);\n  if (schema.allOf) schema.allOf.forEach(sanitizeSchema);\n}\n```\n\nPlace `sanitizeSchema` before the `export default` function. Apply these changes.",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 2786,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0,
+    "scopeViolations": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-18T13:12:49.590Z-coder-04d4626f",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "mimo-v2.5-vision",
+  "stopReason": "aborted",
+  "errorMessage": "Request was aborted."
+}

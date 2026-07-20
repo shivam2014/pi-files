@@ -392,3 +392,209 @@ These are separate layers with distinct responsibilities. PlanPanel tracks *what
 - Plans that never update despite new information — stale plans mislead the user
 - Plan panel showing stale or incorrect step labels — labels must match actual work
 - Orchestrator work steps that never advance in the plan panel — own-work steps must advance like delegation steps
+
+---
+
+## Delegation Budget & Timeout Philosophy
+
+### Timeout as Guardrail, Not Wall
+
+The timeout is a **discipline enforcer for weaker models**, not a punishment. It exists because models with large context windows lose focus and burn time on investigation that should have been bounded. The timeout applies to ALL delegations — serial and parallel alike. Serial mode means one-at-a-time, not unlimited-time.
+
+### Graceful Degradation, Not Hard Kill
+
+**NEVER** hard-kill a delegation. The timeout behavior must follow this sequence:
+
+1. **80% of budget**: Send a warning to the subagent: "Time warning: Xs remaining. Wrap up current work and deliver what you have."
+2. **100% of budget**: Collect partial results. Return them with `stopReason: "timeout"` (NOT "aborted").
+3. **Error message**: Must say "Delegation hit Xs timeout" — never "interrupted by user" or "aborted." The user didn't abort anything. A system constraint fired.
+
+A subagent that delivers 80% of the work at timeout is infinitely more valuable than one that delivers 0% because it was killed mid-thought.
+
+### Why This Matters
+
+- "Aborted — interrupted by user" is a lie when the system fires the timeout. It misdirects debugging.
+- Weaker models interpret the abort as "the human stopped me" and don't learn from it.
+- Partial results are wasted when the session is hard-killed. The orchestrator has no output to work with.
+
+---
+
+## Context Architecture
+
+### Each Subagent Reads Files Itself
+
+The orchestrator never holds file contents. Each subagent reads files independently.
+
+- Scout reads files → returns **findings + relevant snippets** (5-10 lines around the issue)
+- Orchestrator gets **enough to decide** (the snippet, not the file)
+- Coder reads files itself → makes edits
+- Deterministic checks verify (lint, scope guard)
+
+### Why Re-Reading Is Not Waste
+
+The "waste" of re-reading is **not waste** — it's the correct architecture:
+
+| Operation | Where It Happens | Cost |
+|-----------|-----------------|------|
+| Read 200-line file | Cheap model (subagent) | Pennies |
+| Hold 200-line file | Expensive model (orchestrator) | Dollars + degraded reasoning |
+
+A cheap model re-reading a file costs pennies. An expensive model holding a 200-line file in context costs dollars and degrades its reasoning quality for every subsequent decision.
+
+### What Scout Returns
+
+Scout returns a **structured finding**, not a file dump:
+
+```
+## Finding: Auth token expiry bug
+
+**File**: auth.ts
+**Line**: 42
+**Issue**: Uses < instead of <= for expiry check
+
+**Relevant code (lines 40-45)**:
+  if (tokenExpiry < Date.now()) {  // ← bug here
+    return expired();
+  }
+
+**Fix**: Change < to <= on line 42.
+**Scope**: Single-file fix, no dependencies.
+```
+
+The orchestrator gets:
+- The finding (what's wrong)
+- The relevant snippet (5 lines, not 200)
+- The fix recommendation (what to change)
+- The scope (how big the change is)
+
+This is **enough to decide**, not enough to pollute.
+
+### The Orchestrator Is Not a Cache
+
+The orchestrator's context is **sacred** — it holds decisions, not data. It's a brain, not a storage system.
+
+**Wrong**: Orchestrator absorbs scout's findings, holds file contents, passes code to coder.
+**Right**: Scout returns snippets, orchestrator decides, coder reads files itself.
+
+---
+
+## Error Message Standards
+
+### What Happened vs What It Looks Like
+
+| Current Message | Actual Cause | Correct Message |
+|----------------|--------------|------------------|
+| "Aborted — interrupted by user" | System timeout fired | "Delegation hit Xs timeout (orchestrator.yml)" |
+| "Request was aborted" | AbortSignal.timeout fired | "Timeout: partial results preserved below" |
+| "Aborted — interrupted by user" | User pressed Ctrl+C | "Aborted — interrupted by user" (this one is correct) |
+
+The error message must distinguish between:
+1. **User abort** (Ctrl+C) — "interrupted by user"
+2. **System timeout** — "hit Xs timeout"
+3. **Model error** — "model returned error: ..."
+4. **Scope violation** — "scope guard blocked: ..."
+
+Each message must teach the next step, not just state what happened.
+
+---
+
+## Orchestrator-Subagent Cost Architecture
+
+### The Orchestrator Is the Brain, Not the Storage
+
+The orchestrator runs on the **most capable, most expensive model**. Its context window is premium real estate. Every token of file content in the orchestrator's context is:
+- Expensive (premium model pricing)
+- Degrading (larger context = slower reasoning, lower quality decisions)
+- Wasted (the orchestrator doesn't need to know the code — it needs to know the *decisions*)
+
+The orchestrator's context should contain:
+- **Decisions**: what to do, in what order, with what constraints
+- **Delegation results**: summaries, findings, status — not raw code
+- **Plan state**: what's done, what's next, what changed
+- **Relevant snippets**: 5-10 lines around a finding, NOT whole files
+
+The orchestrator's context should NOT contain:
+- Whole file contents (that's the subagent's job)
+- Full investigation logs (that's the scout's job)
+- Complete code listings (that's the coder's job)
+
+### Subagents Are the Muscles
+
+Subagents run on **cheap models**. Their context windows are expendable. They're designed for:
+- Focused, directed tasks with clear inputs and outputs
+- Reading files, searching code, making edits
+- Burning tokens on investigation that the orchestrator shouldn't touch
+
+The cheap model's strength is **concentrated work** — given a clear directive from a higher intelligence, it executes mechanically. The orchestrator provides the "what" and "why." The subagent provides the "how."
+
+### The Division of Labor
+
+```
+Orchestrator (expensive):  "Fix the auth bug at line 42 in auth.ts. Change X to Y."
+Subagent (cheap):          Reads auth.ts, makes the edit, runs lint, reports done.
+Orchestrator (expensive):  "✓ Auth bug fixed. Next: update the tests."
+```
+
+The orchestrator never reads `auth.ts`. It never sees the full code. It trusts the subagent to do the work and the deterministic checks to catch errors.
+
+### What Scout Returns (Not Whole Files)
+
+See the Context Architecture section above for the full scout return format. The key point: scout returns a **structured finding** (5-10 lines around the issue), not a file dump. The orchestrator can say "yes, that's the right fix" or "no, investigate further" without absorbing the whole file.
+
+### Context Pollution Is the Enemy
+
+When the orchestrator absorbs whole file contents from scout's findings:
+- Its context window grows
+- Its reasoning quality degrades
+- Its cost increases exponentially (input tokens × model price)
+- It reaches its optimal working context size faster
+- Every subsequent delegation costs more because the context is bloated
+
+The orchestrator should **summarize, not absorb**. Scout returns: "Found the bug at line 42. The function uses `<` instead of `<=`." The orchestrator records: "Bug at auth.ts:42, operator fix needed." The raw code stays in the scout's context — which is discarded after the delegation.
+
+### Deterministic Checks Replace Human Verification
+
+The orchestrator doesn't need to verify the coder's work by reading the code. Instead:
+- **lint-guard** runs after every edit — catches syntax and style errors
+- **scope-guard** prevents edits outside the allowed files — catches scope violations
+- **Tests** (when available) verify behavior — catches logic errors
+
+These are **mechanical, deterministic, cheap**. They replace the need for the orchestrator to inspect code, which would be expensive and error-prone (LLMs are bad at verification).
+
+### The Optimization Stack
+
+| Layer | What It Does | Cost Impact |
+|-------|-------------|-------------|
+| **Provider cache** | Caches system prompt + tool definitions across delegations | Near-zero cost for repeated specialist types |
+| **Subagent isolation** | Each subagent gets fresh context — no cross-contamination | Orchestrator context stays clean |
+| **Read dedup (within session)** | token-saver returns stub for re-read files in same session | Reduces redundant reads within one subagent |
+| **Deterministic checks** | lint-guard, scope-guard catch errors mechanically | No orchestrator verification needed |
+| **Timeout guardrail** | Keeps subagents disciplined, prevents runaway sessions | Bounded cost per delegation |
+
+### What This Means for Delegation Design
+
+**Correct**: Orchestrator delegates focused tasks with clear scope. Subagent reads, edits, reports. Deterministic checks verify. Scout returns snippets, not files.
+
+**Wrong**: Orchestrator absorbs scout's findings, holds file contents, passes code to coder. This pollutes the expensive model's context with cheap model work.
+
+**Wrong**: Scout returns whole files verbatim. The orchestrator doesn't need 200 lines — it needs the 5 relevant lines.
+
+**The orchestrator's job is to think, not to store.** The subagent's job is to work, not to think. The deterministic checks' job is to verify, not the orchestrator.
+
+### Token Cost Model
+
+```
+Orchestrator turn:  $$$$  (expensive model, premium pricing)
+Scout delegation:   $     (cheap model, reads files, returns summary + snippets)
+Coder delegation:   $     (cheap model, reads files, makes edits)
+Lint check:         free  (deterministic, no LLM involved)
+Scope check:        free  (deterministic, no LLM involved)
+```
+
+Every file the orchestrator reads directly costs 10-100x what it costs in a subagent. Every whole file the orchestrator absorbs from a subagent pollutes its context. The only free information is the delegation status: "done," "error," "timeout."
+
+### The Principle
+
+**Orchestrator context is sacred.** Keep it clean, keep it small, keep it focused on decisions. Let cheap models do the expensive work of reading and writing. Let deterministic checks do the expensive work of verifying. The orchestrator's only job is to direct the orchestra — not to play every instrument.
+
+Scout returns **relevant snippets** (5-10 lines around a finding), not whole files. The orchestrator gets enough to decide, not enough to pollute.

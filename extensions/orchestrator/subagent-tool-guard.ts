@@ -15,7 +15,7 @@ import { resolve } from "node:path";
 import * as os from 'os';
 
 /** Tools that never modify state — always safe to allow */
-const readOnlyTools = new Set(['read', 'grep', 'find', 'ls', 'git-read', 'head', 'tail', 'wc', 'file']);
+const readOnlyTools = new Set(['read', 'grep', 'find', 'ls', 'git-read', 'head', 'tail', 'wc', 'file', 'web_search', 'fetch_content', 'read_skill', 'vision_query', 'glob', 'planSteps', 'advanceStep', 'reportFinding', 'ask_orchestrator']);
 
 /** Check if a bash call should be intercepted and replaced with a native tool. */
 function checkBashInterception(
@@ -46,7 +46,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 		return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 	}
 	if (subagentState && !subagentState.planParsed) {
-		if (event.toolName !== "planSteps") {
+		if (!readOnlyTools.has(event.toolName)) {
 			return { block: true, reason: `Call planSteps({ goal, steps }) first before using ${event.toolName}.` };
 		}
 	}
@@ -137,6 +137,14 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 							const absolutePath = resolve(cwd, expandedPath);
 							const pathAllowed = guard.isPathAllowed(absolutePath, 'write');
 							if (!pathAllowed.allowed) {
+								if (subagentState) {
+									subagentState.blockedCalls.push({
+										tool: event.toolName || 'unknown',
+										target: rawPath,
+										reason: pathAllowed.reason || 'outside allowed scope',
+										timestamp: Date.now(),
+									});
+								}
 								return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope` };
 							}
 						}
@@ -157,8 +165,15 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					const cmdForCheck = cmd.replace(/^cd\s+\S+\s*&&\s*/, '');
 					const isTestRunner = TEST_RUNNER_PREFIXES.some(prefix => cmdForCheck.startsWith(prefix));
 					if (!isTestRunner) {
-						const pathMatches = input.command.match(/(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g);
-						if (pathMatches) filePaths.push(...pathMatches);
+						// Extract file-like paths from command, but skip flag values (e.g., find -name test.ts)
+						const pathRegex = /(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g;
+						for (const match of input.command.matchAll(pathRegex)) {
+							const before = input.command.slice(0, match.index).replace(/["']+$/, '').trimEnd();
+							const lastToken = before.split(/\s+/).pop() || '';
+							// Skip if preceded by a flag (e.g., -name, -path) — those are patterns, not file paths
+							if (lastToken.startsWith('-') && lastToken !== '--') continue;
+							filePaths.push(match[0]);
+						}
 					}
 				}
 			}
@@ -166,6 +181,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 			// Derive operation from tool name — reads always safe, writes require scope approval
 				const operation = event.toolName === 'edit' ? 'edit'
 					: readOnlyTools.has(event.toolName) ? 'read'
+					: event.toolName === 'bash' && !isWriteCommand(input.command) ? 'read'
 					: 'write'; // fail-closed: unknown tools treated as mutations
 
 			for (const rawPath of filePaths) {
@@ -175,6 +191,14 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				const pathAllowed = guard.isPathAllowed(absolutePath, operation);
 				traceScopeCheck('scope-guard', absolutePath, pathAllowed.allowed, pathAllowed.reason);
 				if (!pathAllowed.allowed) {
+					if (subagentState) {
+						subagentState.blockedCalls.push({
+							tool: event.toolName || 'unknown',
+							target: rawPath,
+							reason: pathAllowed.reason || 'outside allowed scope',
+							timestamp: Date.now(),
+						});
+					}
 					const expansion = guard.requestExpansion(rawPath);
 					debugLog("scope-guard: expansion request", expansion);
 					return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope`, expansionRequest: expansion };

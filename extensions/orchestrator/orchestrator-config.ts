@@ -8,6 +8,7 @@ export interface OrchestratorConfig {
 	version: number;
 	delegation: {
 		mode: "sequential" | "parallel";
+		maxTurns?: number;
 		parallel: {
 			maxConcurrent: number;
 			timeoutMs: number;
@@ -27,9 +28,10 @@ export const DEFAULTS: OrchestratorConfig = {
 	version: 1,
 	delegation: {
 		mode: "sequential",
+		maxTurns: 30,
 		parallel: {
 			maxConcurrent: 4,
-			timeoutMs: 120000,
+			timeoutMs: 600000,
 		},
 	},
 	// models undefined = all delegates inherit parent model (current behavior)
@@ -188,6 +190,7 @@ function fillDefaults(parsed: Record<string, any>): OrchestratorConfig {
 		version: typeof parsed.version === "number" ? parsed.version : DEFAULTS.version,
 		delegation: {
 			mode: delegation.mode ?? DEFAULTS.delegation.mode,
+			maxTurns: typeof delegation.maxTurns === "number" ? delegation.maxTurns : DEFAULTS.delegation.maxTurns,
 			parallel: {
 				maxConcurrent: typeof parallel.maxConcurrent === "number" ? parallel.maxConcurrent : DEFAULTS.delegation.parallel.maxConcurrent,
 				timeoutMs: typeof parallel.timeoutMs === "number" ? parallel.timeoutMs : DEFAULTS.delegation.parallel.timeoutMs,
@@ -215,6 +218,7 @@ export function saveOrchestratorConfig(config: OrchestratorConfig): void {
 	lines.push(`version: ${config.version}`);
 	lines.push("delegation:");
 	lines.push(`  mode: ${config.delegation.mode}`);
+	lines.push(`  maxTurns: ${config.delegation.maxTurns}`);
 	lines.push("  parallel:");
 	lines.push(`    maxConcurrent: ${config.delegation.parallel.maxConcurrent}`);
 	lines.push(`    timeoutMs: ${config.delegation.parallel.timeoutMs}`);

@@ -86,7 +86,7 @@ describe('Scope guard — create-then-modify diagnosis', () => {
         { toolName: 'write', input: { path: 'new-file.ts', content: 'hello' } },
         true,
         { cwd: tmpDir },
-        { planParsed: true, specialistName: 'coder' }
+        { planParsed: true, specialistName: 'coder', blockedCalls: [] }
       );
       expect(result?.block).toBeFalsy();
     });
@@ -98,7 +98,7 @@ describe('Scope guard — create-then-modify diagnosis', () => {
         { toolName: 'edit', input: { path: 'new-file.ts', edits: [{ oldText: 'hello', newText: 'world' }] } },
         true,
         { cwd: tmpDir },
-        { planParsed: true, specialistName: 'coder' }
+        { planParsed: true, specialistName: 'coder', blockedCalls: [] }
       );
       expect(result?.block).toBeFalsy();
     });

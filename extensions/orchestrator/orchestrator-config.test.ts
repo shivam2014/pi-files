@@ -197,7 +197,21 @@ describe("DEFAULTS", () => {
 	it("has expected structure", () => {
 		expect(DEFAULTS.version).toBe(1);
 		expect(DEFAULTS.delegation.mode).toBe("sequential");
+		expect(DEFAULTS.delegation.maxTurns).toBe(30);
 		expect(DEFAULTS.delegation.parallel.maxConcurrent).toBe(4);
-		expect(DEFAULTS.delegation.parallel.timeoutMs).toBe(120000);
+		expect(DEFAULTS.delegation.parallel.timeoutMs).toBe(600000);
+	});
+});
+
+// ─── maxTurns config ──────────────────────────────────────
+
+describe("maxTurns config", () => {
+	it("defaults to 30", () => {
+		expect(DEFAULTS.delegation.maxTurns).toBe(30);
+	});
+	it("can be overridden via YAML", () => {
+		const yaml = `delegation:\n  maxTurns: 50\n`;
+		const parsed = _parseYaml(yaml);
+		expect(parsed.delegation.maxTurns).toBe(50);
 	});
 });

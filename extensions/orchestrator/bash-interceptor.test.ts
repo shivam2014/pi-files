@@ -156,7 +156,8 @@ describe("getBashToolReplacement", () => {
     const result = getBashToolReplacement("rm -rf /");
     expect(result).toEqual({
       allowed: false,
-      reason: "rm -rf is blocked. Set override:true in bash tool input to bypass. Use edit/write to modify files, or ask orchestrator for destructive operation approval.",
+      reason:
+        "Dangerous command blocked. This command cannot be executed even with override:true.",
     });
   });
 });

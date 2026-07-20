@@ -82,6 +82,14 @@ export function registerPlanTool(pi: ExtensionAPI) {
                             }),
                         }),
                     }),
+                    Type.Object({
+                        label: Type.String({ description: 'Step label shown in the plan panel' }),
+                        kind: Type.Literal('delegation', { description: 'Delegation step — subagent-owned, auto-advances' }),
+                    }),
+                    Type.Object({
+                        label: Type.String({ description: 'Step label shown in the plan panel' }),
+                        kind: Type.Literal('orchestrator', { description: 'Orchestrator step — self-owned, call advance_plan_step' }),
+                    }),
                 ]),
                 { description: 'Step labels (strings) or structured step objects (for loops)' },
             ),

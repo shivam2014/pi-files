@@ -218,7 +218,7 @@ describe("Candidate 3: gh enforcement in subagent context (subagentState set)", 
 			{ toolName: "bash", input: { command: "gh pr merge 42" } },
 			true,
 			{ readOnly: false },
-			{ specialistName: "test-specialist", planParsed: true },
+			{ specialistName: "test-specialist", planParsed: true, blockedCalls: [] },
 		);
 		expect(result).toEqual({
 			block: true,
@@ -231,7 +231,7 @@ describe("Candidate 3: gh enforcement in subagent context (subagentState set)", 
 			{ toolName: "bash", input: { command: "gh pr list" } },
 			true,
 			{ readOnly: true },
-			{ specialistName: "test-specialist", planParsed: true },
+			{ specialistName: "test-specialist", planParsed: true, blockedCalls: [] },
 		);
 		expect(result).toBeUndefined();
 	});
@@ -244,7 +244,7 @@ describe("Candidate 3: gh enforcement in subagent context (subagentState set)", 
 			{ toolName: "bash", input: { command: "gh issue create --title 'bug'" } },
 			true,
 			{ readOnly: false },
-			{ specialistName: "test-specialist", planParsed: true },
+			{ specialistName: "test-specialist", planParsed: true, blockedCalls: [] },
 		);
 		expect(result).toEqual({
 			block: true,

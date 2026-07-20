@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-19T20:59:40.122Z",
+  "specialist": "writer",
+  "task": "Append this section to /tmp/pi-debug-handoff.md using the edit tool:\n\nAdd the following after the existing \"10. Raw Data Points\" section:\n\n---\n\n## 11. Related Bug: Groq 400 Errors (Discovered 2025-03-15)\n\nWhile investigating the DeepSeek/Console Go error, 122 additional 400 errors were found in the nyro gateway — all from Groq, all in the last 2 days.\n\n### Groq Error Signature\n\n| Field | Value |\n|-------|-------|\n| Provider | Groq (100%) |\n| Model | `llama-3.3-70b-versatile` |\n| Error | `{\"error\":\"invalid_parameters: Additional properties are not allowed: parameters\"}` |\n| HTTP | 400 |\n| Count | 122 (Mar 14-15) |\n| Same request ID | `c4e2458e-36cf-42b5-b131-f7e9d846b4be` (retries of same upstream request) |\n\n### The difference\n\nThe Groq error is **not** about `parameters: {}` inside a tool definition. The error says \"Additional properties are not allowed: parameters\" — meaning Groq received a root-level `parameters` field in the Chat Completions request body, which is not part of Groq's API schema.\n\n### Key finding\n\nThe **logged upstream_request_body** for these Groq errors does NOT contain a `parameters` field:\n```json\n{\"model\":\"llama-3.3-70b-versatile\",\"messages\":[...],\"stream\":true,\"stop\":[\"<|eot_id|>\",\"<|eom_id|>\"]}\n```\n\nThe `parameters: {}` is injected **after** the request is logged, by the gateway's transformation/middleware layer.\n\n### Common root cause\n\nBoth the DeepSeek and Groq bugs stem from the same underlying issue: **the nyro gateway injects empty `parameters: {}` into outgoing requests**, but at different locations:\n\n| Bug | Injection location | Why rejected |\n|-----|-------------------|-------------|\n| DeepSeek | `tools[].function.parameters: {}` | `{}` is invalid JSON Schema |\n| Groq | Root-level `parameters: {}` | Not in Groq's allowed properties |\n\n### What to fix\n\nThe gateway's request transformation layer needs to:\n1. Stop injecting `parameters: {}` unconditionally\n2. Only include `parameters` when it has actual content (`type: \"object\"` minimum)\n3. Strip `parameters` for providers that don't support it (like Groq)\n\n---\n\nAppend this content to the end of the file.",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 2904,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-19T20:59:40.122Z-writer-7b13ecb3",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "deepseek-v4-flash-2",
+  "stopReason": "aborted",
+  "errorMessage": "Request was aborted."
+}

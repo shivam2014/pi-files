@@ -43,7 +43,7 @@ vi.mock("./scope-guard.ts", () => ({ ScopeGuard: ScopeGuardMock }));
 
 /** Helper: create a SubagentState for subagent-context tests */
 function subagentCtx(planParsed = true): SubagentState {
-	return { specialistName: "test-specialist", planParsed };
+	return { specialistName: "test-specialist", planParsed, blockedCalls: [] };
 }
 
 beforeEach(() => {
@@ -56,15 +56,12 @@ describe("handleSubagentToolCall", () => {
 	describe("planSteps-first enforcement", () => {
 		const state = () => subagentCtx(false);
 
-		it("blocks non-planSteps calls when plan not parsed", () => {
+		it("allows read when plan not parsed (read-only tools exempt)", () => {
 			const result = handleSubagentToolCall({
 				toolName: "read",
 				input: { path: "file.ts" },
 			}, true, undefined, state());
-			expect(result).toEqual({
-				block: true,
-				reason: "Call planSteps({ goal, steps }) first before using read.",
-			});
+			expect(result).toBeUndefined();
 		});
 
 		it("blocks bash calls when plan not parsed", () => {
@@ -189,6 +186,27 @@ describe("handleSubagentToolCall", () => {
 			}, true, undefined, state());
 			// Should have tried to check paths extracted from the command
 			expect(mockIsPathAllowed).toHaveBeenCalled();
+		});
+
+		it("does not extract find -name arguments as file paths", () => {
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
+			vi.mocked(isToolCallEventType).mockReturnValue(true);
+
+			const mockIsPathAllowed = vi.fn().mockReturnValue({ allowed: false, reason: "nope" });
+			ScopeGuardMock.mockImplementationOnce(function (this: any, _cwd: string) {
+				this.isScopeValid = () => true;
+				this.isPathAllowed = mockIsPathAllowed;
+				this.checkFileSize = () => ({ allowed: true });
+				this.requestExpansion = () => null;
+			});
+
+			handleSubagentToolCall({
+				toolName: "bash",
+				input: { command: 'find . -name "test.ts" -type f' },
+			}, true, undefined, state());
+			// test.ts from -name flag should NOT be extracted as a file path
+			const checkedPaths = mockIsPathAllowed.mock.calls.map((c: any[]) => c[0]);
+			expect(checkedPaths.some((p: string) => p.endsWith("test.ts"))).toBe(false);
 		});
 	});
 

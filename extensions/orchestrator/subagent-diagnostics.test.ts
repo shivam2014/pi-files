@@ -27,7 +27,6 @@ const baseInput: CaptureDiagnosticInput = {
     writeCalls: 0,
     bashCalls: 1,
     lsCalls: 0,
-    scopeViolations: 0,
   },
 };
 
@@ -148,7 +147,7 @@ describe('captureDiagnostic', () => {
     expect(result).not.toBeNull();
     expect(result!.metrics).toEqual(input.metrics);
     expect(result!.metrics.readCalls).toBe(2);
-    expect(result!.metrics.scopeViolations).toBe(0);
+    expect(result!.metrics.scopeNotes).toBeUndefined();
   });
 
   it('schemaVersion is set to 1', () => {
@@ -198,7 +197,6 @@ const sampleDiagnostic: SubagentDiagnostic = {
     writeCalls: 0,
     bashCalls: 1,
     lsCalls: 0,
-    scopeViolations: 0,
   },
   kind: 'silent_failure',
   diagnosticId: 'test-diag-001',
