@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractFindingsFromOutput, extractAuditFromOutput, formatResult } from './delegate-pipeline';
+import { extractFindingsFromOutput, formatResult, DelegatePipeline } from './delegate-pipeline';
 import type { DelegationMetrics } from './types';
 
 function stripAnsi(str: string): string {
@@ -9,7 +9,7 @@ function stripAnsi(str: string): string {
 const m: DelegationMetrics = {
   readCalls: 3, grepCalls: 2, findCalls: 0,
   editCalls: 1, writeCalls: 0, bashCalls: 5,
-  lsCalls: 1, scopeViolations: 0,
+  lsCalls: 1, scopeNotes: undefined,
 };
 
 const fmt = (overrides: Record<string, unknown> = {}) => formatResult({
@@ -64,50 +64,7 @@ describe('extractFindingsFromOutput', () => {
   });
 });
 
-describe('extractAuditFromOutput', () => {
-  it('parses a full audit block with problems', () => {
-    const output = `## Audit\n- problems: [file not found, permission denied]\n- resolution: [used alternative path, retried with different approach]\n- scope_stayed: yes\n- scope_notes: stayed within assigned task\n`;
-    const r = extractAuditFromOutput(output);
-    expect(r).not.toBeNull();
-    expect(r!.problems).toEqual(['file not found', 'permission denied']);
-    expect(r!.resolution).toEqual(['used alternative path', 'retried with different approach']);
-    expect(r!.scope_stayed).toBe(true);
-    expect(r!.scope_notes).toBe('stayed within assigned task');
-  });
 
-  it('returns null when no audit block', () => {
-    expect(extractAuditFromOutput('No audit here')).toBeNull();
-  });
-
-  it('parses audit with no problems', () => {
-    const output = `## Audit\n- problems: [none]\n- resolution: [none]\n- scope_stayed: yes\n- scope_notes: no deviations\n`;
-    const r = extractAuditFromOutput(output);
-    expect(r).not.toBeNull();
-    expect(r!.problems).toEqual(['none']);
-    expect(r!.scope_stayed).toBe(true);
-  });
-
-  it('parses audit with scope_stayed false', () => {
-    const output = `## Audit\n- problems: [none]\n- resolution: [none]\n- scope_stayed: no\n- scope_notes: modified file outside allowed list\n`;
-    const r = extractAuditFromOutput(output);
-    expect(r).not.toBeNull();
-    expect(r!.scope_stayed).toBe(false);
-    expect(r!.scope_notes).toBe('modified file outside allowed list');
-  });
-
-  it('parses audit embedded in larger output', () => {
-    const output = `Some analysis output here.\n\n## Audit\n- problems: [tool error]\n- resolution: [retried]\n- scope_stayed: true\n- scope_notes: minor deviation\n\n## Findings\n- summary: Done\n`;
-    const r = extractAuditFromOutput(output);
-    expect(r).not.toBeNull();
-    expect(r!.problems).toEqual(['tool error']);
-    expect(r!.scope_stayed).toBe(true);
-  });
-
-  it('handles scope_stayed as true', () => {
-    const output = `## Audit\n- problems: [none]\n- resolution: [none]\n- scope_stayed: true\n- scope_notes: ok\n`;
-    expect(extractAuditFromOutput(output)!.scope_stayed).toBe(true);
-  });
-});
 
 describe('formatResult', () => {
   describe('status note', () => {
@@ -141,7 +98,7 @@ describe('formatResult', () => {
   describe('metrics line', () => {
     it('formats metrics after status note', () => {
       expect(fmt({ turns: 2, toolCalls: 3 }).formatted)
-        .toContain('[Metrics: read=3, grep=2, find=0, edit=1, write=0, bash=5, ls=1, scopeViolations=0]');
+        .toContain('[Metrics: read=3, grep=2, find=0, edit=1, write=0, bash=5, ls=1]');
     });
 
     it('metrics appear after status note but before output', () => {
@@ -153,11 +110,11 @@ describe('formatResult', () => {
     it('reflects actual metric values', () => {
       const metrics: DelegationMetrics = {
         readCalls: 10, grepCalls: 5, findCalls: 2, editCalls: 3,
-        writeCalls: 1, bashCalls: 8, lsCalls: 4, scopeViolations: 2,
+        writeCalls: 1, bashCalls: 8, lsCalls: 4, scopeNotes: undefined,
       };
       const r = fmt({ metrics, toolCalls: 6 });
       expect(r.formatted).toContain('read=10');
-      expect(r.formatted).toContain('scopeViolations=2');
+      expect(r.formatted).not.toContain('scopeNotes');
     });
   });
 
@@ -180,6 +137,22 @@ describe('formatResult', () => {
 
     it('does not append error info for aborted status', () => {
       expect(fmt({ output: 'Interrupted', status: 'aborted' }).formatted).not.toContain('[Error:');
+    });
+
+    it('error banner contains DELEGATION FAILED', () => {
+      const banner = (DelegatePipeline as any).formatErrorAbort(
+        'output text', [{ tool: 'bash', completed: false }], 2, false, 'crashed', 'error',
+      );
+      expect(banner).toContain('DELEGATION FAILED');
+      expect(banner).toContain('status:error');
+      expect(banner).toContain('crashed');
+    });
+
+    it('abort banner contains DELEGATION ABORTED', () => {
+      const banner = (DelegatePipeline as any).formatErrorAbort(
+        'output text', [], 1, true,
+      );
+      expect(banner).toContain('DELEGATION ABORTED');
     });
   });
 
@@ -250,12 +223,10 @@ describe('formatResult', () => {
       expect(r.findings!.summary).toBe('All clear');
     });
 
-    it('extracts audit into result object', () => {
+    it('returns null audit when audit block present (extraction removed)', () => {
       const output = `## Audit\n- problems: [tool error]\n- resolution: [retried]\n- scope_stayed: yes\n- scope_notes: ok\n`;
       const r = fmt({ output, toolCalls: 1 });
-      expect(r.audit).not.toBeNull();
-      expect(r.audit!.problems).toEqual(['tool error']);
-      expect(r.audit!.scope_stayed).toBe(true);
+      expect(r.audit).toBeNull();
     });
 
     it('returns null findings/audit when blocks absent', () => {

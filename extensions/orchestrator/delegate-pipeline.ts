@@ -198,7 +198,6 @@ export class DelegatePipeline {
 			writeCalls: 0,
 			bashCalls: 0,
 			lsCalls: 0,
-			scopeViolations: 0,
 		};
 		const wrappedOnUpdate = (update: any) => {
 			if (update.details?.tool) {
@@ -247,6 +246,12 @@ export class DelegatePipeline {
 			).join('\n');
 			result.output += `\n\n## Pending Questions\nThe subagent had questions that needed orchestrator input:\n${questionsText}\n`;
 		}
+
+		if (result?.scopeNotes) {
+			metrics.scopeNotes = result.scopeNotes;
+		}
+
+		const rawSubagentOutput = result?.output;
 
 		// Dynamic status: subagent completed
 		try {
@@ -322,6 +327,8 @@ export class DelegatePipeline {
 					result.output, metrics, elapsedMs,
 					result.toolCallTrail || [], result.turns ?? 0,
 					isAborted, isError,
+					result?.errorMessage,
+					result?.stopReason,
 				);
 			}
 
@@ -350,14 +357,43 @@ export class DelegatePipeline {
 			} catch {}
 		}
 
+		const status = isAborted ? "aborted" : isError ? "error" : "done";
+		let finalOutput = result?.output || "[error] Subagent returned no output";
+
+		// If error but processDelegateResult was never called (null/empty result), prepend error banner
+		if (hasError && !result?.output) {
+			const banner = isAborted
+				? `\n⚠ DELEGATION ABORTED — no output from subagent.\n`
+				: `\n⚠ DELEGATION FAILED — status:${result?.stopReason || 'unknown'} — ${result?.errorMessage || 'no error message'}\nNo output produced. Retry or escalate.\n`;
+			finalOutput = banner + finalOutput;
+		}
+
 		return {
-			content: [{ type: "text", text: result?.output || "[error] Subagent returned no output" }],
+			content: [{ type: "text", text: finalOutput }],
 			details: {
-				specialist: specialist.name,
-				task: params.task,
-				status: "done",
-				turns: result?.turns || 0,
-				outputLength: result?.output?.length || 0,
+			specialist: specialist.name,
+			task: params.task,
+			status,
+			turns: result?.turns || 0,
+			outputLength: finalOutput.length,
+			elapsedMs,
+			stopReason: result?.stopReason,
+			errorMessage: result?.errorMessage,
+			partialResults: hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]"),
+			// Model info for UI display badge
+			model: (() => {
+				const m = (ctx as any)?.model;
+				if (!m) return undefined;
+				const id = typeof m === 'string' ? m : (m?.id ?? m?.model ?? '');
+				return id.includes('/') ? id.split('/')[1] || id : id;
+			})(),
+			provider: (() => {
+				const m = (ctx as any)?.model;
+				if (!m) return undefined;
+				const id = typeof m === 'string' ? m : (m?.id ?? m?.model ?? '');
+				return id.includes('/') ? id.split('/')[0] : undefined;
+			})(),
+			tokenUsage: result?.accumulatedTokens ? { total: result.accumulatedTokens } : undefined,
 			},
 		};
 	}
@@ -538,9 +574,11 @@ export class DelegatePipeline {
 		turns: number,
 		isAborted: boolean,
 		isError: boolean,
+		errorMessage?: string,
+		stopReason?: string,
 	): string {
 		if (isAborted || isError) {
-			return DelegatePipeline.formatErrorAbort(output, toolCallTrail, turns, isAborted);
+			return DelegatePipeline.formatErrorAbort(output, toolCallTrail, turns, isAborted, errorMessage, stopReason);
 		}
 		return DelegatePipeline.formatSuccess(output, metrics, elapsedMs, toolCallTrail, turns);
 	}
@@ -583,21 +621,11 @@ export class DelegatePipeline {
 			result = `[Tool Calls (${toolCallTrail.length}):\n${trail}\n]\n\n` + result;
 		}
 
-		// Extract and prepend audit trail
-		const audit = DelegatePipeline.extractAuditFromOutput(output);
-		if (audit) {
-			const auditParts: string[] = [];
-			if (audit.problems.length > 0 && audit.problems[0] !== 'none') {
-				auditParts.push(`Problems: ${audit.problems.join('; ')}`);
-				auditParts.push(`Resolution: ${audit.resolution.join('; ')}`);
-			}
-			if (!audit.scope_stayed) {
-				auditParts.push(`Scope deviation: ${audit.scope_notes}`);
-				metrics.scopeViolations++;
-			}
-			if (auditParts.length > 0) {
-				result = `[Audit: ${auditParts.join(' | ')}]\n` + result;
-			}
+		// Prepend scope notes from structured data
+		if (metrics.scopeNotes && metrics.scopeNotes.blockedTools.length > 0) {
+			const blocks = metrics.scopeNotes.blockedTools;
+			const details = blocks.map(b => `${b.tool} → ${b.target}: ${b.reason}`).join('; ');
+			result = `[Scope: ${blocks.length} block(s) — ${details}]\n` + result;
 		}
 
 		// Prepend metrics line
@@ -622,6 +650,8 @@ export class DelegatePipeline {
 		toolCallTrail: any[],
 		turns: number,
 		isAborted: boolean,
+		errorMessage?: string,
+		stopReason?: string,
 	): string {
 		const toolCalls = toolCallTrail?.length ?? 0;
 		const turnWord = turns === 1 ? "turn" : "turns";
@@ -636,7 +666,12 @@ export class DelegatePipeline {
 			? `${statusIcon('aborted')} Aborted — interrupted by user (${turns} ${turnWord}, ${toolCalls} ${toolWord})`
 			: `${statusIcon('error')} Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
 
-		return `${statusNote}${trailStr}\n\n${output}`;
+		// Error banner that the orchestrator cannot ignore
+		const errorBanner = isAborted
+			? `\n⚠ DELEGATION ABORTED — partial results below. Do not trust partial data without verifying.\n`
+			: `\n⚠ DELEGATION FAILED — status:${stopReason || 'unknown'} — ${errorMessage || 'no error message'}\nPartial results exist but may be incomplete or corrupted. Retry or escalate.\n`;
+
+		return `${statusNote}${trailStr}\n${errorBanner}\n${output}`;
 	}
 
 	/**
@@ -665,32 +700,7 @@ export class DelegatePipeline {
 		};
 	}
 
-	/**
-	 * Extract structured audit data from the "## Audit" section of an output string.
-	 */
-	static extractAuditFromOutput(output: string): { problems: string[]; resolution: string[]; scope_stayed: boolean; scope_notes: string } | null {
-		const auditMatch = output.match(/##\s+Audit\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
-		if (!auditMatch) return null;
-		const block = auditMatch[1];
-		const extractList = (key: string): string[] => {
-			const m = block.match(new RegExp(`-?\\s*${key}:\\s*\\[?(.+?)\\]?\\s*$`, 'im'));
-			if (!m) return [];
-			const inner = m[1].trim();
-			if (inner === ']' || inner === '') return [];
-			return inner.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-		};
-		const extract = (key: string): string => {
-			const m = block.match(new RegExp(`-?\\s*${key}:\\s*(.+)`, 'i'));
-			return m ? m[1].trim() : '';
-		};
-		const scopeStayed = extract('scope_stayed').toLowerCase();
-		return {
-			problems: extractList('problems'),
-			resolution: extractList('resolution'),
-			scope_stayed: scopeStayed === 'yes' || scopeStayed === 'true',
-			scope_notes: extract('scope_notes') || '',
-		};
-	}
+
 }
 
 // ── Standalone exports for test compatibility ───────────────────────────
@@ -701,9 +711,7 @@ export function extractFindingsFromOutput(output: string) {
 	return DelegatePipeline.extractFindingsFromOutput(output);
 }
 
-export function extractAuditFromOutput(output: string) {
-	return DelegatePipeline.extractAuditFromOutput(output);
-}
+
 
 export interface FormatResultParams {
 	output: string;
@@ -718,7 +726,7 @@ export interface FormatResultParams {
 export function formatResult(params: FormatResultParams): {
 	formatted: string;
 	findings: ReturnType<typeof extractFindingsFromOutput>;
-	audit: ReturnType<typeof extractAuditFromOutput>;
+	audit: { problems: string[]; resolution: string[] } | null;
 } {
 	const { output, metrics, elapsed, turns, toolCalls, status, toolCallTrail } = params;
 	const isAborted = status === 'aborted';
@@ -734,7 +742,7 @@ export function formatResult(params: FormatResultParams): {
 		statusLine = `${statusIcon('error')} Error (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
 	}
 
-	const metricsLine = `[Metrics: read=${metrics.readCalls}, grep=${metrics.grepCalls}, find=${metrics.findCalls}, edit=${metrics.editCalls}, write=${metrics.writeCalls}, bash=${metrics.bashCalls}, ls=${metrics.lsCalls}, scopeViolations=${metrics.scopeViolations}]`;
+	const metricsLine = `[Metrics: read=${metrics.readCalls}, grep=${metrics.grepCalls}, find=${metrics.findCalls}, edit=${metrics.editCalls}, write=${metrics.writeCalls}, bash=${metrics.bashCalls}, ls=${metrics.lsCalls}]`;
 
 	let trailStr = '';
 	if (toolCallTrail && toolCallTrail.length > 0) {
@@ -754,7 +762,7 @@ export function formatResult(params: FormatResultParams): {
 		findingsStr = `\n\n[Findings: ${findings.summary}]`;
 	}
 
-	const audit = extractAuditFromOutput(output);
+	const audit = null;
 
 	let outputSection = output;
 	if (isError) {

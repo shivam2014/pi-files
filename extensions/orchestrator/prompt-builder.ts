@@ -70,7 +70,7 @@ ${rows}
 `;
 }
 
-const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error — defined as: destructive operations (rm, schema migrations, auth changes), touching >5 files, or architectural decisions that are hard to reverse\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n`;
+const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error — defined as: destructive operations (rm, schema migrations, auth changes), touching >5 files, or architectural decisions that are hard to reverse\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n\nNote: If some panel models fail, fusion returns partial results with a "### Failed" section. Check for this and adjust trust accordingly.\n`;
 
 const DELEGATION_INSTRUCTIONS_TEMPLATE = `
 ## Capabilities
@@ -243,6 +243,29 @@ Use this to decide:
 
 No automatic retries. Each retry uses modified task based on what failed.
 
+# Delegation Error Protocol
+
+When a delegation returns with status=error in details:
+
+1. **Stop and assess** — do NOT silently continue with partial results
+2. **Check the error banner**: \`⚠ DELEGATION FAILED — status:... — ...\`
+3. **Categorize the error**:
+   - **Model error** (stopReason=error): subagent's model failed. Re-delegate with simpler task or different specialist.
+   - **Aborted** (status=aborted): subagent was interrupted. User or timeout. Check if partial results exist and whether they're useful.
+   - **Tool error** (output starts with \`[error]\`): tool in subagent failed. Read error message, adjust task to avoid that tool.
+4. **Retry decision**:
+   - If error is transient (network, rate limit): retry same task once
+   - If error is structural (wrong specialist, scope too broad): re-delegate with modified task
+   - If partial results exist and are useful: acknowledge partial results explicitly, then continue remaining work
+   - If no useful results: escalate to user with context
+5. **Never pretend a failed delegation succeeded.** Partial results from an error must be explicitly marked as partial in your reasoning.
+
+The delegation result includes these structured fields:
+- \`details.status\`: "done" | "error" | "aborted"
+- \`details.stopReason\`: model's stop reason
+- \`details.errorMessage\`: error description
+- \`details.partialResults\`: true if error occurred but output exists
+
 # Blocking Feedback
 
 Messages with customType 'lint'|'error'|'block' are blocking feedback.
@@ -250,7 +273,7 @@ STOP, fix reported issues, then proceed. Do not continue until resolved.
 
 # Audit & Issues Review
 
-After each delegation returns, check for **\`\`## Issues\`\`** (under \`\`## Findings\`\`) and **\`\`## Audit\`\`** in its output.
+After each delegation returns, check for **\`\`## Issues\`\`** (under \`\`## Findings\`\`) and **scopeNotes** in the delegation result details.
 
 Every problem must be surfaced to the user — even if the subagent found a workaround:
 
@@ -262,9 +285,9 @@ Every problem must be surfaced to the user — even if the subagent found a work
   - Impact: <delays, scope changes, quality effects>
   \`\`\`
 
-- **scope_stayed = no?** Critical. Show exactly what the subagent did outside scope. User must decide if it's acceptable.
+- **scopeNotes.deviation?** Check blocked tools in \`metrics.scopeNotes.blockedTools[]\`. If the model tried to access files clearly outside the task (rogue), escalate. If it tried to access files the task legitimately needs but forgot to include in scope (oversight), re-delegate with corrected scope.
 
-- **no problems + scope_stayed = yes?** No action needed.
+- **no scopeNotes + no problems?** No action needed.
 
 Never silently discard problems. Every tool error, permission issue, file-not-found, or workaround is data for improving the system.
 `;
@@ -361,6 +384,7 @@ Pi SDK docs (for reference — delegate to specialists who can read these):
 		.replace("{{ROUTING}}", routingSection)
 		.replace("{{SKILLS}}", skillsSection)
 		.replace("{{FUSION}}", fusionSection)
+		.replace("{{SCOPE_SHAPE}}", generateScopeDocumentation())
 		.replace("{{DELEGATION_MODE}}", modeSection);
 
 	// Token measurement: added ~500 chars (tool docs, scope shape), removed ~2300 chars

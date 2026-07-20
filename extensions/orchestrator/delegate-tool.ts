@@ -12,7 +12,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export { createAskOrchestratorResolver } from "./ask-resolver.ts";
 import { SPINNER_FRAMES, SPINNER_INTERVAL_MS, currentFrame } from "./spinner-state.ts";
-import { statusIcon, getTheme } from "./orchestrator-theme.ts";
+import { statusIcon, getTheme, formatTokens, formatDuration } from "./orchestrator-theme.ts";
 
 import { Text } from "@earendil-works/pi-tui";
 import { executeDelegate } from "./delegate-controller.ts";
@@ -132,9 +132,13 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			const rawTask = delegateArgs.task || details?.task || "";
 			const name = rawName ? rawName.charAt(0).toUpperCase() + rawName.slice(1) : "";
 			const task = rawTask ? rawTask.slice(0, 60) : "";
+			const modelBadge = details?.model
+				? theme.fg("dim", ` [${details.model}]`)
+				: "";
 			const prefix = name
 				? theme.fg("toolTitle", theme.bold(`delegate ${name}`)) +
-				  (task ? theme.fg("dim", `: ${task}`) : "")
+				  (task ? theme.fg("dim", `: ${task}`) : "") +
+				  modelBadge
 				: "";
 
 			if (isPartial) {
@@ -142,9 +146,22 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				const feedText = text
 					? theme.fg("warning", text)
 					: statusIcon("running") + " working...";
-				comp.setText(prefix ? `${prefix}\n${feedText}` : feedText);
+				const liveTokens = details?.tokens ? `↑↓${formatTokens(details.tokens)}` : "";
+				const liveElapsed = details?.elapsedMs ? formatDuration(details.elapsedMs) : (details?.elapsed ? formatDuration(details.elapsed) : "");
+				const liveSuffix = [liveTokens, liveElapsed].filter(Boolean).join(" ");
+				const displayLiveSuffix = liveSuffix ? ` ${theme.fg("dim", liveSuffix)}` : "";
+				comp.setText(prefix ? `${prefix}\n${feedText}${displayLiveSuffix}` : `${feedText}${displayLiveSuffix}`);
 			} else {
-				const feedText = state.lastFeedText || text || (statusIcon("completed") + " done");
+				// Build suffix with token and elapsed info
+				const tokenParts: string[] = [];
+				if (details?.tokenUsage?.input) tokenParts.push(`↑${formatTokens(details.tokenUsage.input)}`);
+				if (details?.tokenUsage?.cached) tokenParts.push(`◎${formatTokens(details.tokenUsage.cached)}`);
+				if (details?.tokenUsage?.output) tokenParts.push(`↓${formatTokens(details.tokenUsage.output)}`);
+				const elapsed = details?.elapsedMs ? formatDuration(details.elapsedMs) : "";
+				const suffix = [...tokenParts, elapsed].filter(Boolean).join(" ");
+				const displaySuffix = suffix ? ` ${theme.fg("dim", suffix)}` : "";
+
+				const feedText = state.lastFeedText || text || (statusIcon("completed") + " done" + displaySuffix);
 				comp.setText(prefix ? `${prefix}\n${theme.fg("success", feedText)}` : theme.fg("success", feedText));
 			}
 

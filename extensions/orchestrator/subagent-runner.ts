@@ -124,6 +124,26 @@ export function truncateSubagentOutput(output: string, cap = OUTPUT_CAP): string
 
 
 /**
+ * Build the flight recorder dump object for post-hoc debugging.
+ */
+export function createFlightRecorderDump(params: FlightRecorderDumpParams): Record<string, any> {
+	return {
+		specialist: params.specialist,
+		task: params.task,
+		timestamp: new Date().toISOString(),
+		sessionId: params.sessionId,
+		model: params.model,
+		turns: params.turns,
+		elapsedMs: params.elapsedMs,
+		stopReason: params.stopReason,
+		errorMessage: params.errorMessage,
+		finalStatus: params.finalStatus,
+		messages: params.messages,
+		scope: params.scope,
+	};
+}
+
+/**
  * Create the ask_orchestrator tool that only subagents see.
  * Pauses the subagent session until the orchestrator resolver returns an answer.
  */
@@ -233,7 +253,25 @@ export type SubagentResult = {
 	stopReason?: string;
 	errorMessage?: string;
 	model?: string;
+	scopeNotes?: import('./types.ts').ScopeNotes;
+	accumulatedTokens?: number;
 };
+
+/** Parameters for createFlightRecorderDump */
+export interface FlightRecorderDumpParams {
+	specialist: string;
+	task: string;
+	sessionId?: string;
+	model?: string;
+	turns: number;
+	elapsedMs: number;
+	stopReason?: string;
+	errorMessage?: string;
+	finalStatus: string;
+	messages: any[];
+	scope?: Scope;
+}
+
 /**
  * SubagentRunner — creates isolated subagent sessions for specialist delegation.
  *
@@ -312,6 +350,11 @@ export class SubagentRunner {
 				return { output: "[error] No model available for subagent. Check API key configuration.", turns: 0 };
 			}
 
+			// Resolve model info for onUpdate metadata
+			const modelId = (model as any)?.id ?? (model as any)?.model ?? 'unknown';
+			const provider = typeof modelId === 'string' && modelId.includes('/') ? modelId.split('/')[0] : 'unknown';
+			const modelLabel = typeof modelId === 'string' && modelId.includes('/') ? modelId.split('/')[1] || modelId : modelId;
+
 			// Snapshot, clean, and install isolated env for the subagent session.
 			envSnapshot = this.snapshotEnv();
 			this.installEnv(this.cleanEnv(envSnapshot));
@@ -357,7 +400,6 @@ export class SubagentRunner {
 				});
 				await loader.reload();
 			} finally {
-				delete process.env[SubagentRunner.SUBAGENT_ENV_KEY];
 			}
 
 			const excludeTools = (specialist.name === "writer" || specialist.name === "researcher" || specialist.name === "scout")
@@ -393,10 +435,17 @@ export class SubagentRunner {
 							currentStep: 0,
 							planParsed: true
 						};
+						// Sync subagentSessions map so tool guard sees planParsed=true
+						if (sessionId) {
+							const sessionEntry = subagentSessions.get(sessionId);
+							if (sessionEntry) {
+								subagentSessions.set(sessionId, { ...sessionEntry, planParsed: true });
+							}
+						}
 						const text = feed.render(specialist.name);
-						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "plan_set" } });
+						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "plan_set", model: modelLabel, provider } });
 					}
-					return { content: [{ type: "text", text: `Plan registered with ${params.steps.length} steps` }], details: {} };
+					return { content: [{ type: "text", text: `Plan registered with ${params.steps.length} steps` }], details: { stepCount: params.steps.length, goal: params.goal, status: "plan_set" } };
 				}
 			});
 
@@ -416,10 +465,10 @@ export class SubagentRunner {
 							? feed.steps[feed.currentStep].label
 							: "All steps complete";
 						const text = feed.render(specialist.name);
-						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "step_advanced" } });
-						return { content: [{ type: "text", text: `Step complete. Next: ${nextLabel}` }], details: {} };
+						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "step_advanced", model: modelLabel, provider } });
+						return { content: [{ type: "text", text: `Step complete. Next: ${nextLabel}` }], details: { nextStep: nextLabel, totalSteps: feed.steps.length, allComplete: feed.currentStep >= feed.steps.length, status: "step_advanced" } };
 					}
-					return { content: [{ type: "text", text: "No active step to complete" }], details: {} };
+					return { content: [{ type: "text", text: "No active step to complete" }], details: { status: "no_active_step" } };
 				}
 			});
 
@@ -450,7 +499,7 @@ export class SubagentRunner {
 						);
 						feed.feedState = { ...feed.feedState, steps: newSteps };
 						const text = feed.render(specialist.name);
-						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "report" } });
+						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "report", model: modelLabel, provider } });
 						return { content: [{ type: "text", text: `${statusIcon("completed")} Reported: ${params.finding}` }], details: {} };
 					}
 					return { content: [{ type: "text", text: "No active step" }], details: {} };
@@ -486,8 +535,8 @@ export class SubagentRunner {
 			});
 
 			// Register session in per-session Map for concurrent-safe routing
-			const sessionId = session.sessionId as string;
-			subagentSessions.set(sessionId, { specialistName: specialist.name, planParsed: false });
+			sessionId = session.sessionId as string;
+			subagentSessions.set(sessionId, { specialistName: specialist.name, planParsed: false, blockedCalls: [] });
 
 			const { signal } = config;
 
@@ -499,6 +548,7 @@ export class SubagentRunner {
 
 			let lastStopReason: string | undefined;
 			let lastErrorMessage: string | undefined;
+			let accumulatedTokens = 0;
 
 			const unsubscribe = session.subscribe((event: any) => {
 				if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
@@ -514,20 +564,25 @@ export class SubagentRunner {
 					const textDelta = feed.render(specialist.name);
 					config.onUpdate?.({
 						content: [{ type: "text", text: textDelta }],
-						details: { status: "running", streaming: true },
+						details: { status: "running", streaming: true, model: modelLabel, provider },
 					});
 				}
 
 				if (event.type === "message_end") {
 					if (event.message?.role === "assistant") {
 						turns++;
+						// Check maxTurns budget — abort if exceeded
+						const maxTurns = DEFAULTS.delegation.maxTurns ?? 30;
+						if (turns >= maxTurns) {
+							session.abort();
+						}
 						const assistantMsg = event.message as any;
 						lastStopReason = assistantMsg.stopReason;
 						lastErrorMessage = assistantMsg.errorMessage;
 						const text = feed.render(specialist.name);
 						config.onUpdate?.({
 							content: [{ type: "text", text }],
-							details: { specialist: specialist.name, status: "running", turns },
+							details: { specialist: specialist.name, status: "running", turns, model: modelLabel, provider },
 						});
 					}
 
@@ -543,7 +598,7 @@ export class SubagentRunner {
 							content: typeof lintMsg.content === "string"
 								? [{ type: "text", text: lintMsg.content }]
 								: (lintMsg.content ?? []),
-							details: { specialist: specialist.name, status: "lint", ...(lintMsg.details ?? {}) },
+							details: { specialist: specialist.name, status: "lint", model: modelLabel, provider, ...(lintMsg.details ?? {}) },
 						});
 					}
 				}
@@ -566,7 +621,7 @@ export class SubagentRunner {
 					const text = feed.render(specialist.name);
 					config.onUpdate?.({
 						content: [{ type: "text", text }],
-						details: { specialist: specialist.name, status: "running", tool: event.toolName },
+						details: { specialist: specialist.name, status: "running", tool: event.toolName, model: modelLabel, provider },
 					});
 				}
 
@@ -585,7 +640,7 @@ export class SubagentRunner {
 										updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps), orchestratorCtx);
 									}
 									const text = feed.render(specialist.name);
-									config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", tool: event.toolName } })
+									config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", tool: event.toolName, model: modelLabel, provider } })
 								}
 							}
 						}
@@ -595,7 +650,7 @@ export class SubagentRunner {
 				if (event.type === "tool_execution_end") {
 					if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") {
 						const text = feed.render(specialist.name);
-						config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running" } });
+						config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", model: modelLabel, provider } });
 						return;
 					}
 					let outputPreview: string | undefined;
@@ -655,7 +710,18 @@ export class SubagentRunner {
 					const text = feed.render(specialist.name);
 					config.onUpdate?.({
 						content: [{ type: "text", text }],
-						details: { specialist: specialist.name, status: "running" },
+						details: { specialist: specialist.name, status: "running", model: modelLabel, provider },
+					});
+				}
+
+				// Track token usage from message events
+				if (event.type === "message_update" && event.assistantMessageEvent?.usage) {
+					const usage = event.assistantMessageEvent.usage;
+					accumulatedTokens += (usage.inputTokens || 0) + (usage.outputTokens || 0);
+					updatePlanStepDetail(`tokens: ${accumulatedTokens}`, orchestratorCtx);
+					config.onUpdate?.({
+						content: [{ type: "text", text: feed.render(specialist.name) }],
+						details: { specialist: specialist.name, status: "running", tokens: accumulatedTokens, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
 					});
 				}
 
@@ -666,6 +732,7 @@ export class SubagentRunner {
 
 			// Periodic re-render timer
 			let renderTimer: ReturnType<typeof setInterval> | null = null;
+			let elapsedTimer: ReturnType<typeof setInterval> | null = null;
 			let _lastRenderText: string | null = null;
 			let _lastFrame: string = "";
 
@@ -679,13 +746,22 @@ export class SubagentRunner {
 							_lastFrame = frame;
 							config.onUpdate?.({
 								content: [{ type: "text", text }],
-								details: { specialist: specialist.name, status: "running" },
+								details: { specialist: specialist.name, status: "running", model: modelLabel, provider },
 							});
 						}
 					}
 				}, SPINNER_INTERVAL_MS);
 			};
 			startRenderTimer();
+
+			// Periodic elapsed-time timer (1s)
+			elapsedTimer = setInterval(() => {
+				const elapsed = Date.now() - startTime;
+				config.onUpdate?.({
+					content: [{ type: "text", text: feed.render(specialist.name) }],
+					details: { specialist: specialist.name, status: "running", elapsedMs: elapsed, tokens: accumulatedTokens, model: modelLabel, provider },
+				});
+			}, 1000);
 
 			// Abort handler
 			const abortHandler = () => { session.abort(); };
@@ -707,7 +783,7 @@ export class SubagentRunner {
 					setViewerError(errorMsg);
 					const errorText = feed.render(specialist.name) ?? errorMsg;
 					config.onUpdate?.({content: [{ type: "text", text: errorText }],
-						details: { specialist: specialist.name, status: "error", error: errorMsg },
+						details: { specialist: specialist.name, status: "error", error: errorMsg, model: modelLabel, provider },
 					});
 				} else {
 					finalStatus = "completed";
@@ -722,7 +798,7 @@ export class SubagentRunner {
 				setViewerError(errorMsg);
 				const errorText = feed.render(specialist.name) ?? errorMsg;
 				config.onUpdate?.({content: [{ type: "text", text: errorText }],
-					details: { specialist: specialist.name, status: isAborted ? "aborted" : "error", error: errorMsg },
+					details: { specialist: specialist.name, status: isAborted ? "aborted" : "error", error: errorMsg, model: modelLabel, provider },
 				});
 				output = isAborted
 					? `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`
@@ -733,6 +809,11 @@ export class SubagentRunner {
 					clearInterval(renderTimer);
 					renderTimer = null;
 				}
+				if (elapsedTimer) {
+					clearInterval(elapsedTimer);
+					elapsedTimer = null;
+				}
+				delete process.env[SubagentRunner.SUBAGENT_ENV_KEY];
 				_lastRenderText = null;
 				if (signal) signal.removeEventListener("abort", abortHandler);
 
@@ -742,10 +823,9 @@ export class SubagentRunner {
 					try { mkdirSync(debugDir, { recursive: true }); } catch {}
 					const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 					const filename = `delegation-${timestamp}-${specialist.name}.json`;
-					const dump = {
+					const dump = createFlightRecorderDump({
 						specialist: specialist.name,
 						task,
-						timestamp: new Date().toISOString(),
 						sessionId,
 						model: (model as any)?.id ?? (model as any)?.model ?? undefined,
 						turns,
@@ -754,7 +834,8 @@ export class SubagentRunner {
 						errorMessage: lastErrorMessage,
 						finalStatus,
 						messages: session.messages,
-					};
+						scope,
+					});
 					writeFileSync(join(debugDir, filename), JSON.stringify(dump, null, 2));
 				} catch (e) {
 					// Best-effort — never let debugging dump failure break the delegation
@@ -771,7 +852,7 @@ export class SubagentRunner {
 			}
 
 			const finalText = feed.render(specialist.name);
-			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus } });
+			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accumulatedTokens } });
 			recordTimelineFrame("step_finalized", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
 
 			const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);
@@ -789,7 +870,34 @@ export class SubagentRunner {
 				}
 			}
 
-			return { output: finalOutput, turns, elapsed_ms: Date.now() - startTime, toolCallTrail, stopReason: lastStopReason, errorMessage: lastErrorMessage, model: (model as any)?.id ?? (model as any)?.model ?? undefined };
+			// Collect scope notes from blocked calls
+			let scopeNotes: import('./types.ts').ScopeNotes | undefined;
+			if (sessionId) {
+				const state = subagentSessions.get(sessionId);
+				if (state && state.blockedCalls && state.blockedCalls.length > 0) {
+					const blockedTools = state.blockedCalls.map(bc => ({ ...bc }));
+					const assessment = blockedTools.length <= 2
+						? 'minor-deviation' as const
+						: 'significant-deviation' as const;
+					scopeNotes = {
+						blockedTools,
+						assessment,
+						summary: `${blockedTools.length} tool call(s) blocked — ${blockedTools.map(b => `${b.tool}(${b.target})`).join(', ')}`,
+					};
+				}
+			}
+
+			return {
+				output: finalOutput,
+				turns,
+				elapsed_ms: Date.now() - startTime,
+				toolCallTrail,
+				stopReason: lastStopReason,
+				errorMessage: lastErrorMessage,
+				model: (model as any)?.id ?? (model as any)?.model ?? undefined,
+				scopeNotes,
+				accumulatedTokens,
+			};
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
 			const stack = error instanceof Error ? error.stack : "";
