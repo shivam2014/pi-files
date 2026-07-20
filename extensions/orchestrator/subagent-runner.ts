@@ -254,7 +254,7 @@ export type SubagentResult = {
 	errorMessage?: string;
 	model?: string;
 	scopeNotes?: import('./types.ts').ScopeNotes;
-	accumulatedTokens?: number;
+	tokenUsage?: { input: number; output: number; cached: number };
 };
 
 /** Parameters for createFlightRecorderDump */
@@ -548,7 +548,7 @@ export class SubagentRunner {
 
 			let lastStopReason: string | undefined;
 			let lastErrorMessage: string | undefined;
-			let accumulatedTokens = 0;
+			let accInput = 0, accOutput = 0, accCached = 0;
 
 			const unsubscribe = session.subscribe((event: any) => {
 				if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
@@ -714,14 +714,17 @@ export class SubagentRunner {
 					});
 				}
 
-				// Track token usage from message events
-				if (event.type === "message_update" && event.assistantMessageEvent?.usage) {
-					const usage = event.assistantMessageEvent.usage;
-					accumulatedTokens += (usage.inputTokens || 0) + (usage.outputTokens || 0);
-					updatePlanStepDetail(`tokens: ${accumulatedTokens}`, orchestratorCtx);
+				// Track token usage from agent_end/done events (TokenUsage has inputTokens/outputTokens/cachedTokens)
+				if ((event.type === "agent_end" || event.type === "done") && event.usage) {
+					const u = event.usage;
+					accInput = u.inputTokens || 0;
+					accOutput = u.outputTokens || 0;
+					accCached = u.cachedTokens || 0;
+					const total = accInput + accOutput + accCached;
+					updatePlanStepDetail(`tokens: ↑${accInput} ↓${accOutput} ◎${accCached}`, orchestratorCtx);
 					config.onUpdate?.({
 						content: [{ type: "text", text: feed.render(specialist.name) }],
-						details: { specialist: specialist.name, status: "running", tokens: accumulatedTokens, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
+						details: { specialist: specialist.name, status: "running", tokens: total, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
 					});
 				}
 
@@ -759,7 +762,7 @@ export class SubagentRunner {
 				const elapsed = Date.now() - startTime;
 				config.onUpdate?.({
 					content: [{ type: "text", text: feed.render(specialist.name) }],
-					details: { specialist: specialist.name, status: "running", elapsedMs: elapsed, tokens: accumulatedTokens, model: modelLabel, provider },
+					details: { specialist: specialist.name, status: "running", elapsedMs: elapsed, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, model: modelLabel, provider },
 				});
 			}, 1000);
 
@@ -852,7 +855,7 @@ export class SubagentRunner {
 			}
 
 			const finalText = feed.render(specialist.name);
-			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accumulatedTokens } });
+			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached } });
 			recordTimelineFrame("step_finalized", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
 
 			const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);
@@ -896,7 +899,7 @@ export class SubagentRunner {
 				errorMessage: lastErrorMessage,
 				model: (model as any)?.id ?? (model as any)?.model ?? undefined,
 				scopeNotes,
-				accumulatedTokens,
+				tokenUsage: { input: accInput, output: accOutput, cached: accCached },
 			};
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);

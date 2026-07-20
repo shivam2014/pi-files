@@ -393,7 +393,7 @@ export class DelegatePipeline {
 				const id = typeof m === 'string' ? m : (m?.id ?? m?.model ?? '');
 				return id.includes('/') ? id.split('/')[0] : undefined;
 			})(),
-			tokenUsage: result?.accumulatedTokens ? { total: result.accumulatedTokens } : undefined,
+			tokenUsage: result?.tokenUsage ? { input: result.tokenUsage.input, output: result.tokenUsage.output, cached: result.tokenUsage.cached } : undefined,
 			},
 		};
 	}

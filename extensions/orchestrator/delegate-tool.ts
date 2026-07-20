@@ -146,7 +146,10 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				const feedText = text
 					? theme.fg("warning", text)
 					: statusIcon("running") + " working...";
-				const liveTokens = details?.tokens ? `↑↓${formatTokens(details.tokens)}` : "";
+				const inTokens = details?.tokenInput ? `↑${formatTokens(details.tokenInput)}` : "";
+				const outTokens = details?.tokenOutput ? `↓${formatTokens(details.tokenOutput)}` : "";
+				const cacheTokens = details?.tokenCached ? `◎${formatTokens(details.tokenCached)}` : "";
+				const liveTokens = [inTokens, outTokens, cacheTokens].filter(Boolean).join(" ");
 				const liveElapsed = details?.elapsedMs ? formatDuration(details.elapsedMs) : (details?.elapsed ? formatDuration(details.elapsed) : "");
 				const liveSuffix = [liveTokens, liveElapsed].filter(Boolean).join(" ");
 				const displayLiveSuffix = liveSuffix ? ` ${theme.fg("dim", liveSuffix)}` : "";
