@@ -12,6 +12,40 @@ The goal is **total transparency without clutter**. The user should never wonder
 
 ---
 
+## Core Doctrine: Deterministic Guardrail Workflow
+
+### What This Extension Is
+
+A deterministic guardrail workflow system for delegated agent work. Not a chat UI. Not a transcript viewer. Not a general agent framework.
+
+### Specialists Are Professions
+
+A human cannot be a nuclear engineer, an HR manager, and a politician at once with the same toolbox. Each specialist owns its own tools, skills, system prompt, and deterministic checks. Never generalize a specialist into a do-everything agent.
+
+### Orchestrator Is the Manager, Not the Worker
+
+A relatively expensive model holds the global system view: decomposition, sequencing, interfacing, verification strategy. If the manager does the tasks manually it is (a) expensive, (b) lost in micro-detail, (c) no longer enforcing the global view. This is systems engineering embodied in software.
+
+### Deterministic Checks Are the Guardrails
+
+Cheap subagents make inadvertent errors. Objective, non-subjective checks — lint, scope enforcement, property-based testing (quickcheck-style, available in every language), metric-based loop evaluation — catch those errors and feed them back to the subagent as guidance. Checks verify facts (paths, commands, counts, events, test outcomes), never inferred intent.
+
+### Hard Rule: No Intent Inference from Prose
+
+Deterministic layers must never classify or gate behavior by matching patterns against natural-language task text. Lesson learned (regex capability filters, 2026-07): keyword matching on sentences produced false-positive blocks on valid work and required endless pattern patches. Guards read facts, not sentences.
+
+### CEO–Manager Alignment
+
+The user is the CEO; the orchestrator is the manager they hired. The CEO steers with goals, constraints, and experience-based judgment — and can veto a mechanism class without reading its code. Therefore the manager must never introduce a mechanism silently. Every new guard, check, or workflow feature is announced in plain language — what it watches, what it acts on, what happens when it misfires — before or as it ships. Mechanism class and risk are always visible to the CEO; implementation internals (files, line numbers) are reported only on request. Alignment is continuous, not on-demand.
+
+### 7. Design for the weakest operator
+The extension is the mechanical safety net for manager and worker mistakes. A weak model must be unable to wreck the workflow; a strong model must never be slowed or second-guessed by the machinery. Never build model-strength detection — build the floor, not the ceiling.
+
+### 8. Workers get complete truth about their part
+Workers have no global context. The manager must hand each worker: its real tools, its real limits, the guards that will block it, and enough scope to deliver its part of the working system.
+
+---
+
 ## Design Constraints
 
 ### Cache Safety
@@ -206,6 +240,12 @@ Without the peek, the user sees only orchestration-level steps. With the peek, t
 
 ---
 
+## Non-Goals
+
+- No regex/heuristic classification of task prose in any guard, gate, or validator.
+
+---
+
 ## Implementation Status
 
 | Feature | Status | Priority |
@@ -303,6 +343,9 @@ New tools follow the pattern: `registerXTool(pi: ExtensionAPI)` function → exp
 
 ### 18. Token-neutral changes
 When adding new prompt text, identify what can be removed. Every line costs tokens per session. New features should be token-neutral or token-negative. Measure before committing.
+
+### 19. Verify facts, never infer intent
+Deterministic guards operate on observable state (paths, commands, metrics, events, test results). Natural-language classification belongs to the model, not to guard code.
 
 ---
 

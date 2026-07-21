@@ -43,10 +43,15 @@ const TOOL_PATTERNS: Record<string, RegExp[]> = {
 		/\b(run|execute|invoke|shell|bash|sh\s|npm\s|yarn\s|pip\s|git\s(?!read|log|diff|show|status|clone))\b/i,
 	],
 	web_search: [
-		/\b(search|fetch|scrape|curl|download)\b/i,
+		/\bsearch\b.{0,40}\b(web|online|internet)\b/i,
+		/\b(web|online|internet)\b.{0,40}\bsearch\b/i,
+		/\bgoogle\b.{0,30}\b(it|this|for|the|search|up|results)\b/i,
+		/\blook(?:\s+\w+)?\s+up\b.{0,30}\b(web|online|internet)\b/i,
 	],
 	fetch_content: [
-		/\b(search|fetch|scrape|curl|download)\b/i,
+		/\b(fetch|scrape|download)\b.{0,30}\b(http|https|url|website|webpage)\b/i,
+		/\b(http|https|url|website|webpage)\b.{0,30}\b(fetch|scrape|download)\b/i,
+		/\bcurl\b.{0,30}\b(http|https|url)\b/i,
 	],
 };
 
