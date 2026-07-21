@@ -100,7 +100,7 @@ function hashContent(content: string): string {
  * Truncate a label to max characters with ellipsis.
  * No word stripping, no regex mangling. Pure width control.
  */
-export function truncateLabel(s: string, max = 60): string {
+export function truncateLabel(s: string, max = 58): string {
     if (s.length <= max) return s;
     return s.slice(0, max - 1) + "…";
 }

@@ -52,7 +52,9 @@ export class DelegateFeedBuilder {
 		this.toolCallHistory = [];
 
 		let feed = createActivityFeed();
-		feed = { ...feed, goal: `${specialist}: ${task}` };
+		const firstClause = task.split(/[.\n;]/)[0]?.trim() ?? task;
+		const shortGoal = firstClause.length > 60 ? firstClause.slice(0, 57) + "..." : firstClause;
+		feed = { ...feed, goal: `${specialist}: ${shortGoal}` };
 		feed = addStep(feed, task);
 		this.state = feed;
 	}

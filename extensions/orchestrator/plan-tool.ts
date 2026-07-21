@@ -129,6 +129,12 @@ export function registerPlanTool(pi: ExtensionAPI) {
                     processedSteps.push(String(step));
                 }
             }
+            // Label length validation: warn if any step label > 60 chars
+            for (const label of processedSteps) {
+              if (label.length > 60) {
+                debugLog(`⚠ Step label too long (${label.length} chars, max 60): "${label.slice(0, 40)}..." — rewrite as 5-10 word summary`);
+              }
+            }
             setupPlanPanel(effectiveGoal, processedSteps, ctx);
             // Store loop configs for later retrieval by delegate/runner
             const panel = resolvePlanPanel(ctx as SessionContext);

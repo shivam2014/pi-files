@@ -1,7 +1,7 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { truncateLabel } from "../token-saver.ts";
-import { styledSymbol, formatDuration as thFormatDuration } from "./orchestrator-theme.ts";
+import { styledSymbol, formatDuration as thFormatDuration, partialStrikethrough, HOLD_FRAMES, REVEAL_FRAMES, TOTAL_STRIKE_FRAMES } from "./orchestrator-theme.ts";
 import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilState, LoopIteration, LoopUntilStepInput } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
@@ -135,7 +135,7 @@ export class PlanPanel {
 	summarizeGoal(goal: string): string {
 		let cleaned = goal.replace(/https?:\/\/[^\s]+/g, '').replace(/```[\s\S]*?```/g, '').replace(/`[^`]+`/g, '').trim();
 		const firstLine = cleaned.split('\n')[0]?.trim() || cleaned;
-		return firstLine.length <= 120 ? firstLine : firstLine.slice(0, 117) + '...';
+		return firstLine.length <= 58 ? firstLine : firstLine.slice(0, 55) + '...';
 	}
 
 	generatePlanFromPrompt(_prompt: string): string[] { return ["Planning..."]; }
@@ -149,7 +149,7 @@ export class PlanPanel {
 				const progress = `[${loopState.currentIteration}/${config.maxIterations}]`;
 				const mode = config.mode === 'satisficing' ? 'satisficing' : '';
 				return {
-					label: truncateLabel(`⟳ ${ps.label} ${progress} ${mode}`, 120),
+					label: truncateLabel(`⟳ ${ps.label} ${progress} ${mode}`, 58),
 					completed: ps.completed,
 					startTime: ps.startTime,
 					endTime: ps.endTime,
@@ -185,7 +185,7 @@ export class PlanPanel {
 					if (sm && !substeps.find(s => !s.completed)) substeps.push({ label: sm[1].trim(), completed: false });
 				}
 			}
-			return { label: truncateLabel(ps.label, 120), completed: ps.completed, startTime: ps.startTime, endTime: ps.endTime, substeps };
+			return { label: truncateLabel(ps.label, 58), completed: ps.completed, startTime: ps.startTime, endTime: ps.endTime, substeps };
 		});
 		const erroredStep = state.steps.find(s => s.errored);
 		return {
@@ -201,27 +201,66 @@ export class PlanPanel {
 
 	private _spinnerRe = new RegExp(`^[${SPINNER_FRAMES.join("")}]`);
 
+  // ── Strike animation state ──────────────────────────────────────
+  private _strikeTimer: ReturnType<typeof setInterval> | null = null;
+  private _strikeFrame = 0;
+  private _strikeLabelText: string = "";
+  private _strikeStepIdx: number = -1;
+
 private trimToBudget(lines: string[], budget: number): string[] {
-		if (lines.length <= budget) return lines;
-		const essentialCount = Math.min(2, lines.length);
-		const essential = lines.slice(0, essentialCount);
-		const remainingBudget = budget - essential.length;
-		if (remainingBudget <= 0) return essential.slice(0, budget);
-		const rest = lines.slice(essentialCount);
-		let activeIdx = -1;
-		for (let i = 0; i < rest.length; i++) {
-			if (this._spinnerRe.test(rest[i].trimStart())) { activeIdx = i; break; }
-		}
-		if (activeIdx >= 0) {
-			const before = rest.slice(0, activeIdx);
-			const fromActive = rest.slice(activeIdx);
-			const keepFromActive = Math.min(fromActive.length, remainingBudget);
-			const keepBefore = Math.min(before.length, remainingBudget - keepFromActive);
-			const trimmedBefore = before.slice(before.length - keepBefore);
-			return [...essential, ...trimmedBefore, ...fromActive.slice(0, keepFromActive)];
-		}
-		return [...essential, ...rest.slice(rest.length - remainingBudget)];
+	if (lines.length <= budget) return lines;
+
+	// Find the active step line (spinner character)
+	let activeIdx = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (this._spinnerRe.test(lines[i].trimStart())) { activeIdx = i; break; }
 	}
+
+	// Separate: goal (line 0), dots (line 1), steps (line 2+)
+	const goalLine = lines[0] ?? "";
+	const dotsLine = lines[1] ?? "";
+	const stepLines = lines.slice(2);
+
+	// Count completed steps (lines starting with ✓ status icon)
+	const completedPrefixes = stepLines.filter(l => l.includes("✓") && !l.includes("⠋") && !l.includes("⠙") && !l.includes("⠹") && !l.includes("⠸") && !l.includes("⠼") && !l.includes("⠴") && !l.includes("⠦") && !l.includes("⠧") && !l.includes("⠇") && !l.includes("⠏"));
+	const completedCount = completedPrefixes.length;
+
+	// Find active step index within stepLines
+	let activeStepIdx = -1;
+	for (let i = 0; i < stepLines.length; i++) {
+		if (this._spinnerRe.test(stepLines[i].trimStart())) { activeStepIdx = i; break; }
+	}
+
+	// Build output: goal + dots + optional fold line + active + next 2 pending
+	const result: string[] = [goalLine, dotsLine];
+	let usedLines = 2;
+
+	// Fold line: if there are completed steps, show "✓ N completed"
+	if (completedCount > 0) {
+		result.push(`  ✓ ${completedCount} completed`);
+		usedLines++;
+	}
+
+	// Budget remaining after goal + dots + fold
+	const remaining = budget - usedLines;
+
+	if (activeStepIdx >= 0) {
+		// Show active step + up to 2 pending after it
+		const afterActive = stepLines.slice(activeStepIdx);
+		const keep = Math.min(afterActive.length, remaining);
+		for (let i = 0; i < keep; i++) {
+			result.push(afterActive[i]);
+		}
+	} else {
+		// No active step — show last `remaining` lines
+		const keep = Math.min(stepLines.length, remaining);
+		for (let i = stepLines.length - keep; i < stepLines.length; i++) {
+			result.push(stepLines[i]);
+		}
+	}
+
+	return result;
+}
 
 	private renderPlanLines(): string[] {
 		if (!this.planState) return [];
@@ -239,6 +278,33 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		this._lastWidgetContent = lines;
 		this._setWidget(WIDGET_KEY, lines);
 	}
+
+  /**
+   * Start strikethrough reveal animation for a completed step.
+   * One animation at a time — new completion replaces previous.
+   * Uses 65ms setInterval, owns the timer lifecycle.
+   */
+  private _startStrikeAnimation(label: string, stepIdx: number): void {
+    if (this._strikeTimer) {
+      clearInterval(this._strikeTimer);
+      this._strikeTimer = null;
+    }
+    this._strikeFrame = 0;
+    this._strikeLabelText = label;
+    this._strikeStepIdx = stepIdx;
+
+    this._strikeTimer = setInterval(() => {
+      this._strikeFrame++;
+      if (this._strikeFrame > TOTAL_STRIKE_FRAMES) {
+        if (this._strikeTimer) { clearInterval(this._strikeTimer); this._strikeTimer = null; }
+        this._strikeStepIdx = -1;
+        this._strikeLabelText = "";
+        this._renderWidget();
+        return;
+      }
+      this._renderWidget();
+    }, 65);
+  }
 
 	private startPlanTimer(): void {
 		this.stopPlanTimer();
@@ -411,6 +477,7 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		activeStep.endTime = Date.now();
 		if (activeStep.detailLines?.length) (activeStep as any).substepLines = [...(activeStep.detailLines || [])];
 		activeStep.detailLines = undefined;
+		this._startStrikeAnimation(activeStep.label, this.planState.steps.indexOf(activeStep));
 		this._activateNextPending();
 		this._renderWidget();
 		this.savePlanState();
@@ -574,7 +641,7 @@ private trimToBudget(lines: string[], budget: number): string[] {
 		const total = steps.length;
 		const completed = steps.filter((s) => s.completed).length;
 		const dots = steps.map((s) => (s.errored ? styledSymbol("status.error") : s.completed ? styledSymbol("status.done") : styledSymbol("status.pending"))).join("");
-		return `${styledSymbol("icon.plug")} ${truncateLabel(goal, 120)} ${dots} [${completed}/${total}] ${thFormatDuration(elapsed)}`;
+		return `${styledSymbol("icon.plug")} ${truncateLabel(goal, 58)} ${dots} [${completed}/${total}] ${thFormatDuration(elapsed)}`;
 	}
 
 	modifyStep(index: number, label: string, kind?: StepKind): { success: boolean; error?: string } {

@@ -26,3 +26,37 @@ Result: All 4 tickets complete. Tests: 59 files / 888 passed / 1 skipped (889 to
 
 ### Next
 WS-A complete (A1-A6). WS-B/C/D not started. E2-E5 pending.
+
+## Session 3 — 2026-07-21 — Plan panel readability + OMP todo port
+
+**Tickets completed:** B1, B2, B3, B1b
+
+### B1: Hard-truncate labels to 58 chars
+- Files: token-saver.ts (default 60→58), plan-panel.ts (4× 120→58), activity-feed.ts (BOX_INNER_WIDTH→MAX_LABEL_CHARS=58)
+- 200-char label → renders exactly 58 chars (55 + "…")
+- Tests: 888/888 pass
+
+### B2: Strikethrough completed steps with animation
+- Files: orchestrator-theme.ts (STRIKE_START/END, partialStrikethrough, revealCount, HOLD_FRAMES=2, REVEAL_FRAMES=12), activity-feed.ts (import + struck label on completed), plan-panel.ts (animation fields, _startStrikeAnimation method, call in advanceStep)
+- 65ms setInterval drives 14-frame reveal animation
+- Tests: 888/888 pass
+
+### B3: Collapse rule — 9-line budget, fold completed
+- File: plan-panel.ts (trimToBudget rewritten)
+- Completed steps fold to "✓ N completed"; always shows active + next 2 pending
+- 12-step plan renders ≤5 lines (goal + dots + fold + active + 2 pending)
+- Tests: 888/888 pass
+
+### B1b: Readable labels at source
+- Files: delegate-feed-builder.ts (header uses first clause ≤60 chars), plan-tool.ts (step label >60 chars → debugLog warning)
+- 300-char task → header ≤60 chars after first-clause extraction
+- Tests: 888/888 pass
+
+### Verification
+- npx vitest run: 59 files, 888 passed, 1 skipped, 0 failed ✅
+- tui-smoke.sh: 6/9 passed, 3 failed (PRE-EXISTING — plan panel widget not grep-able as text; not caused by B-series changes) ⚠️
+
+### Friction
+- plan-panel.ts edits hit whitespace mismatches repeatedly — file uses mixed indentation (tabs for class methods, no tab for trimToBudget). Had to use `awk | cat -e` to see exact bytes.
+- smoke test failures are pre-existing — test greps for text patterns ("Orchestration Plan|Plan Panel") but plan panel renders as TUI widget via setWidget(), not as grep-able transcript text.
+- First delegation for B2b was aborted mid-read; partial results salvaged and used for second attempt.

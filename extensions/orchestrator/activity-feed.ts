@@ -11,14 +11,14 @@
  */
 
 import type { ActivityFeedState, Step, Substep, PlanStep } from "./types.ts";
-import { styledSymbol, statusIcon, formatDuration as thFormatDuration, getTheme } from "./orchestrator-theme.ts";
+import { styledSymbol, statusIcon, formatDuration as thFormatDuration, getTheme, partialStrikethrough } from "./orchestrator-theme.ts";
 
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-const BOX_INNER_WIDTH = 52;
+const MAX_LABEL_CHARS = 58;
 const MAX_FEED_SUBSTEPS = 8;
 
 // Max recursive re-renders when state changes mid-render
@@ -74,7 +74,7 @@ export function addSubstep(state: ActivityFeedState, label: string, toolCallId?:
 	}
 	if (currentStep < 0 || steps.length === 0) {
 		if (steps.length === 0) {
-			const stepLabel = label.length > 60 ? label.slice(0, 57) + "..." : label;
+			const stepLabel = label.length > MAX_LABEL_CHARS ? label.slice(0, MAX_LABEL_CHARS - 3) + "..." : label;
 			return {
 				...state,
 				steps: [{ label: stepLabel, completed: false, substeps: [{ label, completed: false, startTime: Date.now(), ...(toolCallId ? { toolCallId } : {}) }], startTime: Date.now() }],
@@ -640,7 +640,8 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 			const duration = step.startTime && step.endTime
 				? thFormatDuration(step.endTime - step.startTime)
 				: "";
-			const summary = `  ${statusIcon("completed")} Step ${i + 1}: ${step.label}${duration ? ` (${duration})` : ""}`;
+			const struckLabel = step.label.includes("\x1b[9m") ? step.label : partialStrikethrough(step.label, 0);
+			const summary = `  ${statusIcon("completed")} Step ${i + 1}: ${struckLabel}${duration ? ` (${duration})` : ""}`;
 			lines.push(summary);
 			// Show Report: substeps under completed steps (Collapse Not Erase)
 			for (const sub of step.substeps) {

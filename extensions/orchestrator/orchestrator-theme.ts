@@ -95,6 +95,48 @@ export const SYMBOLS: Record<SymbolKey, string> = {
   "nav.cursor":        "▸",
 };
 
+// ── Strikethrough animation constants ────────────────────────────
+
+/** ANSI escape: start strikethrough */
+export const STRIKE_START = "\x1b[9m";
+/** ANSI escape: end strikethrough */
+export const STRIKE_END = "\x1b[29m";
+
+/** Hold frames before reveal starts (text fully struck during hold) */
+export const HOLD_FRAMES = 2;
+/** Reveal frames — struck portion shrinks from full to zero over this many frames */
+export const REVEAL_FRAMES = 12;
+/** Total animation frames = HOLD_FRAMES + REVEAL_FRAMES */
+export const TOTAL_STRIKE_FRAMES = HOLD_FRAMES + REVEAL_FRAMES;
+
+/** Wrap entire text in strikethrough ANSI codes */
+export function strikethroughText(text: string): string {
+  return `${STRIKE_START}${text}${STRIKE_END}`;
+}
+
+/**
+ * Partial strikethrough: first `visibleChars` characters struck, rest plain.
+ * If visibleChars <= 0: all plain. If >= text length: all struck.
+ */
+export function partialStrikethrough(text: string, visibleChars: number): string {
+  if (visibleChars <= 0) return text;
+  const chars = [...text]; // spread handles multi-byte Unicode
+  if (visibleChars >= chars.length) return strikethroughText(text);
+  return `${strikethroughText(chars.slice(0, visibleChars).join(""))}${chars.slice(visibleChars).join("")}`;
+}
+
+/**
+ * Compute visibleChars for an animation frame.
+ * Frame 0..HOLD_FRAMES-1: return 0 (fully struck, no reveal).
+ * Frame HOLD_FRAMES..TOTAL_STRIKE_FRAMES: linearly reveal from full to zero.
+ */
+export function revealCount(textLength: number, frame: number): number {
+  if (frame < HOLD_FRAMES) return 0;
+  const revealFrame = frame - HOLD_FRAMES;
+  if (revealFrame >= REVEAL_FRAMES) return textLength; // animation done — fully revealed
+  return Math.ceil(textLength * revealFrame / REVEAL_FRAMES);
+}
+
 // ── Theme accessor ─────────────────────────────────────────────────
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");

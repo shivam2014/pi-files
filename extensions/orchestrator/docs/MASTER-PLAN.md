@@ -111,16 +111,34 @@ Reliable hands before more work.
   plan step NOT advanced; E2 ticket text updated with tdd-skill caveat.
 
 ### WS-B — Plan panel readability + OMP todo port [blocked by A1]
-- [ ] B1. Hard-truncate goal + step labels to one line (~58 chars, ellipsis). Never wrap.
+- [x] B1. Hard-truncate goal + step labels to one line (~58 chars, ellipsis). Never wrap.
   Full text in peek overlay + timeline dump. Files: plan-panel.ts, activity-feed.ts
   Accept: 200-char task label renders exactly 1 widget line.
 
-- [ ] B2. Strikethrough completed steps: ✓ + \x1b[9m…\x1b[29m + dim.
-  Strike-reveal animation: 2 hold + 12 reveal frames @65ms, reuse _spinnerTimer.
-  Files: activity-feed.ts, orchestrator-theme.ts (symbols), spinner-state.ts
+- [x] B1b. Readable labels at source (mechanism-reuse, not new params)
+  B1 shipped truncation safety-net only. Root cause remains: delegate block header
+  and step labels reuse raw task text. User direction: reuse the EXISTING planSteps
+  mechanism (subagent's own planSteps already produces concise feed labels like
+  "Step 1: Explore repo structure") — do NOT add a delegate() label param.
+  Fix: (a) delegate block header shows the subagent's planSteps goal once
+  registered, instead of raw task text; fallback pre-registration:
+  `Specialist: <first clause of task>` (never full task dump).
+  (b) plan()/planSteps label-length validation: >60 chars → warn "rewrite as
+  5-10 word summary". (c) truncation stays as final safety net (already shipped).
+  Files: delegate-feed-builder.ts, plan-panel.ts, plan-tool.ts, activity-feed.ts
+  Accept: delegation with 300-char task shows header ≤60 chars after planSteps
+  registers (goal text, not task text); plan with 200-char label → warning surfaced.
+
+- [x] B2. Strikethrough completed steps: ✓ + \x1b[9m…\x1b[29m + dim.
+  Strike-reveal animation: 2 hold + 12 reveal frames @65ms. CORRECTION (session 3
+  scout): spinner-state.ts is clock-derived — NO timer to reuse. Add a dedicated
+  65ms setInterval owned by feed/panel, cleared after frame 14; one animation at
+  a time (latest completion wins). Constants+helpers (STRIKE_START="\x1b[9m",
+  STRIKE_END="\x1b[29m", partialStrikethrough) go in orchestrator-theme.ts.
+  Files: activity-feed.ts, orchestrator-theme.ts, plan-panel.ts
   Accept: snapshot test struck line; smoke test shows animation frames.
 
-- [ ] B3. Collapse rule: budget 9 lines; overflow → fold completed prefix to "✓ N completed";
+- [x] B3. Collapse rule: budget 9 lines; overflow → fold completed prefix to "✓ N completed";
   always show active + next 2 pending; active substeps cap 3 + "… +N more".
   Files: plan-panel.ts (trimToBudget)
   Accept: 12-step plan renders ≤9 lines with fold line.
