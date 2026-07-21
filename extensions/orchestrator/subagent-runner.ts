@@ -559,6 +559,10 @@ export class SubagentRunner {
 			let lastStopReason: string | undefined;
 			let lastErrorMessage: string | undefined;
 			let accInput = 0, accOutput = 0, accCached = 0;
+			let ctxTokens = 0;
+			let ctxWindow: number | undefined;
+			let lastProgressEmit = 0;
+			const PROGRESS_COALESCE_MS = 150;
 
 			const unsubscribe = session.subscribe((event: any) => {
 				if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
@@ -589,6 +593,24 @@ export class SubagentRunner {
 						const assistantMsg = event.message as any;
 						lastStopReason = assistantMsg.stopReason;
 						lastErrorMessage = assistantMsg.errorMessage;
+						// C1: Accumulate per-turn token usage
+						const usage = (event.message as any).usage;
+						if (usage) {
+							accInput += usage.inputTokens || 0;
+							accOutput += usage.outputTokens || 0;
+							accCached += usage.cachedTokens || 0;
+							ctxTokens = usage.totalTokens || 0;
+							if (!ctxWindow && model?.contextWindow) ctxWindow = model.contextWindow;
+							const now = Date.now();
+							if (now - lastProgressEmit >= PROGRESS_COALESCE_MS) {
+								lastProgressEmit = now;
+								const text = feed.render(specialist.name);
+								config.onUpdate?.({
+									content: [{ type: "text", text }],
+									details: { specialist: specialist.name, status: "running", turns, model: modelLabel, provider, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, elapsedMs: now - startTime },
+								});
+							}
+						}
 						const text = feed.render(specialist.name);
 						config.onUpdate?.({
 							content: [{ type: "text", text }],
@@ -727,14 +749,15 @@ export class SubagentRunner {
 				// Track token usage from agent_end/done events (TokenUsage has inputTokens/outputTokens/cachedTokens)
 				if ((event.type === "agent_end" || event.type === "done") && event.usage) {
 					const u = event.usage;
-					accInput = u.inputTokens || 0;
-					accOutput = u.outputTokens || 0;
-					accCached = u.cachedTokens || 0;
+					accInput += u.inputTokens || 0;
+					accOutput += u.outputTokens || 0;
+					accCached += u.cachedTokens || 0;
+					ctxTokens = u.totalTokens || 0;
 					const total = accInput + accOutput + accCached;
 					updatePlanStepDetail(`tokens: ↑${accInput} ↓${accOutput} ◎${accCached}`, orchestratorCtx);
 					config.onUpdate?.({
 						content: [{ type: "text", text: feed.render(specialist.name) }],
-						details: { specialist: specialist.name, status: "running", tokens: total, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
+						details: { specialist: specialist.name, status: "running", tokens: total, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
 					});
 				}
 

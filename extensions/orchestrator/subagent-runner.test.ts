@@ -21,6 +21,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SubagentState, subagentSessions } from "./subagent-sessions.ts";
 
+vi.mock("./orchestrator-theme.ts", () => ({
+	getTheme: vi.fn(() => ({
+		fg: (_style: string, text: any) => (typeof text === "string" ? text : ""),
+		bg: (_style: string, text: any) => (typeof text === "string" ? text : ""),
+	})),
+	statusIcon: vi.fn((_status: string) => "*"),
+	styledSymbol: vi.fn((_key: string) => "*"),
+	formatDuration: vi.fn((ms: number) => `${ms}ms`),
+	partialStrikethrough: vi.fn((text: string) => text),
+	initTheme: vi.fn(),
+}));
+
 vi.mock("@earendil-works/pi-coding-agent", async () => {
   const actual = await vi.importActual("@earendil-works/pi-coding-agent");
   return {
@@ -346,6 +358,123 @@ describe("createFlightRecorderDump", () => {
 		const dump = createFlightRecorderDump(params);
 		expect(dump).toHaveProperty("scope");
 		expect(dump.scope).toBeUndefined();
+	});
+});
+
+// ─── C1: Live Token Accumulator ──────────────────────────────
+
+describe("C1: live token accumulator", () => {
+	type SubscribeCb = (event: any) => void;
+	interface TokenTestHarness {
+		runner: SubagentRunner;
+		ref: { subscribeCb: SubscribeCb | null };
+		updates: any[];
+	}
+
+	function createRunnerWithTokens(onUpdate?: (u: any) => void): TokenTestHarness {
+		const ref = { subscribeCb: null as SubscribeCb | null };
+		const mockSession = {
+			sessionId: "test-tokens",
+			messages: [] as any[],
+			subscribe: vi.fn((cb: any) => {
+				ref.subscribeCb = cb;
+				return () => {};
+			}),
+			abort: vi.fn(),
+			prompt: vi.fn(async () => {}),
+			dispose: vi.fn(),
+		};
+
+		const mockModel = { contextWindow: 200_000 };
+		const mockModelRegistry = {
+			find: vi.fn(() => mockModel),
+			getAvailable: vi.fn(() => [mockModel]),
+			getAll: vi.fn(() => [mockModel]),
+		} as any;
+
+		const updates: any[] = [];
+		const runner = new SubagentRunner({
+			cwd: "/tmp",
+			modelRegistry: mockModelRegistry,
+			agentDir: "/Users/shivam94/.pi/agent",
+			agentSessionFactory: async () => ({ session: mockSession }),
+			onUpdate: onUpdate ?? ((u: any) => updates.push(u)),
+		} as any);
+
+		return { runner, ref, updates };
+	}
+
+	it("accumulates token usage from 3 assistant message_end events", async () => {
+		const { runner, ref, updates } = createRunnerWithTokens();
+		const specialist = { name: "test", tools: ["read"], systemPrompt: "p" } as any;
+
+		// Run prompt — loader.reload() does real FS I/O, so wait for subscribe to be captured
+		runner.run("task", specialist).catch(() => {});
+		await vi.waitFor(() => {
+			expect(ref.subscribeCb).not.toBeNull();
+		}, { timeout: 5000 });
+
+		// Advance fake time to bypass PROGRESS_COALESCE_MS (150ms) between events
+		let fakeTime = Date.now();
+		const realNow = Date.now.bind(Date);
+		Date.now = () => fakeTime;
+
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 100, outputTokens: 200, cachedTokens: 50, totalTokens: 350 } } });
+		fakeTime += 200;
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 300, outputTokens: 400, cachedTokens: 100, totalTokens: 800 } } });
+		fakeTime += 200;
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 50, outputTokens: 75, cachedTokens: 25, totalTokens: 150 } } });
+		Date.now = realNow;
+
+		// toolResult message_end should be ignored
+		ref.subscribeCb!({ type: "message_end", message: { role: "tool", usage: { inputTokens: 999, outputTokens: 999, cachedTokens: 999, totalTokens: 2997 } } });
+
+		// Last token-bearing update (unconditional emission follows each coalesced one)
+		const d = updates.findLast((u: any) => u.details?.tokenInput !== undefined)?.details;
+
+		expect(d.tokenInput).toBe(450);   // 100+300+50
+		expect(d.tokenOutput).toBe(675);   // 200+400+75
+		expect(d.tokenCached).toBe(175);   // 50+100+25
+	});
+
+	it("captures ctxTokens from totalTokens", async () => {
+		const { runner, ref, updates } = createRunnerWithTokens();
+		const specialist = { name: "test", tools: ["read"], systemPrompt: "p" } as any;
+
+		runner.run("task", specialist).catch(() => {});
+		await vi.waitFor(() => {
+			expect(ref.subscribeCb).not.toBeNull();
+		}, { timeout: 5000 });
+
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 1000, outputTokens: 2000, cachedTokens: 500, totalTokens: 15000 } } });
+
+		const d = updates.findLast((u: any) => u.details?.ctxTokens !== undefined)?.details;
+		expect(d.ctxTokens).toBe(15000);
+	});
+
+	it("agent_end handler accumulates (not overwrites)", async () => {
+		const { runner, ref, updates } = createRunnerWithTokens();
+		const specialist = { name: "test", tools: ["read"], systemPrompt: "p" } as any;
+
+		runner.run("task", specialist).catch(() => {});
+		await vi.waitFor(() => {
+			expect(ref.subscribeCb).not.toBeNull();
+		}, { timeout: 5000 });
+
+		// 2 assistant message_end events
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 100, outputTokens: 200, cachedTokens: 50, totalTokens: 350 } } });
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 150, outputTokens: 250, cachedTokens: 75, totalTokens: 475 } } });
+
+		// 1 agent_end with usage — should ADD to existing accumulators
+		ref.subscribeCb!({ type: "agent_end", usage: { inputTokens: 50, outputTokens: 100, cachedTokens: 25, totalTokens: 175 } });
+
+		const lastUpdate = updates[updates.length - 1];
+		const d = lastUpdate.details;
+
+		expect(d.tokenInput).toBe(300);   // 100+150+50
+		expect(d.tokenOutput).toBe(550);   // 200+250+100
+		expect(d.tokenCached).toBe(150);   // 50+75+25
+		expect(d.ctxTokens).toBe(175);     // last totalTokens
 	});
 });
 
