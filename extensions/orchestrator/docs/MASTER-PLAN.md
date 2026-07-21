@@ -14,6 +14,8 @@
 - Therefore: narrow tasks (≤3 items), exact entry paths, verbatim-quote demands for type extraction,
   mechanical acceptance criteria, findings must leave the subagent's context (file or final message).
 - Sequential delegation mode (parallel only for provably disjoint file sets).
+- Reviewer rg floods home-dir permission errors when no path is specified — always
+  scope grep/find to the extension dir explicitly.
 
 ## 1. Audit findings (done, verified against source)
 
@@ -227,6 +229,21 @@ cheap-signal-first, orchestrator owns state, fresh-context iterations, one-block
   commit + push from ~/pi-files. Also fix pre-existing tsc errors
   (subagent-runner.ts advanceStepTool signature; ../nyro-sync/) that fail
   project-wide lint and mask real regressions.
+
+- [ ] E6. tui-smoke.sh modernization
+  3 pre-existing failures (confirmed by reviewer 2026-07-21):
+  (1) render-log detection broken — greps for PI_TUI_DEBUG render-*.log + write-log.txt
+      that may not exist; fix: detect plan-panel content directly from tmux capture-pane.
+  (2) plan-panel grep mismatch — greps 'Orchestration Plan|Plan Panel|Plan:|┌.*Plan' but
+      widget renders '⠋ Plan: <goal>' (plan-tool.ts:151) and '✓ N completed' (B3 fold);
+      update patterns to actual widget output.
+  (3) expects panel persistence after completion — clearPlanIfComplete removes it by
+      design; either assert panel cleared (correct behavior) or check timeline-dump.json
+      as alternate evidence.
+  Also add: strike-token assertions for WS-C/D (grep for ↑/ctx in captured output).
+  Files: ~/.pi/tui-smoke.sh
+  Accept: tui-smoke.sh runs 9/9 or documents remaining pre-existing gaps; each
+  assertion checks actual widget output, not assumed text patterns.
 
 ## 3. Session breakdown (suggested)
 
