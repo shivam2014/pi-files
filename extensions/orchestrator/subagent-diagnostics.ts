@@ -16,6 +16,7 @@ export interface CaptureDiagnosticInput {
   stopReason?: string;
   errorMessage?: string;
   httpStatus?: number;
+  findingsText?: string;
 }
 
 /**
@@ -71,7 +72,8 @@ export function captureDiagnostic(input: CaptureDiagnosticInput): SubagentDiagno
     stopReason: input.stopReason,
     errorMessage: input.errorMessage,
     httpStatus: input.httpStatus,
-  };
+    findingsText: input.findingsText || undefined,
+  } as SubagentDiagnostic;
 }
 
 export function isLikelyQATask(task: string): boolean {

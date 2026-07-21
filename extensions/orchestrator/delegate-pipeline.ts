@@ -335,7 +335,23 @@ export class DelegatePipeline {
 		if (!isError && result?.stopReason === "error") {
 			isError = true;
 		}
-		const hasError = isAborted || isError;
+		let hasError = isAborted || isError;
+
+		// ── No-work detection for coder/writer ──
+		const isCodeSpecialist = specialist.name === 'coder' || specialist.name === 'writer';
+		const hasMutatingCalls = metrics.editCalls > 0 || metrics.writeCalls > 0 || metrics.bashCalls > 0;
+		const hasDeliverable = rawSubagentOutput && (
+			rawSubagentOutput.includes('## Completed') ||
+			rawSubagentOutput.includes('## Findings') ||
+			rawSubagentOutput.includes('## Files Changed')
+		);
+		const isNoWork = isCodeSpecialist && !hasMutatingCalls && !hasDeliverable && !hasError;
+
+		if (isNoWork) {
+			hasError = true;
+			isError = true;
+			result.output = `⚠ no-work completion — ${specialist.name} returned ok with zero edits/writes/bash calls and no deliverable. Plan step NOT advanced.`;
+		}
 
 		// ── Handle diagnostics (capture + persist, no UI) ──
 		const diagnostic = this.handleDiagnostics(result, specialist.name, params.task, ctx, metrics, startTime);
@@ -368,6 +384,31 @@ export class DelegatePipeline {
 				}, undefined, ctx);
 			} catch (e) {
 				debugLog('[diagnostic] display failed', e);
+			}
+		}
+
+		// ── Findings salvage: if output is empty/short, check disk ──
+		let salvagedFindings = '';
+		if (!rawSubagentOutput || rawSubagentOutput.trim().length < 50) {
+			try {
+				const fs = await import('node:fs');
+				const path = await import('node:path');
+				const osMod = await import('node:os');
+				const findingsPath = path.join(osMod.tmpdir(), 'orchestrator-debug', `findings-${ctx.sessionId}.md`);
+				if (fs.existsSync(findingsPath)) {
+					salvagedFindings = fs.readFileSync(findingsPath, 'utf-8');
+				}
+			} catch {}
+		}
+
+		// Apply salvaged findings to result.output before formatting
+		if (salvagedFindings) {
+			if (!result?.output || result.output.trim().length < 50) {
+				// Output empty/short — replace entirely with salvaged findings
+				result.output = `⚠ PARTIAL — salvaged from disk\n\n${salvagedFindings}`;
+			} else if (salvagedFindings.length > (result.output.length - (result.output.length - rawSubagentOutput?.length || 0))) {
+				// Output exists but salvaged is longer — append
+				result.output += `\n\n---\n⚠ SALVAGED FINDINGS (additional context from disk)\n\n${salvagedFindings}`;
 			}
 		}
 
@@ -649,7 +690,9 @@ export class DelegatePipeline {
 		if (isAborted || isError) {
 			return DelegatePipeline.formatErrorAbort(output, toolCallTrail, turns, isAborted, errorMessage, stopReason);
 		}
-		return DelegatePipeline.formatSuccess(output, metrics, elapsedMs, toolCallTrail, turns);
+		// Output hygiene: strip raw JSON tool-result blocks when report exists
+		const cleaned = DelegatePipeline.sanitizeOutputForOrchestrator(output);
+		return DelegatePipeline.formatSuccess(cleaned, metrics, elapsedMs, toolCallTrail, turns);
 	}
 
 	/**
@@ -769,6 +812,55 @@ export class DelegatePipeline {
 		};
 	}
 
+	/**
+	 * Output hygiene: when a structured report exists in the output, strip raw
+	 * JSON tool-result blocks and `[tool result]` markers that burn context tokens.
+	 * When no report exists, leave output as-is (already diagnostic/salvaged).
+	 */
+	static sanitizeOutputForOrchestrator(output: string): string {
+		const hasReport = /##\s+(Findings|Completed|Audit|Verification|Scope|Notes|Recommendations|Pending Questions|Files Changed)\b/.test(output);
+		if (!hasReport) return output;
+
+		const lines = output.split('\n');
+		const keepSections = new Set([
+			'findings', 'completed', 'audit', 'verification',
+			'scope', 'notes', 'recommendations', 'pending questions',
+			'files changed',
+		]);
+		const kept: string[] = [];
+		let inReportSection = false;
+
+		for (const line of lines) {
+			if (/^\[Metrics:/.test(line) || /^\[Execution:/.test(line) || /^\[Scope:/.test(line)) {
+				kept.push(line); continue;
+			}
+			if (/^[✓✗⚠−]/.test(line)) {
+				kept.push(line); continue;
+			}
+			const sectionMatch = line.match(/^##\s+(.+)/);
+			if (sectionMatch) {
+				const sectionName = sectionMatch[1].toLowerCase().trim();
+				inReportSection = keepSections.has(sectionName);
+				if (inReportSection) { kept.push(line); continue; }
+			}
+			if (inReportSection) { kept.push(line); continue; }
+			// Strip noise outside report sections
+			if (/^\s*\{\s*"/.test(line) || /^\s*\[\s*\{\s*"/.test(line)) continue;
+			if (/^\s*\[tool result/.test(line) || /^\s*\[already read/.test(line)) continue;
+			if (/^\s*\[Tool Calls/.test(line)) continue;
+			if (/^\s*\[Findings:/.test(line)) continue;
+			if (/^\s*\[Error:/.test(line)) continue;
+			if (/^\s*\[(aborted|error)\]/.test(line)) continue;
+			if (/^⚠️?\s*\[Diagnostic\]/.test(line)) continue;
+			if (line.trim() === '' && kept.length > 0 && kept[kept.length - 1].trim() === '') continue;
+			kept.push(line);
+		}
+		let result = kept.join('\n').trim();
+		if (output.trim().length < 50) {
+			result = `⚠ PARTIAL — salvaged\n\n${result}`;
+		}
+		return result;
+	}
 
 }
 
@@ -842,4 +934,8 @@ export function formatResult(params: FormatResultParams): {
 	const formatted = `${statusLine}\n${metricsLine}${trailStr}${execStr}${findingsStr}\n\n${outputSection}`;
 
 	return { formatted, findings, audit };
+}
+
+export function sanitizeOutputForOrchestrator(output: string) {
+	return DelegatePipeline.sanitizeOutputForOrchestrator(output);
 }

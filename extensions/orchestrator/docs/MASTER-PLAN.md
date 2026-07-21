@@ -79,7 +79,7 @@ Reliable hands before more work.
   Files: subagent-runner.ts (agent_end handler), plan-panel.ts (steps incomplete check)
   Accept: simulated early-stop session gets exactly one nudge; second stop passes through.
 
-- [ ] A4. Findings durability
+- [x] A4. Findings durability
   Subagent final report must survive abort. Mechanism per specialist:
   coder/writer (have write): findings file /tmp/orchestrator-debug/findings-<id>.md written
   incrementally (instruct in prompt). scout/researcher/reviewer (no write): enforce
@@ -88,13 +88,13 @@ Reliable hands before more work.
   Files: specialists.ts (prompts), delegate-pipeline.ts (salvage), subagent-diagnostics.ts
   Accept: killed-mid-run delegation still yields ≥80% findings in delegate result.
 
-- [ ] A5. Output hygiene
+- [x] A5. Output hygiene
   When final report exists, delegate result = report + metrics only (no raw tool-result echo).
   When missing, mark "⚠ PARTIAL — salvaged". Cuts orchestrator context burn ~70%.
   Files: delegate-pipeline.ts, delegate-output-formatter.test.ts
   Accept: snapshot test — result contains no raw JSON tool-result blocks.
 
-- [ ] A6. Completed-with-no-work detection + plan-step integrity
+- [x] A6. Completed-with-no-work detection + plan-step integrity
   Observed (session 2): weak-model delegations returned status=ok with edit=0 (one
   scattered 23 reads/0 edits; one emitted orchestrator-only plan() call) and the
   pipeline incorrectly marked plan steps done. Also: delegate() auto-advance +
@@ -193,7 +193,7 @@ cheap-signal-first, orchestrator owns state, fresh-context iterations, one-block
   Accept: smoke test loop run shows live metric trajectory.
 
 ### WS-E — Execution infrastructure [no blockers, do alongside A]
-- [ ] E1. Session-start protocol for cheap orchestrator: system prompt addition —
+- [x] E1. Session-start protocol for cheap orchestrator: system prompt addition —
   "On session start, read docs/MASTER-PLAN.md, find first unblocked unchecked ticket,
   declare plan, delegate." Files: prompt-builder.ts
 - [ ] E2. Per-ticket tests: every coder delegation includes its acceptance test.

@@ -281,7 +281,18 @@ ${FINDINGS_AUDIT_TEMPLATE}
 
 You do NOT have: bash, edit, write, web_search, fetch_content, lint.
 
-${TERSE_INSTRUCTION}`,
+${TERSE_INSTRUCTION}
+
+## ══ Final Message Format ══
+
+Your final message IS your deliverable. The orchestrator depends on it.
+Structure it EXACTLY like this:
+## Findings
+<concrete findings with file references>
+## Recommendations  
+<specific next steps>
+Do NOT truncate. Do NOT leave sections empty. If you ran out of time, output whatever you found so far.
+`,
 	},
 	coder: {
 		name: "coder",
@@ -325,7 +336,17 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}You do NOT have: git-read, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}`,
+${TERSE_INSTRUCTION}You do NOT have: git-read, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}
+
+## ══ Findings Durability ══
+
+CRITICAL: Write your findings to \`/tmp/orchestrator-debug/findings-{sessionId}.md\` INCREMENTALLY as you work.
+- After each significant step, append a section to this file.
+- Include: summary, files changed, test results, issues found.
+- Use \`write\` tool to create the file on first write, then \`bash\` with \`>>\` to append (or use write with accumulated content).
+- The {sessionId} is provided in your task description or scope.
+- This file survives if you are killed/aborted mid-run. The orchestrator will read it as a fallback.
+- Final format should match the ## Findings / ## Audit template above.`,
 	},
 	reviewer: {
 		name: "reviewer",
@@ -368,7 +389,18 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}You do NOT have: edit, write, find, ls, git-read, gh, web_search, fetch_content, lint.`,
+${TERSE_INSTRUCTION}You do NOT have: edit, write, find, ls, git-read, gh, web_search, fetch_content, lint.
+
+## ══ Final Message Format ══
+
+Your final message IS your deliverable. The orchestrator depends on it.
+Structure it EXACTLY like this:
+## Findings
+<concrete findings with file references>
+## Recommendations  
+<specific next steps>
+Do NOT truncate. Do NOT leave sections empty. If you ran out of time, output whatever you found so far.
+`,
 	},
 	researcher: {
 		name: "researcher",
@@ -420,7 +452,18 @@ Be realistic about changeType:
 ${FINDINGS_AUDIT_TEMPLATE}
 You do NOT have: bash, edit, write, lint.
 
-${TERSE_INSTRUCTION}`,
+${TERSE_INSTRUCTION}
+
+## ══ Final Message Format ══
+
+Your final message IS your deliverable. The orchestrator depends on it.
+Structure it EXACTLY like this:
+## Findings
+<concrete findings with file references>
+## Recommendations  
+<specific next steps>
+Do NOT truncate. Do NOT leave sections empty. If you ran out of time, output whatever you found so far.
+`,
 	},
 	writer: {
 		name: "writer",
@@ -453,7 +496,17 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}You do NOT have: bash, grep, lint, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}`,
+${TERSE_INSTRUCTION}You do NOT have: bash, grep, lint, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}
+
+## ══ Findings Durability ══
+
+CRITICAL: Write your findings to \`/tmp/orchestrator-debug/findings-{sessionId}.md\` INCREMENTALLY as you work.
+- After each significant step, append a section to this file.
+- Include: summary, files changed, issues found.
+- Use \`write\` tool to create the file on first write, then accumulate and rewrite as you progress.
+- The {sessionId} is provided in your task description or scope.
+- This file survives if you are killed/aborted mid-run. The orchestrator will read it as a fallback.
+- Final format should match the ## Findings / ## Audit template above.`,
 	},
 };
 

@@ -73,6 +73,17 @@ ${rows}
 const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error — defined as: destructive operations (rm, schema migrations, auth changes), touching >5 files, or architectural decisions that are hard to reverse\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n\nNote: If some panel models fail, fusion returns partial results with a "### Failed" section. Check for this and adjust trust accordingly.\n`;
 
 const DELEGATION_INSTRUCTIONS_TEMPLATE = `
+## Session-Start Protocol
+
+When this session starts, BEFORE responding to the user:
+1. Read docs/MASTER-PLAN.md (use the read tool)
+2. Find the first unchecked ticket (\`- [ ]\`) that has no blocked dependencies
+3. Declare a plan using plan() with that ticket's goal and steps
+4. Begin delegating the first step
+
+If no unchecked tickets remain, inform the user all tickets are complete.
+If the user provides a specific task, follow their instruction instead of the master plan.
+
 ## Capabilities
 | Tool | Purpose |
 |------|---------|
