@@ -359,6 +359,75 @@ describe("createFlightRecorderDump", () => {
 		expect(dump).toHaveProperty("scope");
 		expect(dump.scope).toBeUndefined();
 	});
+
+	it("includes tool trail with durations", () => {
+		const params = {
+			specialist: "test-spec",
+			task: "do something",
+			sessionId: "session-1",
+			model: "claude-3",
+			turns: 5,
+			elapsedMs: 1000,
+			stopReason: "done" as const,
+			errorMessage: undefined as string | undefined,
+			finalStatus: "completed" as const,
+			messages: [],
+			toolCallTrail: [
+				{ tool: "read", inputSummary: "file.ts", outputPreview: "...", isError: false, durationMs: 150 },
+				{ tool: "bash", inputSummary: "ls", outputPreview: "ok", isError: true, durationMs: 50 },
+			],
+		};
+
+		const dump = createFlightRecorderDump(params);
+		expect(dump.toolCallTrail).toHaveLength(2);
+		expect(dump.toolCallTrail[0].durationMs).toBe(150);
+		expect(dump.toolCallTrail[1].isError).toBe(true);
+	});
+
+	it("includes blocked calls and token summary", () => {
+		const params = {
+			specialist: "test-spec",
+			task: "do something",
+			sessionId: "session-1",
+			model: "claude-3",
+			turns: 5,
+			elapsedMs: 1000,
+			stopReason: "done" as const,
+			errorMessage: undefined as string | undefined,
+			finalStatus: "completed" as const,
+			messages: [],
+			blockedCalls: [{ tool: "bash", target: "rm -rf /", reason: "dangerous", timestamp: 123 }],
+			tokenSummary: { totalInput: 500, totalOutput: 200, totalCached: 100, ctxTokensFinal: 800 },
+		};
+
+		const dump = createFlightRecorderDump(params);
+		expect(dump.blockedCalls[0].tool).toBe("bash");
+		expect(dump.tokenSummary.totalInput).toBe(500);
+	});
+
+	it("includes plan steps and metrics", () => {
+		const params = {
+			specialist: "test-spec",
+			task: "do something",
+			sessionId: "session-1",
+			model: "claude-3",
+			turns: 5,
+			elapsedMs: 1000,
+			stopReason: "done" as const,
+			errorMessage: undefined as string | undefined,
+			finalStatus: "completed" as const,
+			messages: [],
+			planSteps: [
+				{ label: "step 1", durationMs: 100, completed: true },
+				{ label: "step 2", durationMs: 200, completed: false },
+			],
+			metrics: { readCalls: 3, editCalls: 1 },
+		};
+
+		const dump = createFlightRecorderDump(params);
+		expect(dump.planSteps).toHaveLength(2);
+		expect(dump.metrics.readCalls).toBe(3);
+	});
 });
 
 // ─── C1: Live Token Accumulator ──────────────────────────────

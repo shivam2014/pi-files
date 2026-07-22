@@ -33,7 +33,7 @@
 
 ## WS-O — Flight recorder (delegation observability) [blocked by R1; BEFORE WS-U]
 Problem: activity feed shows rich behavior live (blocked commands, tool errors, retries, timings) but nothing persists it. Diagnostics only fire on zero-tool-call failures. Prompt/rule improvement is blind without records.
-- [ ] O1. Per-delegation structured record: on EVERY delegation completion persist JSON with full tool trail (tool + input summary + outcome + duration), blocked/redirected calls with reasons (from scopeNotes/blockedCalls), retries, token totals, plan-step durations, final status. Files: delegate-pipeline.ts, subagent-diagnostics.ts. Accept: completed delegation leaves record with ≥90% of feed-visible events.
+- [x] O1. Per-delegation structured record: on EVERY delegation completion persist JSON with full tool trail (tool + input summary + outcome + duration), blocked/redirected calls with reasons (from scopeNotes/blockedCalls), retries, token totals, plan-step durations, final status. Files: delegate-pipeline.ts, subagent-diagnostics.ts. Accept: completed delegation leaves record with ≥90% of feed-visible events.
 - [ ] O2. Widen diagnostic triggers: also record delegations with tool errors or blocked calls, not only 0-tool-call silence. Accept: delegation with blocked command produces record.
 - [ ] O3. Replay surface: reuse timeline machinery (recordTimelineFrame/timeline-dump) or /timeline command to render a past delegation record. Accept: user can inspect a finished delegation's event sequence.
 

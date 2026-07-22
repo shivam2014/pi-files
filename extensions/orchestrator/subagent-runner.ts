@@ -150,6 +150,11 @@ export function createFlightRecorderDump(params: FlightRecorderDumpParams): Reco
 		finalStatus: params.finalStatus,
 		messages: params.messages,
 		scope: params.scope,
+		toolCallTrail: params.toolCallTrail ?? [],
+		blockedCalls: params.blockedCalls ?? [],
+		planSteps: params.planSteps ?? [],
+		metrics: params.metrics ?? {},
+		tokenSummary: params.tokenSummary ?? { totalInput: 0, totalOutput: 0, totalCached: 0, ctxTokensFinal: 0 },
 	};
 }
 
@@ -243,6 +248,7 @@ export interface SubagentRunnerConfig {
 	agentDir: string;
 	signal?: AbortSignal;
 	onUpdate?: (update: any) => void;
+	metrics?: Record<string, number>;
 	agentSessionFactory?: (options: {
 		cwd: string;
 		model: any;
@@ -280,6 +286,11 @@ export interface FlightRecorderDumpParams {
 	finalStatus: string;
 	messages: any[];
 	scope?: Scope;
+	toolCallTrail?: Array<{ tool: string; inputSummary: string; outputPreview: string; isError: boolean; durationMs: number }>;
+	blockedCalls?: Array<{ tool: string; target: string; reason: string; timestamp: number }>;
+	planSteps?: Array<{ label: string; durationMs: number; completed: boolean }>;
+	metrics?: Record<string, number>;
+	tokenSummary?: { totalInput: number; totalOutput: number; totalCached: number; ctxTokensFinal: number };
 }
 
 /**
@@ -866,6 +877,18 @@ export class SubagentRunner {
 					try { mkdirSync(debugDir, { recursive: true }); } catch {}
 					const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 					const filename = `delegation-${timestamp}-${specialist.name}.json`;
+					const toolCallTrailDump: Array<{ tool: string; inputSummary: string; outputPreview: string; isError: boolean; durationMs: number }> = [];
+					for (const step of feed.steps) {
+						for (const sub of step.substeps) {
+							toolCallTrailDump.push({
+								tool: sub.label,
+								inputSummary: sub.label.slice(0, 100),
+								outputPreview: (sub.outputPreview ?? "").slice(0, 100),
+								isError: sub.errored ?? false,
+								durationMs: (sub.endTime ?? 0) - (sub.startTime ?? 0),
+							});
+						}
+					}
 					const dump = createFlightRecorderDump({
 						specialist: specialist.name,
 						task,
@@ -878,6 +901,15 @@ export class SubagentRunner {
 						finalStatus,
 						messages: session.messages,
 						scope,
+						toolCallTrail: toolCallTrailDump,
+						blockedCalls: subagentSessions.get(sessionId!)?.blockedCalls ?? [],
+						planSteps: feed.steps.map(s => ({
+							label: s.label,
+							durationMs: (s.endTime ?? Date.now()) - (s.startTime ?? Date.now()),
+							completed: s.completed,
+						})),
+						metrics: config.metrics ?? {},
+						tokenSummary: { totalInput: accInput, totalOutput: accOutput, totalCached: accCached, ctxTokensFinal: ctxTokens },
 					});
 					writeFileSync(join(debugDir, filename), JSON.stringify(dump, null, 2));
 				} catch (e) {
