@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-22T12:37:49.548Z",
+  "specialist": "reviewer",
+  "task": "STANDARDS REVIEW of peek-overlay.ts changes.\n\nThe file /Users/shivam94/.pi/agent/extensions/orchestrator/peek-overlay.ts had replay mode code removed. The file is untracked in git (no diff available). Review the CURRENT state of the file.\n\nChanges made (5 edits):\n1. Removed `let _replayMode: boolean = false;` state variable\n2. Removed `setReplayMode()` export function + JSDoc\n3. Removed `_replayMode = false;` from `clearViewerState()`\n4. Replaced ternary `const bottomText = _replayMode ? \"─ Esc: close \" : \"─ Esc: close  xx′: abort \";` with constant `const bottomText = \"─ Esc: close  xx′: abort \";`\n5. Removed `if (_replayMode) return;` guard + comment in `handleInput()`\n\nStandards sources in this repo:\n- tsconfig.json (extends parent tsconfig, includes all .ts)\n- AGENTS.md in orchestrator extension dir\n- No eslint, prettier, CONTRIBUTING.md, or CODING_STANDARDS.md\n\nSmell baseline (always apply, judgement calls only, repo overrides):\n- Mysterious Name — function/variable/type name doesn't reveal what it does\n- Duplicated Code — same logic shape in more than one hunk\n- Feature Envy — method reaches into another object's data more than its own\n- Data Clumps — same fields/params travel together\n- Primitive Obsession — primitive standing in for domain concept\n- Repeated Switches — same switch/if-cascade on same type recurs\n- Shotgun Surgery — one logical change forces scattered edits\n- Divergent Change — one file edited for several unrelated reasons\n- Speculative Generality — abstraction/params/hooks for needs spec doesn't have\n- Message Chains — long a.b().c().d() navigation\n- Middle Man — class/function mostly just delegates onward\n- Refused Bequest — subclass ignores/overrides most of what it inherits\n\nRead the full current peek-overlay.ts file. Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell you spot: name it and quote the hunk. Distinguish hard violations from judgement calls. Skip anything tooling enforces. Under 400 words.",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 4635,
+  "crashed": false,
+  "outputPreview": "(no output)",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-22T12:37:49.548Z-reviewer-56020ce8",
+  "agentDir": "/Users/shivam94/.pi/agent",
+  "model": "mimo-v2.5-vision",
+  "stopReason": "aborted",
+  "errorMessage": "Request was aborted"
+}

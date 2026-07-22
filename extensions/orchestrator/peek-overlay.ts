@@ -65,6 +65,7 @@ let _viewerTask: string = "";
 let _viewerOutput: string = "";
 let _viewerStatus: "idle" | "running" | "completed" | "error" = "idle";
 
+
 // ============================================================================
 // PeekComponent — renders live subagent content inside the overlay
 // ============================================================================
@@ -358,6 +359,8 @@ export function setViewerError(error: string): void {
     _viewerStatus = "error";
     scheduleRender();
 }
+
+
 
 /**
  * Clear the viewer state.

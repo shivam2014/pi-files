@@ -52,6 +52,6 @@ export default defineConfig({
     alias: resolveAlias,
   },
   test: {
-    setupFiles: ["./test-setup.ts"],
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

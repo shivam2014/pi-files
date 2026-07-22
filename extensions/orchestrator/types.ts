@@ -303,7 +303,7 @@ export interface SubagentDiagnostic {
 		lsCalls: number;
 		scopeNotes?: ScopeNotes;
 	};
-	kind: 'silent_failure' | 'crash';
+	kind: 'silent_failure' | 'crash' | 'tool_errors' | 'blocked_calls';
 	diagnosticId: string;
 	agentDir?: string;
 	model?: string;

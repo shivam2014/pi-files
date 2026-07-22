@@ -2,13 +2,13 @@
 
 exports[`renderActivityFeed — snapshots > completed step with substeps 1`] = `
 "● 1/1
-  [38;2;181;189;104m✓[39m Step 1: Step 1 ([38;2;102;102;102m0s[39m)"
+  ✓ Step 1: Step 1 (0s)"
 `;
 
-exports[`renderActivityFeed — snapshots > empty state 1`] = `"  [38;2;138;190;183m⠋[39m Working..."`;
+exports[`renderActivityFeed — snapshots > empty state 1`] = `"  ⠋ Working..."`;
 
 exports[`renderActivityFeed — snapshots > running state (one step, one substep active) 1`] = `
 "○ 0/1
-  [38;2;138;190;183m⠋[39m Step 1: Step 1
-    [38;2;138;190;183m⠋[39m Read file"
+  ⠋ Step 1: Step 1
+    ⠋ Read file"
 `;

@@ -5,7 +5,8 @@ import type { SubagentDiagnostic, DelegationMetrics } from "./types.ts";
 export interface CaptureDiagnosticInput {
   output: string;
   turns: number;
-  toolCallTrail: Array<{ tool: string }>;
+  toolCallTrail: Array<{ tool: string; isError?: boolean }>;
+  blockedCalls?: Array<{ tool: string; target: string; reason: string; timestamp: number }>;
   elapsedMs: number;
   specialist: string;
   task: string;
@@ -40,32 +41,90 @@ export function captureDiagnostic(input: CaptureDiagnosticInput): SubagentDiagno
     toolCalls === 0 &&
     (!input.output || input.output.trim().length === 0);
 
-  if (!isSilentFailure && !isCrash) return null;
+  if (isSilentFailure || isCrash) {
+    // Build diagnostic
+    const outputPreview = redactSecrets(truncatePreview(input.output || "", 200));
 
-  // Build diagnostic
-  const outputPreview = redactSecrets(truncatePreview(input.output || "", 200));
+    return {
+      schemaVersion: 1,
+      sessionId: input.sessionId,
+      timestamp: new Date().toISOString(),
+      specialist: input.specialist,
+      task: input.task,
+      turns: input.turns,
+      toolCalls: toolCalls,
+      elapsedMs: input.elapsedMs,
+      crashed: isCrash,
+      outputPreview,
+      metrics: { ...input.metrics },
+      kind: isCrash ? 'crash' : 'silent_failure',
+      diagnosticId: `${new Date().toISOString()}-${input.specialist}-${simpleHash(input.task)}`,
+      agentDir: input.agentDir,
+      model: input.model,
+      stopReason: input.stopReason,
+      errorMessage: input.errorMessage,
+      httpStatus: input.httpStatus,
+      findingsText: input.findingsText || undefined,
+    } as SubagentDiagnostic;
+  }
 
-  return {
-    schemaVersion: 1,
-    sessionId: input.sessionId,
-    timestamp: new Date().toISOString(),
-    specialist: input.specialist,
-    task: input.task,
-    turns: input.turns,
-    toolCalls: toolCalls,
-    elapsedMs: input.elapsedMs,
-    crashed: isCrash,
-    outputPreview,
-    metrics: { ...input.metrics },
-    kind: isCrash ? 'crash' : 'silent_failure',
-    diagnosticId: `${new Date().toISOString()}-${input.specialist}-${simpleHash(input.task)}`,
-    agentDir: input.agentDir,
-    model: input.model,
-    stopReason: input.stopReason,
-    errorMessage: input.errorMessage,
-    httpStatus: input.httpStatus,
-    findingsText: input.findingsText || undefined,
-  } as SubagentDiagnostic;
+  // Tool errors: any tool call in the trail has isError === true
+  const toolErrorEntries = input.toolCallTrail?.filter(e => e.isError === true) ?? [];
+  if (toolErrorEntries.length > 0) {
+    const outputPreview = redactSecrets(truncatePreview(input.output || "", 200));
+    const erroredTools = toolErrorEntries.map(e => e.tool);
+
+    return {
+      schemaVersion: 1,
+      sessionId: input.sessionId,
+      timestamp: new Date().toISOString(),
+      specialist: input.specialist,
+      task: input.task,
+      turns: input.turns,
+      toolCalls: toolCalls,
+      elapsedMs: input.elapsedMs,
+      crashed: false,
+      outputPreview,
+      metrics: { ...input.metrics },
+      kind: 'tool_errors',
+      diagnosticId: `${new Date().toISOString()}-${input.specialist}-${simpleHash(input.task)}`,
+      agentDir: input.agentDir,
+      model: input.model,
+      stopReason: input.stopReason,
+      errorMessage: input.errorMessage,
+      httpStatus: input.httpStatus,
+      findingsText: input.findingsText || undefined,
+    } as SubagentDiagnostic;
+  }
+
+  // Blocked calls: scope guard blocked one or more tool calls
+  if (input.blockedCalls && input.blockedCalls.length > 0) {
+    const outputPreview = redactSecrets(truncatePreview(input.output || "", 200));
+
+    return {
+      schemaVersion: 1,
+      sessionId: input.sessionId,
+      timestamp: new Date().toISOString(),
+      specialist: input.specialist,
+      task: input.task,
+      turns: input.turns,
+      toolCalls: toolCalls,
+      elapsedMs: input.elapsedMs,
+      crashed: false,
+      outputPreview,
+      metrics: { ...input.metrics },
+      kind: 'blocked_calls',
+      diagnosticId: `${new Date().toISOString()}-${input.specialist}-${simpleHash(input.task)}`,
+      agentDir: input.agentDir,
+      model: input.model,
+      stopReason: input.stopReason,
+      errorMessage: input.errorMessage,
+      httpStatus: input.httpStatus,
+      findingsText: input.findingsText || undefined,
+    } as SubagentDiagnostic;
+  }
+
+  return null;
 }
 
 export function truncatePreview(text: string, maxLen: number): string {

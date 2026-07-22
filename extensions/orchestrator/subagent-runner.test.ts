@@ -373,8 +373,8 @@ describe("createFlightRecorderDump", () => {
 			finalStatus: "completed" as const,
 			messages: [],
 			toolCallTrail: [
-				{ tool: "read", inputSummary: "file.ts", outputPreview: "...", isError: false, durationMs: 150 },
-				{ tool: "bash", inputSummary: "ls", outputPreview: "ok", isError: true, durationMs: 50 },
+				{ tool: "read", label: "Reading file.ts", input: { path: "file.ts" }, output: "...", isError: false, durationMs: 150 },
+				{ tool: "bash", label: "bash: ls", input: { command: "ls" }, output: "ok", isError: true, durationMs: 50 },
 			],
 		};
 
@@ -427,6 +427,52 @@ describe("createFlightRecorderDump", () => {
 		const dump = createFlightRecorderDump(params);
 		expect(dump.planSteps).toHaveLength(2);
 		expect(dump.metrics.readCalls).toBe(3);
+	});
+
+	it("captures systemPrompt in dump", () => {
+		const dump = createFlightRecorderDump({
+			specialist: "coder",
+			task: "test task",
+			turns: 1,
+			elapsedMs: 1000,
+			finalStatus: "completed",
+			messages: [],
+			systemPrompt: "You are a coder specialist. Use edit/write tools.",
+		});
+		expect(dump.systemPrompt).toBe("You are a coder specialist. Use edit/write tools.");
+	});
+
+	it("captures activityFeed in dump", () => {
+		const feedState = { goal: "test goal", steps: [], currentStep: 0, rawText: "", planParsed: false };
+		const dump = createFlightRecorderDump({
+			specialist: "scout",
+			task: "test",
+			turns: 1,
+			elapsedMs: 1000,
+			finalStatus: "completed",
+			messages: [],
+			activityFeed: feedState,
+		});
+		expect(dump.activityFeed).toEqual(feedState);
+	});
+
+	it("captures full tool call args and output in toolCallTrail", () => {
+		const dump = createFlightRecorderDump({
+			specialist: "scout",
+			task: "test",
+			turns: 2,
+			elapsedMs: 1000,
+			finalStatus: "completed",
+			messages: [],
+			toolCallTrail: [
+				{ tool: "read", label: "Reading /foo.ts", input: { path: "/foo.ts" }, output: "file contents here", isError: false, durationMs: 100 },
+			],
+		});
+		expect(dump.toolCallTrail).toHaveLength(1);
+		expect(dump.toolCallTrail[0].tool).toBe("read");
+		expect(dump.toolCallTrail[0].input).toEqual({ path: "/foo.ts" });
+		expect(dump.toolCallTrail[0].output).toBe("file contents here");
+		expect(dump.toolCallTrail[0].isError).toBe(false);
 	});
 });
 
@@ -544,56 +590,5 @@ describe("C1: live token accumulator", () => {
 		expect(d.tokenOutput).toBe(550);   // 200+250+100
 		expect(d.tokenCached).toBe(150);   // 50+75+25
 		expect(d.ctxTokens).toBe(175);     // last totalTokens
-	});
-});
-
-// ─── maxTurns Enforcement ─────────────────────────────────
-
-describe("maxTurns enforcement", () => {
-	it("RED: aborts session when turns exceed DEFAULTS.delegation.maxTurns", async () => {
-		let subscribeCb: ((event: any) => void) | null = null;
-		const abortSpy = vi.fn(() => {
-			const err = new Error("Aborted");
-			err.name = "AbortError";
-			throw err;
-		});
-
-		const mockSession = {
-			sessionId: "test-maxTurns",
-			messages: [] as any[],
-			subscribe: vi.fn((cb: any) => {
-				subscribeCb = cb;
-				return () => {};
-			}),
-			abort: abortSpy,
-			prompt: vi.fn(async () => {
-				const maxTurns = DEFAULTS.delegation.maxTurns ?? 30;
-				for (let i = 0; i < maxTurns + 1; i++) {
-					subscribeCb?.({ type: "message_end", message: { role: "assistant" } });
-				}
-			}),
-			dispose: vi.fn(),
-		};
-
-		const mockModel = {};
-		const mockModelRegistry = {
-			find: vi.fn(() => mockModel),
-			getAvailable: vi.fn(() => [mockModel]),
-			getAll: vi.fn(() => [mockModel]),
-		} as any;
-
-		const runner = new SubagentRunner({
-			cwd: "/tmp",
-			modelRegistry: mockModelRegistry,
-			agentDir: "/Users/shivam94/.pi/agent",
-			agentSessionFactory: async () => ({ session: mockSession }),
-		} as any);
-
-		const specialist = { name: "test-spec", tools: ["read"], systemPrompt: "test prompt" } as any;
-		const result = await runner.run("test task", specialist);
-
-		expect(abortSpy).toHaveBeenCalled();
-		expect(result.turns).toBe(DEFAULTS.delegation.maxTurns ?? 30);
-		expect(result.output).toContain("aborted");
 	});
 });

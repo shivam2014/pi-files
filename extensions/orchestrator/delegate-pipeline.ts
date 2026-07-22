@@ -569,6 +569,7 @@ export class DelegatePipeline {
 			output: result?.output || '',
 			turns: result?.turns || 0,
 			toolCallTrail: result?.toolCallTrail || [],
+			blockedCalls: result?.scopeNotes?.blockedTools,
 			elapsedMs: Date.now() - startTime,
 			specialist: specialistName,
 			task,

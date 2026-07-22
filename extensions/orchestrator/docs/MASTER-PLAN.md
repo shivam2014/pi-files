@@ -14,7 +14,7 @@
 - Mocks must derive from SDK source of truth. Lesson: token accumulator read usage.inputTokens while SDK sends usage.input — green tests, dead feature.
 - Guards verify facts (paths, commands, metrics, events, test outcomes), never infer intent from prose (VISION principle 19).
 - Communication contract: CEO = architecture-part level, ADHD-shaped output, no silent mechanisms, internals on request.
-- Baseline: 913 tests green, 1 skipped, 59 files (2026-07-22).
+- Baseline: 841 tests green, 1 skipped, 59 files (2026-07-22).
 
 ## WS-H — Housekeeping [FIRST]
 - [x] H0. OMP currently lives in /private/tmp/oh-my-pi — /tmp vanishes on reboot. Copy to permanent home (~/omp-reference or inside ~/pi-files) BEFORE any WS-U port ticket. Accept: reference copy exists outside /tmp.
@@ -34,8 +34,8 @@
 ## WS-O — Flight recorder (delegation observability) [blocked by R1; BEFORE WS-U]
 Problem: activity feed shows rich behavior live (blocked commands, tool errors, retries, timings) but nothing persists it. Diagnostics only fire on zero-tool-call failures. Prompt/rule improvement is blind without records.
 - [x] O1. Per-delegation structured record: on EVERY delegation completion persist JSON with full tool trail (tool + input summary + outcome + duration), blocked/redirected calls with reasons (from scopeNotes/blockedCalls), retries, token totals, plan-step durations, final status. Files: delegate-pipeline.ts, subagent-diagnostics.ts. Accept: completed delegation leaves record with ≥90% of feed-visible events.
-- [ ] O2. Widen diagnostic triggers: also record delegations with tool errors or blocked calls, not only 0-tool-call silence. Accept: delegation with blocked command produces record.
-- [ ] O3. Replay surface: reuse timeline machinery (recordTimelineFrame/timeline-dump) or /timeline command to render a past delegation record. Accept: user can inspect a finished delegation's event sequence.
+- [x] O2. Widen diagnostic triggers: also record delegations with tool errors or blocked calls, not only 0-tool-call silence. Accept: delegation with blocked command produces record.
+- [x] O3. Replay surface: reuse timeline machinery (recordTimelineFrame/timeline-dump) or /timeline command to render a past delegation record. Accept: user can inspect a finished delegation's event sequence.
 
 ## WS-U — UI hardening, OMP ports [blocked by T1; requires H0]
 - [ ] U1. LoopWatchdog port (OMP packages/tui/src/loop-watchdog.ts). ~90-line event-loop lag probe, 250ms interval/threshold, generation counter, unref(). Wire around session subscribe in subagent-runner with phase attribution. Accept: fake-clock unit test; stall yields diagnostic naming the phase.

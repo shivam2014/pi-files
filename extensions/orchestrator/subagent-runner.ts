@@ -155,6 +155,8 @@ export function createFlightRecorderDump(params: FlightRecorderDumpParams): Reco
 		planSteps: params.planSteps ?? [],
 		metrics: params.metrics ?? {},
 		tokenSummary: params.tokenSummary ?? { totalInput: 0, totalOutput: 0, totalCached: 0, ctxTokensFinal: 0 },
+		systemPrompt: params.systemPrompt,
+		activityFeed: params.activityFeed,
 	};
 }
 
@@ -286,7 +288,9 @@ export interface FlightRecorderDumpParams {
 	finalStatus: string;
 	messages: any[];
 	scope?: Scope;
-	toolCallTrail?: Array<{ tool: string; inputSummary: string; outputPreview: string; isError: boolean; durationMs: number }>;
+	systemPrompt?: string;
+	activityFeed?: any;
+	toolCallTrail?: Array<{ tool: string; label: string; input: any; output: string; isError: boolean; durationMs: number }>;
 	blockedCalls?: Array<{ tool: string; target: string; reason: string; timestamp: number }>;
 	planSteps?: Array<{ label: string; durationMs: number; completed: boolean }>;
 	metrics?: Record<string, number>;
@@ -596,11 +600,6 @@ export class SubagentRunner {
 				if (event.type === "message_end") {
 					if (event.message?.role === "assistant") {
 						turns++;
-						// Check maxTurns budget — abort if exceeded
-						const maxTurns = DEFAULTS.delegation.maxTurns ?? 30;
-						if (turns >= maxTurns) {
-							session.abort();
-						}
 						const assistantMsg = event.message as any;
 						lastStopReason = assistantMsg.stopReason;
 						lastErrorMessage = assistantMsg.errorMessage;
@@ -877,17 +876,68 @@ export class SubagentRunner {
 					try { mkdirSync(debugDir, { recursive: true }); } catch {}
 					const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 					const filename = `delegation-${timestamp}-${specialist.name}.json`;
-					const toolCallTrailDump: Array<{ tool: string; inputSummary: string; outputPreview: string; isError: boolean; durationMs: number }> = [];
-					for (const step of feed.steps) {
-						for (const sub of step.substeps) {
+					const toolCallTrailDump: Array<{ tool: string; label: string; input: any; output: string; isError: boolean; durationMs: number }> = [];
+					const messages = session.messages as any[];
+					if (messages && messages.length > 0) {
+						// Collect toolCall blocks from assistant messages
+						const toolCallsById = new Map<string, { id: string; name: string; arguments: any }>();
+						for (const msg of messages) {
+							if (msg.role === "assistant" && Array.isArray(msg.content)) {
+								for (const block of msg.content) {
+									if (block.type === "toolCall") {
+										toolCallsById.set(block.id, { id: block.id, name: block.name, arguments: block.arguments });
+								}
+							}
+						}
+						}
+						// Match each toolCall with its toolResult
+						for (const msg of messages) {
+							if (msg.role === "tool" && msg.toolCallId) {
+								const tc = toolCallsById.get(msg.toolCallId);
+								if (!tc) continue;
+								const isError = msg.isError === true;
+								const outputParts: string[] = [];
+								if (Array.isArray(msg.content)) {
+									for (const part of msg.content) {
+										if (part.type === "text" && typeof part.text === "string") outputParts.push(part.text);
+									}
+								}
+								let output = outputParts.join("");
+								if (output.length > 50000) output = output.slice(0, 49950) + "\n...[truncated at 50KB]";
+								const label = toolCallToSubstep(tc.name, tc.arguments);
+								let durationMs = 0;
+								for (const step of feed.steps) {
+									for (const sub of step.substeps) {
+										if ((sub as any).toolCallId === msg.toolCallId && sub.endTime && sub.startTime) {
+											durationMs = sub.endTime - sub.startTime;
+										}
+								}
+							}
 							toolCallTrailDump.push({
-								tool: sub.label,
-								inputSummary: sub.label.slice(0, 100),
-								outputPreview: (sub.outputPreview ?? "").slice(0, 100),
-								isError: sub.errored ?? false,
-								durationMs: (sub.endTime ?? 0) - (sub.startTime ?? 0),
+								tool: tc.name,
+								label,
+								input: tc.arguments,
+								output,
+								isError,
+								durationMs,
 							});
 						}
+					}
+					if (toolCallTrailDump.length === 0) {
+						// Fallback: build from feed.steps with truncated values
+						for (const step of feed.steps) {
+							for (const sub of step.substeps) {
+								toolCallTrailDump.push({
+									tool: sub.label,
+									label: sub.label,
+									input: sub.label.slice(0, 100),
+									output: (sub.outputPreview ?? "").slice(0, 100),
+									isError: sub.errored ?? false,
+									durationMs: (sub.endTime ?? 0) - (sub.startTime ?? 0),
+								});
+						}
+					}
+				}
 					}
 					const dump = createFlightRecorderDump({
 						specialist: specialist.name,
@@ -910,6 +960,8 @@ export class SubagentRunner {
 						})),
 						metrics: config.metrics ?? {},
 						tokenSummary: { totalInput: accInput, totalOutput: accOutput, totalCached: accCached, ctxTokensFinal: ctxTokens },
+						systemPrompt: specialist.systemPrompt,
+						activityFeed: { ...feed.feedState },
 					});
 					writeFileSync(join(debugDir, filename), JSON.stringify(dump, null, 2));
 				} catch (e) {

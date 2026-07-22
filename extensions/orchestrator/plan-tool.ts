@@ -126,7 +126,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
                     processedSteps.push((step as any).label);
                     loopConfigs.set(i, loopCfg);
                 } else {
-                    processedSteps.push(String(step));
+                    processedSteps.push((step as any).label ?? String(step));
                 }
             }
             // Label length validation: warn if any step label > 60 chars

@@ -171,6 +171,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 			{ value: "status", label: "Show current mode" },
 		],
 	});
+
 }
 
 /**

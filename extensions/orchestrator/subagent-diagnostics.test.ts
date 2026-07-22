@@ -178,6 +178,69 @@ describe('captureDiagnostic', () => {
     expect(() => new Date(result!.timestamp)).not.toThrow();
     expect(new Date(result!.timestamp).toISOString()).toBe(result!.timestamp);
   });
+
+  it('produces tool_errors diagnostic when toolCallTrail has isError', () => {
+    const input: CaptureDiagnosticInput = {
+      ...baseInput,
+      toolCallTrail: [
+        { tool: 'read', isError: false },
+        { tool: 'bash', isError: true },
+        { tool: 'edit', isError: false },
+      ],
+    };
+    const result = captureDiagnostic(input);
+    expect(result).not.toBeNull();
+    expect(result!.kind).toBe('tool_errors');
+    expect(result!.toolCalls).toBe(3);
+    expect(result!.crashed).toBe(false);
+    expect(result!.metrics).toEqual(input.metrics);
+  });
+
+  it('produces blocked_calls diagnostic when blockedCalls present', () => {
+    const input: CaptureDiagnosticInput = {
+      ...baseInput,
+      toolCallTrail: [
+        { tool: 'read', isError: false },
+        { tool: 'edit', isError: false },
+      ],
+      blockedCalls: [
+        { tool: 'bash', target: '/tmp/evil.sh', reason: 'outside scope', timestamp: Date.now() },
+      ],
+    };
+    const result = captureDiagnostic(input);
+    expect(result).not.toBeNull();
+    expect(result!.kind).toBe('blocked_calls');
+    expect(result!.toolCalls).toBe(2);
+    expect(result!.crashed).toBe(false);
+  });
+
+  it('returns null when tool calls succeed and no blocked calls', () => {
+    const input: CaptureDiagnosticInput = {
+      ...baseInput,
+      toolCallTrail: [
+        { tool: 'read', isError: false },
+        { tool: 'edit', isError: false },
+      ],
+    };
+    const result = captureDiagnostic(input);
+    expect(result).toBeNull();
+  });
+
+  it('tool_errors takes priority over blocked_calls when both present', () => {
+    const input: CaptureDiagnosticInput = {
+      ...baseInput,
+      toolCallTrail: [
+        { tool: 'bash', isError: true },
+        { tool: 'edit', isError: false },
+      ],
+      blockedCalls: [
+        { tool: 'write', target: '/etc/passwd', reason: 'scope violation', timestamp: Date.now() },
+      ],
+    };
+    const result = captureDiagnostic(input);
+    expect(result).not.toBeNull();
+    expect(result!.kind).toBe('tool_errors');
+  });
 });
 
 const sampleDiagnostic: SubagentDiagnostic = {
