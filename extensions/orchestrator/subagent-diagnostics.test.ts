@@ -69,7 +69,7 @@ describe('captureDiagnostic', () => {
     expect(result!.outputPreview).toBe('');
   });
 
-  it('Q&A task suppresses false positive — short task, no file refs, returns null even if 0 tool calls', () => {
+  it('QA-like task with 0 tool calls still produces diagnostic', () => {
     const input: CaptureDiagnosticInput = {
       ...baseInput,
       output: '',
@@ -78,10 +78,12 @@ describe('captureDiagnostic', () => {
       task: 'What is the capital?',
     };
     const result = captureDiagnostic(input);
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result!.toolCalls).toBe(0);
+    expect(result!.turns).toBe(2);
   });
 
-  it('Non-Q&A task with 0 tool calls still caught — longer task with file references', () => {
+  it('Task with 0 tool calls still caught', () => {
     const input: CaptureDiagnosticInput = {
       ...baseInput,
       output: '',

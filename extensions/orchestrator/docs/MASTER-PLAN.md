@@ -17,19 +17,25 @@
 - Baseline: 913 tests green, 1 skipped, 59 files (2026-07-22).
 
 ## WS-H — Housekeeping [FIRST]
-- [ ] H0. OMP currently lives in /private/tmp/oh-my-pi — /tmp vanishes on reboot. Copy to permanent home (~/omp-reference or inside ~/pi-files) BEFORE any WS-U port ticket. Accept: reference copy exists outside /tmp.
+- [x] H0. OMP currently lives in /private/tmp/oh-my-pi — /tmp vanishes on reboot. Copy to permanent home (~/omp-reference or inside ~/pi-files) BEFORE any WS-U port ticket. Accept: reference copy exists outside /tmp.
 - [ ] H1. End-of-session mechanical: sync + commit + push from ~/pi-files; append docs/MASTER-PLAN-LOG.md (date, tickets, pass/fail, friction). Not optional.
 
 ## WS-R — Removal [no blockers]
-- [ ] R1. Cut prose-regex guards. Delete TOOL_PATTERNS + validateTaskCapabilities + call site in delegate-pipeline.ts (~L31-101, ~L142) + delegate-capability.test.ts. Replace isLikelyQATask prose-regex in subagent-diagnostics.ts with toolCalls===0 signal. Accept: suite green; task text "search the codebase" to scout delegates fine.
-- [ ] R2. Dead file removal. Verify via import-graph, then delete: bash-interceptor-integrated.ts(+test), rollout-overlay.ts, loop-panel.ts, model-tui.ts, fusion-tui.ts, init-guard.ts, introspection-tools.ts(+test), parallel-delegation.test.ts, debug-path-trace.ts. WARNING: debug.ts is LIVE (subagent-runner imports debugLog) — earlier scan false-flagged it; verify every candidate before deleting. Accept: suite green + extension boots (tui-smoke).
-- [ ] R3. Fix tsc error subagent-runner.ts:468 (advanceStepTool handler signature drifted from SDK AgentTool type). Accept: tsc clean for extension.
-- [ ] R4. Isolate ../nyro-sync type errors (3 test errors) from extension lint — exclude dir or fix — so lint stops masking real regressions. Accept: project lint shows only extension-relevant results.
+- [x] R1. Cut prose-regex guards. Delete TOOL_PATTERNS + validateTaskCapabilities + call site in delegate-pipeline.ts (~L31-101, ~L142) + delegate-capability.test.ts. Replace isLikelyQATask prose-regex in subagent-diagnostics.ts with toolCalls===0 signal. Accept: suite green; task text "search the codebase" to scout delegates fine.
+- [x] R2. Dead file removal. Verify via import-graph, then delete: bash-interceptor-integrated.ts(+test), rollout-overlay.ts, loop-panel.ts, model-tui.ts, fusion-tui.ts, init-guard.ts, introspection-tools.ts(+test), parallel-delegation.test.ts, debug-path-trace.ts. WARNING: debug.ts is LIVE (subagent-runner imports debugLog) — earlier scan false-flagged it; verify every candidate before deleting. Accept: suite green + extension boots (tui-smoke).
+- [x] R3. Fix tsc error subagent-runner.ts:468 (advanceStepTool handler signature drifted from SDK AgentTool type). Accept: tsc clean for extension.
+- [x] R4. Isolate ../nyro-sync type errors (3 test errors) from extension lint — exclude dir or fix — so lint stops masking real regressions. Accept: project lint shows only extension-relevant results.
 
 ## WS-T — Live tokens done right [blocked by R1]
 - [ ] T1. SDK-true accumulator. Fix field names: usage.input/output/cacheRead/cacheWrite (currently reads inputTokens/outputTokens/cachedTokens → always 0). agent_end has NO event.usage — flush from last assistant message in messages[]. Fix C1 test mocks to SDK Usage shape (pi-ai types.d.ts ~L251). Files: subagent-runner.ts, subagent-runner.test.ts. Accept: tests use SDK-shaped mocks; live delegation shows non-zero totals.
 - [ ] T2. Token line render (v1 C2). activity-feed status line: ↑{input} ⇄{cacheRead} ↓{output} · ctx {cur}/{win} via formatTokens; glyphs in orchestrator-theme SYMBOLS; hide ⇄ when cacheRead==0 all run; freeze line on completion. Accept: render tests (with/without window, zero-cache, k/M formats).
 - [ ] T3. Secondary surfaces (v1 C3). plan-panel step detail live tokens; peek-overlay header token segment; model tag in delegate block header. Accept: smoke — tokens visible in panel + peek during delegation.
+
+## WS-O — Flight recorder (delegation observability) [blocked by R1; BEFORE WS-U]
+Problem: activity feed shows rich behavior live (blocked commands, tool errors, retries, timings) but nothing persists it. Diagnostics only fire on zero-tool-call failures. Prompt/rule improvement is blind without records.
+- [ ] O1. Per-delegation structured record: on EVERY delegation completion persist JSON with full tool trail (tool + input summary + outcome + duration), blocked/redirected calls with reasons (from scopeNotes/blockedCalls), retries, token totals, plan-step durations, final status. Files: delegate-pipeline.ts, subagent-diagnostics.ts. Accept: completed delegation leaves record with ≥90% of feed-visible events.
+- [ ] O2. Widen diagnostic triggers: also record delegations with tool errors or blocked calls, not only 0-tool-call silence. Accept: delegation with blocked command produces record.
+- [ ] O3. Replay surface: reuse timeline machinery (recordTimelineFrame/timeline-dump) or /timeline command to render a past delegation record. Accept: user can inspect a finished delegation's event sequence.
 
 ## WS-U — UI hardening, OMP ports [blocked by T1; requires H0]
 - [ ] U1. LoopWatchdog port (OMP packages/tui/src/loop-watchdog.ts). ~90-line event-loop lag probe, 250ms interval/threshold, generation counter, unref(). Wire around session subscribe in subagent-runner with phase attribution. Accept: fake-clock unit test; stall yields diagnostic naming the phase.
@@ -68,11 +74,12 @@ CEO spec: goal + objective metric + hard iteration cap + best-so-far wins. Orche
 | Session | Tickets | Why |
 |---|---|---|
 | 1 | H0, R1-R4 | removal, near-zero risk |
-| 2 | T1-T3 | the heartbeat |
-| 3 | U1-U5 | UI hardening |
-| 4 | P1-P6 | prompt & info layer |
-| 5 | PBT-0 grill + PBT track | doctrine track |
-| 6+ | L1-L6 | loop engine |
+| 2 | O1-O3 | flight recorder (delegation observability) |
+| 3 | T1-T3 | the heartbeat |
+| 4 | U1-U5 | UI hardening |
+| 5 | P1-P6 | prompt & info layer |
+| 6 | PBT-0 grill + PBT track | doctrine track |
+| 7+ | L1-L6 | loop engine |
 
 ## Verification gates
 - Per ticket: acceptance test green + no regressions vs 913 baseline.

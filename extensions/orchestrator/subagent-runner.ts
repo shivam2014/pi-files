@@ -465,7 +465,7 @@ export class SubagentRunner {
 				label: "Advance Step",
 				description: "Mark the current step as complete and advance to the next step. Call this after each step finishes.",
 				parameters: Type.Object({}),
-				execute: async (_toolCallId: string, _params: Record<string, never>) => {
+				execute: async (_toolCallId: string, _params: Record<string, never>): Promise<{ content: { type: "text"; text: string }[]; details: { nextStep?: string; totalSteps?: number; allComplete?: boolean; status?: string } }> => {
 					if (!feed.planParsed) {
 						return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
 					}

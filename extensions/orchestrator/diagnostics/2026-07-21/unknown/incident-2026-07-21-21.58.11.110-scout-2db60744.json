@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "unknown",
+  "timestamp": "2026-07-21T21:58:11.110Z",
+  "specialist": "scout",
+  "task": "find files",
+  "turns": 1,
+  "toolCalls": 0,
+  "elapsedMs": 0,
+  "crashed": false,
+  "outputPreview": "done",
+  "metrics": {
+    "readCalls": 0,
+    "grepCalls": 0,
+    "findCalls": 0,
+    "editCalls": 0,
+    "writeCalls": 0,
+    "bashCalls": 0,
+    "lsCalls": 0
+  },
+  "kind": "silent_failure",
+  "diagnosticId": "2026-07-21T21:58:11.111Z-scout-51912ab0",
+  "agentDir": "/Users/shivam94/.pi/agent"
+}

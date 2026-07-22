@@ -28,25 +28,17 @@ export interface CaptureDiagnosticInput {
 export function captureDiagnostic(input: CaptureDiagnosticInput): SubagentDiagnostic | null {
   const toolCalls = input.toolCallTrail?.length || 0;
 
-  // Q&A heuristic: short task, no file references
-  const isQATask = isLikelyQATask(input.task);
-
-  // Q&A tasks always return null — they're conversational, not delegations
-  if (isQATask) return null;
-
-  // Silent failure: 0 tool calls, >= 1 turn, empty/short output, not Q&A
+  // Silent failure: 0 tool calls, >= 1 turn, empty/short output
   // Note: if output is empty AND turns >= 1, it counts as BOTH crash and silent failure
   const isSilentFailure =
     toolCalls === 0 &&
     input.turns >= 1 &&
-    (!input.output || input.output.trim().length < 50) &&
-    !isQATask;
+    (!input.output || input.output.trim().length < 50);
 
-  // Crash: 0 tool calls, no output at all (regardless of turns), not Q&A
+  // Crash: 0 tool calls, no output at all (regardless of turns)
   const isCrash =
     toolCalls === 0 &&
-    (!input.output || input.output.trim().length === 0) &&
-    !isQATask;
+    (!input.output || input.output.trim().length === 0);
 
   if (!isSilentFailure && !isCrash) return null;
 
@@ -74,28 +66,6 @@ export function captureDiagnostic(input: CaptureDiagnosticInput): SubagentDiagno
     httpStatus: input.httpStatus,
     findingsText: input.findingsText || undefined,
   } as SubagentDiagnostic;
-}
-
-export function isLikelyQATask(task: string): boolean {
-  const taskLower = task.toLowerCase().trim();
-  // Short task (< 30 chars) with no file references = likely Q&A
-  if (
-    taskLower.length < 30 &&
-    !task.includes("/") &&
-    !task.includes(".ts") &&
-    !task.includes(".")
-  ) {
-    return true;
-  }
-  // Questions starting with what/why/how/when/where/who/can/does/is/are
-  if (
-    /^(what|why|how|when|where|who|can|does|is|are|do|would|could|should)\b/i.test(
-      taskLower,
-    )
-  ) {
-    return true;
-  }
-  return false;
 }
 
 export function truncatePreview(text: string, maxLen: number): string {
