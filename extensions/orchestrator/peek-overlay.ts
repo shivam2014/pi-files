@@ -12,7 +12,7 @@
 
 import { SPINNER_FRAMES, resetSpinner, currentFrame } from "./spinner-state.ts";
 import { formatDuration } from "./ui-utils.ts";
-import { styledSymbol, statusIcon, getTheme } from "./orchestrator-theme.ts";
+import { styledSymbol, statusIcon, getTheme, formatTokens } from "./orchestrator-theme.ts";
 import { matchesKey, Key } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
@@ -65,6 +65,9 @@ let _viewerTask: string = "";
 let _viewerOutput: string = "";
 let _viewerStatus: "idle" | "running" | "completed" | "error" = "idle";
 
+/** Token state for header display */
+let _viewerTokens: { input: number; output: number; cached: number; ctxTokens?: number; ctxWindow?: number } | null = null;
+
 
 // ============================================================================
 // PeekComponent — renders live subagent content inside the overlay
@@ -113,6 +116,24 @@ export class PeekComponent implements Component {
         else if (_viewerStatus === "completed") statusText = statusIcon("completed") + " Completed";
         else if (_viewerStatus === "error") statusText = statusIcon("error") + " Error";
         if (statusText) lines.push(box(statusText));
+
+        // Token line
+        if (_viewerTokens) {
+            const parts: string[] = [];
+            if (_viewerTokens.input) parts.push(`↑${formatTokens(_viewerTokens.input)}`);
+            if (_viewerTokens.cached) parts.push(`⇄${formatTokens(_viewerTokens.cached)}`);
+            if (_viewerTokens.output) parts.push(`↓${formatTokens(_viewerTokens.output)}`);
+            if (_viewerTokens.ctxTokens) {
+                if (_viewerTokens.ctxWindow) {
+                    parts.push(`ctx ${formatTokens(_viewerTokens.ctxTokens)}/${formatTokens(_viewerTokens.ctxWindow)}`);
+                } else {
+                    parts.push(`ctx ${formatTokens(_viewerTokens.ctxTokens)}`);
+                }
+            }
+            if (parts.length > 0) {
+                lines.push(box(parts.join(" ")));
+            }
+        }
 
         // ── Build content lines from session messages ──
         const contentLines: string[] = [];
@@ -324,6 +345,7 @@ function clearPeekState(): void {
     _viewerTask = "";
     _viewerOutput = "";
     _viewerStatus = "idle";
+    _viewerTokens = null;
     _pushRenderTimer = null;
     resetSpinner();
 }
@@ -339,6 +361,15 @@ export function setViewerSession(session: any, task: string): void {
     _viewerSession = session;
     _viewerTask = task;
     _viewerStatus = "running";
+    _viewerTokens = null;
+    scheduleRender();
+}
+
+/**
+ * Set token data for the viewer header.
+ */
+export function setViewerTokens(tokens: { input: number; output: number; cached: number; ctxTokens?: number; ctxWindow?: number } | null): void {
+    _viewerTokens = tokens;
     scheduleRender();
 }
 

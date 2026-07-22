@@ -148,7 +148,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 					: statusIcon("running") + " working...";
 				const inTokens = details?.tokenInput ? `↑${formatTokens(details.tokenInput)}` : "";
 				const outTokens = details?.tokenOutput ? `↓${formatTokens(details.tokenOutput)}` : "";
-				const cacheTokens = details?.tokenCached ? `◎${formatTokens(details.tokenCached)}` : "";
+				const cacheTokens = details?.tokenCached ? `⇄${formatTokens(details.tokenCached)}` : "";
 				const liveTokens = [inTokens, outTokens, cacheTokens].filter(Boolean).join(" ");
 				const liveElapsed = details?.elapsedMs ? formatDuration(details.elapsedMs) : (details?.elapsed ? formatDuration(details.elapsed) : "");
 				const liveSuffix = [liveTokens, liveElapsed].filter(Boolean).join(" ");
@@ -158,7 +158,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				// Build suffix with token and elapsed info
 				const tokenParts: string[] = [];
 				if (details?.tokenUsage?.input) tokenParts.push(`↑${formatTokens(details.tokenUsage.input)}`);
-				if (details?.tokenUsage?.cached) tokenParts.push(`◎${formatTokens(details.tokenUsage.cached)}`);
+				if (details?.tokenUsage?.cached) tokenParts.push(`⇄${formatTokens(details.tokenUsage.cached)}`);
 				if (details?.tokenUsage?.output) tokenParts.push(`↓${formatTokens(details.tokenUsage.output)}`);
 				const elapsed = details?.elapsedMs ? formatDuration(details.elapsedMs) : "";
 				const suffix = [...tokenParts, elapsed].filter(Boolean).join(" ");

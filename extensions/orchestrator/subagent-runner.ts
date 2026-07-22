@@ -35,14 +35,14 @@ import {
 	appendWebSearchResults,
 	compressOutput,
 } from "./activity-feed.ts";
-import { statusIcon } from "./orchestrator-theme.ts";
+import { statusIcon, formatTokens } from "./orchestrator-theme.ts";
 
 import { currentFrame, SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
 
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 
 import { debugLog } from "./debug.ts";
-import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearViewerState, pushStreamingText } from "./peek-overlay.ts";
+import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearViewerState, pushStreamingText, setViewerTokens } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
 
@@ -606,19 +606,21 @@ export class SubagentRunner {
 						// C1: Accumulate per-turn token usage
 						const usage = (event.message as any).usage;
 						if (usage) {
-							accInput += usage.inputTokens || 0;
-							accOutput += usage.outputTokens || 0;
-							accCached += usage.cachedTokens || 0;
+							accInput += usage.input || 0;
+							accOutput += usage.output || 0;
+							accCached += usage.cacheRead || 0;
 							ctxTokens = usage.totalTokens || 0;
 							if (!ctxWindow && model?.contextWindow) ctxWindow = model.contextWindow;
 							const now = Date.now();
 							if (now - lastProgressEmit >= PROGRESS_COALESCE_MS) {
 								lastProgressEmit = now;
+								feed.feedState = { ...feed.feedState, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, ctxWindow };
 								const text = feed.render(specialist.name);
 								config.onUpdate?.({
 									content: [{ type: "text", text }],
 									details: { specialist: specialist.name, status: "running", turns, model: modelLabel, provider, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, elapsedMs: now - startTime },
 								});
+								setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
 							}
 						}
 						const text = feed.render(specialist.name);
@@ -756,20 +758,25 @@ export class SubagentRunner {
 					});
 				}
 
-				// Track token usage from agent_end/done events (TokenUsage has inputTokens/outputTokens/cachedTokens)
-				if ((event.type === "agent_end" || event.type === "done") && event.usage) {
-					const u = event.usage;
-					accInput += u.inputTokens || 0;
-					accOutput += u.outputTokens || 0;
-					accCached += u.cachedTokens || 0;
-					ctxTokens = u.totalTokens || 0;
-					const total = accInput + accOutput + accCached;
-					updatePlanStepDetail(`tokens: ↑${accInput} ↓${accOutput} ◎${accCached}`, orchestratorCtx);
-					config.onUpdate?.({
-						content: [{ type: "text", text: feed.render(specialist.name) }],
-						details: { specialist: specialist.name, status: "running", tokens: total, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
-					});
+								// agent_end has no event.usage — message_end already accumulated usage;
+				// here we just refresh ctxTokens from the last assistant message.
+				if (event.type === "agent_end" && event.messages) {
+					const messages = event.messages as any[];
+					for (let i = messages.length - 1; i >= 0; i--) {
+						if (messages[i].role === "assistant" && messages[i].usage) {
+							ctxTokens = messages[i].usage.totalTokens || ctxTokens;
+							break;
+					}
 				}
+				const total = accInput + accOutput + accCached;
+				const cachePart = accCached > 0 ? ` ⇄${formatTokens(accCached)}` : "";
+				updatePlanStepDetail([`tokens: ↑${formatTokens(accInput)}${cachePart} ↓${formatTokens(accOutput)}`], orchestratorCtx);
+				setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
+				config.onUpdate?.({
+					content: [{ type: "text", text: feed.render(specialist.name) }],
+					details: { specialist: specialist.name, status: "running", tokens: total, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
+				});
+			}
 
 				if (event.type === "turn_end") {
 					// No-op: turn_end handler kept for future use
@@ -803,10 +810,12 @@ export class SubagentRunner {
 			// Periodic elapsed-time timer (1s)
 			elapsedTimer = setInterval(() => {
 				const elapsed = Date.now() - startTime;
+				feed.feedState = { ...feed.feedState, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, ctxWindow };
 				config.onUpdate?.({
 					content: [{ type: "text", text: feed.render(specialist.name) }],
-					details: { specialist: specialist.name, status: "running", elapsedMs: elapsed, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, model: modelLabel, provider },
+					details: { specialist: specialist.name, status: "running", elapsedMs: elapsed, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxWindow, model: modelLabel, provider },
 				});
+				setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
 			}, 1000);
 
 			// Abort handler
@@ -980,6 +989,7 @@ export class SubagentRunner {
 
 			const finalText = feed.render(specialist.name);
 			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached } });
+			setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
 			recordTimelineFrame("step_finalized", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
 
 			const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);

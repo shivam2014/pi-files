@@ -163,12 +163,20 @@ export class PlanPanel {
 			const substeps: Substep[] = [];
 			if (ps.completed && ps.detailLines?.length) {
 				for (const line of ps.detailLines) {
+					if (line.startsWith("tokens:")) {
+						substeps.push({ label: line, completed: false });
+						continue;
+					}
 					const m = line.match(/^    ✓ Report: (.+)$/i);
 					if (m) substeps.push({ label: `Report: ${m[1].trim()}`, completed: true });
 				}
 			}
 			if (ps.active && ps.detailLines?.length) {
 				for (const line of ps.detailLines) {
+					if (line.startsWith("tokens:")) {
+						substeps.push({ label: line, completed: false });
+						continue;
+					}
 					const rm = line.match(/^    ✓ Report: (.+)$/i);
 					if (rm) { substeps.push({ label: `Report: ${rm[1].trim()}`, completed: true }); continue; }
 					const dm = line.match(/^    ✓ (.+)$/);

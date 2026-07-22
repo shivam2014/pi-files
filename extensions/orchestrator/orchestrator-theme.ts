@@ -51,7 +51,11 @@ export type SymbolKey =
   // GROUP 6 — Extra (fusion-tui / nav)
   | "boxRound.teeRight"
   | "boxRound.teeLeft"
-  | "nav.cursor";
+  | "nav.cursor"
+  // GROUP 7 — Token counters
+  | "token.input"
+  | "token.output"
+  | "token.cacheRead";
 
 /** Canonical Unicode values for every symbol key. */
 export const SYMBOLS: Record<SymbolKey, string> = {
@@ -93,6 +97,11 @@ export const SYMBOLS: Record<SymbolKey, string> = {
   "boxRound.teeRight": "├",
   "boxRound.teeLeft":  "┤",
   "nav.cursor":        "▸",
+
+  // Token counters
+  "token.input":     "↑",
+  "token.output":    "↓",
+  "token.cacheRead": "⇄",
 };
 
 // ── Strikethrough animation constants ────────────────────────────

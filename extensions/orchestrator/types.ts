@@ -56,6 +56,18 @@ export interface ActivityFeedState {
 	errorMessage?: string;
 	retryCount?: number;
 	retryReason?: string;
+	/** Accumulated input tokens */
+	tokenInput?: number;
+	/** Accumulated output tokens */
+	tokenOutput?: number;
+	/** Accumulated cached/read tokens */
+	tokenCached?: number;
+	/** Current context token count */
+	ctxTokens?: number;
+	/** Context window size */
+	ctxWindow?: number;
+	/** Freeze token line on completion */
+	tokensFrozen?: boolean;
 }
 
 /** Specialist definition */

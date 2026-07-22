@@ -14,7 +14,7 @@
 - Mocks must derive from SDK source of truth. Lesson: token accumulator read usage.inputTokens while SDK sends usage.input — green tests, dead feature.
 - Guards verify facts (paths, commands, metrics, events, test outcomes), never infer intent from prose (VISION principle 19).
 - Communication contract: CEO = architecture-part level, ADHD-shaped output, no silent mechanisms, internals on request.
-- Baseline: 841 tests green, 1 skipped, 59 files (2026-07-22).
+- Baseline: 851 tests green, 1 skipped, 55 files (2026-07-22).
 
 ## WS-H — Housekeeping [FIRST]
 - [x] H0. OMP currently lives in /private/tmp/oh-my-pi — /tmp vanishes on reboot. Copy to permanent home (~/omp-reference or inside ~/pi-files) BEFORE any WS-U port ticket. Accept: reference copy exists outside /tmp.
@@ -27,9 +27,9 @@
 - [x] R4. Isolate ../nyro-sync type errors (3 test errors) from extension lint — exclude dir or fix — so lint stops masking real regressions. Accept: project lint shows only extension-relevant results.
 
 ## WS-T — Live tokens done right [blocked by R1]
-- [ ] T1. SDK-true accumulator. Fix field names: usage.input/output/cacheRead/cacheWrite (currently reads inputTokens/outputTokens/cachedTokens → always 0). agent_end has NO event.usage — flush from last assistant message in messages[]. Fix C1 test mocks to SDK Usage shape (pi-ai types.d.ts ~L251). Files: subagent-runner.ts, subagent-runner.test.ts. Accept: tests use SDK-shaped mocks; live delegation shows non-zero totals.
-- [ ] T2. Token line render (v1 C2). activity-feed status line: ↑{input} ⇄{cacheRead} ↓{output} · ctx {cur}/{win} via formatTokens; glyphs in orchestrator-theme SYMBOLS; hide ⇄ when cacheRead==0 all run; freeze line on completion. Accept: render tests (with/without window, zero-cache, k/M formats).
-- [ ] T3. Secondary surfaces (v1 C3). plan-panel step detail live tokens; peek-overlay header token segment; model tag in delegate block header. Accept: smoke — tokens visible in panel + peek during delegation.
+- [x] T1. SDK-true accumulator. Fix field names: usage.input/output/cacheRead/cacheWrite (currently reads inputTokens/outputTokens/cachedTokens → always 0). agent_end has NO event.usage — flush from last assistant message in messages[]. Fix C1 test mocks to SDK Usage shape (pi-ai types.d.ts ~L251). Files: subagent-runner.ts, subagent-runner.test.ts. Accept: tests use SDK-shaped mocks; live delegation shows non-zero totals.
+- [x] T2. Token line render (v1 C2). activity-feed status line: ↑{input} ⇄{cacheRead} ↓{output} · ctx {cur}/{win} via formatTokens; glyphs in orchestrator-theme SYMBOLS; hide ⇄ when cacheRead==0 all run; freeze line on completion. Accept: render tests (with/without window, zero-cache, k/M formats).
+- [x] T3. Secondary surfaces (v1 C3). plan-panel step detail live tokens; peek-overlay header token segment; model tag in delegate block header. Accept: smoke — tokens visible in panel + peek during delegation.
 
 ## WS-O — Flight recorder (delegation observability) [blocked by R1; BEFORE WS-U]
 Problem: activity feed shows rich behavior live (blocked commands, tool errors, retries, timings) but nothing persists it. Diagnostics only fire on zero-tool-call failures. Prompt/rule improvement is blind without records.

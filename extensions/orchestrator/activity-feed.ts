@@ -11,7 +11,7 @@
  */
 
 import type { ActivityFeedState, Step, Substep, PlanStep } from "./types.ts";
-import { styledSymbol, statusIcon, formatDuration as thFormatDuration, getTheme, partialStrikethrough } from "./orchestrator-theme.ts";
+import { styledSymbol, statusIcon, formatDuration as thFormatDuration, formatTokens, getTheme, partialStrikethrough, SYMBOLS } from "./orchestrator-theme.ts";
 
 
 // ============================================================================
@@ -29,6 +29,46 @@ const MAX_RENDER_RETRIES = 3;
 // ============================================================================
 // Activity Feed State — Layer 2 (subagent tool blocks)
 // ============================================================================
+
+// ============================================================================
+// Activity Feed State — Layer 2 (subagent tool blocks)
+// ============================================================================
+
+export function renderTokenLine(state: ActivityFeedState): string {
+	if (state.tokensFrozen) {
+		if (!state.tokenInput && !state.tokenOutput) return "";
+	}
+
+	const parts: string[] = [];
+	const theme = getTheme();
+
+	// ↑{input}
+	if (state.tokenInput) {
+		parts.push(`${SYMBOLS["token.input"]}${formatTokens(state.tokenInput)}`);
+	}
+
+	// ⇄{cacheRead} — hidden when 0
+	if (state.tokenCached) {
+		parts.push(`${SYMBOLS["token.cacheRead"]}${formatTokens(state.tokenCached)}`);
+	}
+
+	// ↓{output}
+	if (state.tokenOutput) {
+		parts.push(`${SYMBOLS["token.output"]}${formatTokens(state.tokenOutput)}`);
+	}
+
+	// · ctx {cur}/{win}
+	if (state.ctxTokens) {
+		if (state.ctxWindow) {
+			parts.push(`ctx ${formatTokens(state.ctxTokens)}/${formatTokens(state.ctxWindow)}`);
+		} else {
+			parts.push(`ctx ${formatTokens(state.ctxTokens)}`);
+		}
+	}
+
+	if (parts.length === 0) return "";
+	return theme.fg("dim", parts.join(" "));
+}
 
 // ============================================================================
 // Activity Feed State — Layer 2 (subagent tool blocks)
@@ -628,6 +668,12 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 			}
 		}
 		lines.push(`${dots} ${completed}/${total}`);
+	}
+
+	// Token status line
+	const tokenLine = renderTokenLine(state);
+	if (tokenLine) {
+		lines.push(tokenLine);
 	}
 
 	// Render each step

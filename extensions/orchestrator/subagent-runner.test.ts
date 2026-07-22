@@ -29,6 +29,7 @@ vi.mock("./orchestrator-theme.ts", () => ({
 	statusIcon: vi.fn((_status: string) => "*"),
 	styledSymbol: vi.fn((_key: string) => "*"),
 	formatDuration: vi.fn((ms: number) => `${ms}ms`),
+	formatTokens: vi.fn((count: number) => `${count}`),
 	partialStrikethrough: vi.fn((text: string) => text),
 	initTheme: vi.fn(),
 }));
@@ -534,15 +535,15 @@ describe("C1: live token accumulator", () => {
 		const realNow = Date.now.bind(Date);
 		Date.now = () => fakeTime;
 
-		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 100, outputTokens: 200, cachedTokens: 50, totalTokens: 350 } } });
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { input: 100, output: 200, cacheRead: 50, totalTokens: 350 } } });
 		fakeTime += 200;
-		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 300, outputTokens: 400, cachedTokens: 100, totalTokens: 800 } } });
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { input: 300, output: 400, cacheRead: 100, totalTokens: 800 } } });
 		fakeTime += 200;
-		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 50, outputTokens: 75, cachedTokens: 25, totalTokens: 150 } } });
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { input: 50, output: 75, cacheRead: 25, totalTokens: 150 } } });
 		Date.now = realNow;
 
 		// toolResult message_end should be ignored
-		ref.subscribeCb!({ type: "message_end", message: { role: "tool", usage: { inputTokens: 999, outputTokens: 999, cachedTokens: 999, totalTokens: 2997 } } });
+		ref.subscribeCb!({ type: "message_end", message: { role: "tool", usage: { input: 999, output: 999, cacheRead: 999, totalTokens: 2997 } } });
 
 		// Last token-bearing update (unconditional emission follows each coalesced one)
 		const d = updates.findLast((u: any) => u.details?.tokenInput !== undefined)?.details;
@@ -561,7 +562,7 @@ describe("C1: live token accumulator", () => {
 			expect(ref.subscribeCb).not.toBeNull();
 		}, { timeout: 5000 });
 
-		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 1000, outputTokens: 2000, cachedTokens: 500, totalTokens: 15000 } } });
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { input: 1000, output: 2000, cacheRead: 500, totalTokens: 15000 } } });
 
 		const d = updates.findLast((u: any) => u.details?.ctxTokens !== undefined)?.details;
 		expect(d.ctxTokens).toBe(15000);
@@ -577,18 +578,18 @@ describe("C1: live token accumulator", () => {
 		}, { timeout: 5000 });
 
 		// 2 assistant message_end events
-		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 100, outputTokens: 200, cachedTokens: 50, totalTokens: 350 } } });
-		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { inputTokens: 150, outputTokens: 250, cachedTokens: 75, totalTokens: 475 } } });
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { input: 100, output: 200, cacheRead: 50, totalTokens: 350 } } });
+		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { input: 150, output: 250, cacheRead: 75, totalTokens: 475 } } });
 
-		// 1 agent_end with usage — should ADD to existing accumulators
-		ref.subscribeCb!({ type: "agent_end", usage: { inputTokens: 50, outputTokens: 100, cachedTokens: 25, totalTokens: 175 } });
+		// agent_end has no event.usage — should NOT add to accumulators, only refresh ctxTokens
+		ref.subscribeCb!({ type: "agent_end", messages: [{ role: "assistant", usage: { input: 50, output: 100, cacheRead: 25, cacheWrite: 0, totalTokens: 175 } }] });
 
 		const lastUpdate = updates[updates.length - 1];
 		const d = lastUpdate.details;
 
-		expect(d.tokenInput).toBe(300);   // 100+150+50
-		expect(d.tokenOutput).toBe(550);   // 200+250+100
-		expect(d.tokenCached).toBe(150);   // 50+75+25
-		expect(d.ctxTokens).toBe(175);     // last totalTokens
+		expect(d.tokenInput).toBe(250);   // 100+150 (agent_end does NOT accumulate)
+		expect(d.tokenOutput).toBe(450);   // 200+250
+		expect(d.tokenCached).toBe(125);   // 50+75
+		expect(d.ctxTokens).toBe(175);     // refreshed from agent_end's last assistant message
 	});
 });
