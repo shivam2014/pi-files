@@ -44,3 +44,27 @@
 - Coder wasted 2 turns per session on blocked bash calls (sed, cat blocked by interceptor, then python3 workaround).
 - Transport truncation: worker reports still cut in transit.
 - createFlightRecorderDump function had systemPrompt/activityFeed in interface but not in return object or call site — required surgical fix.
+
+## Session 3 — 2026-07-23
+
+**Tickets:** (in-progress session — see U1–U5 tracking below)
+
+### Summary
+- Session 3 carried over from Session 2 planning. No new tickets completed this session; focus shifted to UI hardening (U1–U5) in subsequent sessions.
+
+## Session 4 — 2026-07-23
+
+**Tickets:** U1
+
+### Gate results
+- **vitest:** 40 passed (6 loop-watchdog + 34 subagent-runner), 0 failed
+- **tsc:** zero errors
+
+### Completed
+- U1: LoopWatchdog port from OMP reference. New file `loop-watchdog.ts` (~118 lines) with LoopWatchdog class, phase tracker (pushPhase/popPhase/takeRecentLoopPhase/resetPhaseTracker), onStall callback. Wired into subagent-runner.ts: watchdog instantiated before subscribe, all 7 event handlers wrapped with pushPhase/try/finally/popPhase, watchdog.start() before session.prompt(), watchdog.stop() in finally block. 6 fake-clock unit tests.
+
+### Friction notes
+- First coder delegation (glm-5.2-2) got trapped in fix-spiral: Unicode chars (⇄, ↑, ↓) in subagent-runner.ts broke edit tool's oldText matching. Opened try{} blocks without closing finally{}. Lint caught TS1472 six times but coder couldn't apply fix. Reported finalStatus:"completed" despite unresolved lint failures.
+- Second coder delegation used write tool (full file rewrite) to bypass Unicode issue — succeeded.
+- Three bugs identified for future tickets: (1) token display showing impossible numbers (⇄ > ↑), (2) finalization loop auto-completing steps despite lint failures, (3) no hard gate preventing "completed" status when lint fails.
+- Coder specialist used cat/awk via bash instead of read tool — lint-guard only blocks sed/awk for file modification, not cat for reading.

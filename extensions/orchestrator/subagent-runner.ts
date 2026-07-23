@@ -42,6 +42,7 @@ import { currentFrame, SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state
 import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 
 import { debugLog } from "./debug.ts";
+import { LoopWatchdog, pushPhase, popPhase, resetPhaseTracker } from "./loop-watchdog.ts";
 import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearViewerState, pushStreamingText, setViewerTokens } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
@@ -119,10 +120,6 @@ export function truncateSubagentOutput(output: string, cap = OUTPUT_CAP): string
 	const cleanHead = lastNewline > 0 ? head.slice(0, lastNewline) : head;
 	return cleanHead + "\n\n" + markerText + tailBlock;
 }
-
-
-
-
 
 /**
  * Determine whether a subagent that stopped early should be nudged to continue.
@@ -579,25 +576,37 @@ export class SubagentRunner {
 			let lastProgressEmit = 0;
 			const PROGRESS_COALESCE_MS = 150;
 
+			const watchdog = new LoopWatchdog({
+				onStall: (info) => { debugLog("[watchdog] loop-blocked:", info); },
+			});
+			resetPhaseTracker();
+
 			const unsubscribe = session.subscribe((event: any) => {
 				if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-					output += event.assistantMessageEvent.delta;
-					const snapshot = JSON.stringify(feed.inspectState());
-					if (snapshot !== _lastFeedSnapshot) {
-						_lastFeedSnapshot = snapshot;
-						resetSpinner();
-						updatePlanStepDetail(feed.goal || "", orchestratorCtx);
-						recordTimelineFrame("step_started", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
+					pushPhase("message_update");
+					try {
+						output += event.assistantMessageEvent.delta;
+						const snapshot = JSON.stringify(feed.inspectState());
+						if (snapshot !== _lastFeedSnapshot) {
+							_lastFeedSnapshot = snapshot;
+							resetSpinner();
+							updatePlanStepDetail(feed.goal || "", orchestratorCtx);
+							recordTimelineFrame("step_started", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
+						}
+						pushStreamingText(event.assistantMessageEvent.delta);
+						const textDelta = feed.render(specialist.name);
+						config.onUpdate?.({
+							content: [{ type: "text", text: textDelta }],
+							details: { status: "running", streaming: true, model: modelLabel, provider },
+						});
+					} finally {
+						popPhase();
 					}
-					pushStreamingText(event.assistantMessageEvent.delta);
-					const textDelta = feed.render(specialist.name);
-					config.onUpdate?.({
-						content: [{ type: "text", text: textDelta }],
-						details: { status: "running", streaming: true, model: modelLabel, provider },
-					});
 				}
 
 				if (event.type === "message_end") {
+					pushPhase("message_end");
+					try {
 					if (event.message?.role === "assistant") {
 						turns++;
 						const assistantMsg = event.message as any;
@@ -645,10 +654,15 @@ export class SubagentRunner {
 							details: { specialist: specialist.name, status: "lint", model: modelLabel, provider, ...(lintMsg.details ?? {}) },
 						});
 					}
+					} finally {
+						popPhase();
+					}
 				}
 
 				if (event.type === "tool_execution_start") {
-					if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") return;
+					pushPhase("tool_start:" + event.toolName);
+					try {
+						if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") return;
 					const substepLabel = toolCallToSubstep(event.toolName, event.args);
 					feed.addSubstep(substepLabel, event.toolCallId);
 					const extraDetail = substepToolDetail(event.toolName, event.args);
@@ -667,9 +681,14 @@ export class SubagentRunner {
 						content: [{ type: "text", text }],
 						details: { specialist: specialist.name, status: "running", tool: event.toolName, model: modelLabel, provider },
 					});
+					} finally {
+						popPhase();
+					}
 				}
 
 				if (event.type === "tool_execution_update") {
+					pushPhase("tool_update");
+					try {
 					try {
 						if (event.partialResult && feed.steps.length > 0) {
 							const activeStep = feed.steps[feed.currentStep];
@@ -689,9 +708,14 @@ export class SubagentRunner {
 							}
 						}
 					} catch (e) { debugLog("[subagent] update failed:", e); }
+					} finally {
+						popPhase();
+					}
 				}
 
 				if (event.type === "tool_execution_end") {
+					pushPhase("tool_end:" + event.toolName);
+					try {
 					if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") {
 						const text = feed.render(specialist.name);
 						config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", model: modelLabel, provider } });
@@ -756,30 +780,43 @@ export class SubagentRunner {
 						content: [{ type: "text", text }],
 						details: { specialist: specialist.name, status: "running", model: modelLabel, provider },
 					});
+					} finally {
+						popPhase();
+					}
 				}
 
-								// agent_end has no event.usage — message_end already accumulated usage;
+				// agent_end has no event.usage — message_end already accumulated usage;
 				// here we just refresh ctxTokens from the last assistant message.
 				if (event.type === "agent_end" && event.messages) {
+					pushPhase("agent_end");
+					try {
 					const messages = event.messages as any[];
 					for (let i = messages.length - 1; i >= 0; i--) {
 						if (messages[i].role === "assistant" && messages[i].usage) {
 							ctxTokens = messages[i].usage.totalTokens || ctxTokens;
 							break;
+						}
+					}
+					const total = accInput + accOutput + accCached;
+					const cachePart = accCached > 0 ? ` \u21C4${formatTokens(accCached)}` : "";
+					updatePlanStepDetail([`tokens: \u2191${formatTokens(accInput)}${cachePart} \u2193${formatTokens(accOutput)}`], orchestratorCtx);
+					setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
+					config.onUpdate?.({
+						content: [{ type: "text", text: feed.render(specialist.name) }],
+						details: { specialist: specialist.name, status: "running", tokens: total, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
+					});
+					} finally {
+						popPhase();
 					}
 				}
-				const total = accInput + accOutput + accCached;
-				const cachePart = accCached > 0 ? ` ⇄${formatTokens(accCached)}` : "";
-				updatePlanStepDetail([`tokens: ↑${formatTokens(accInput)}${cachePart} ↓${formatTokens(accOutput)}`], orchestratorCtx);
-				setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
-				config.onUpdate?.({
-					content: [{ type: "text", text: feed.render(specialist.name) }],
-					details: { specialist: specialist.name, status: "running", tokens: total, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
-				});
-			}
 
 				if (event.type === "turn_end") {
+					pushPhase("turn_end");
+					try {
 					// No-op: turn_end handler kept for future use
+					} finally {
+						popPhase();
+					}
 				}
 			});
 
@@ -829,6 +866,7 @@ export class SubagentRunner {
 
 			let nudged = false;
 
+			watchdog.start();
 			try {
 				await session.prompt(task);
 
@@ -866,6 +904,7 @@ export class SubagentRunner {
 					? `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`
 					: `[error] ${errorMsg}`;
 			} finally {
+				watchdog.stop();
 				unsubscribe();
 				if (renderTimer) {
 					clearInterval(renderTimer);
@@ -895,9 +934,9 @@ export class SubagentRunner {
 								for (const block of msg.content) {
 									if (block.type === "toolCall") {
 										toolCallsById.set(block.id, { id: block.id, name: block.name, arguments: block.arguments });
+									}
 								}
 							}
-						}
 						}
 						// Match each toolCall with its toolResult
 						for (const msg of messages) {
@@ -920,16 +959,17 @@ export class SubagentRunner {
 										if ((sub as any).toolCallId === msg.toolCallId && sub.endTime && sub.startTime) {
 											durationMs = sub.endTime - sub.startTime;
 										}
+									}
 								}
+								toolCallTrailDump.push({
+									tool: tc.name,
+									label,
+									input: tc.arguments,
+									output,
+									isError,
+									durationMs,
+								});
 							}
-							toolCallTrailDump.push({
-								tool: tc.name,
-								label,
-								input: tc.arguments,
-								output,
-								isError,
-								durationMs,
-							});
 						}
 					}
 					if (toolCallTrailDump.length === 0) {
@@ -944,9 +984,8 @@ export class SubagentRunner {
 									isError: sub.errored ?? false,
 									durationMs: (sub.endTime ?? 0) - (sub.startTime ?? 0),
 								});
+							}
 						}
-					}
-				}
 					}
 					const dump = createFlightRecorderDump({
 						specialist: specialist.name,
