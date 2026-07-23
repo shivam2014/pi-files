@@ -553,7 +553,7 @@ describe("C1: live token accumulator", () => {
 
 		expect(d.tokenInput).toBe(450);   // 100+300+50
 		expect(d.tokenOutput).toBe(675);   // 200+400+75
-		expect(d.tokenCached).toBe(175);   // 50+100+25
+		expect(d.tokenCached).toBe(25);    // last turn's cacheRead (not cumulative)
 	});
 
 	it("captures ctxTokens from totalTokens", { timeout: 10_000 }, async () => {
@@ -571,7 +571,7 @@ describe("C1: live token accumulator", () => {
 		await new Promise(resolve => setTimeout(resolve, 200));
 
 		const d = updates.findLast((u: any) => u.details?.ctxTokens !== undefined)?.details;
-		expect(d.ctxTokens).toBe(15000);
+		expect(d.ctxTokens).toBe(1500);  // input(1000) + cacheRead(500) + cacheWrite(0)
 	});
 
 	it("agent_end handler accumulates (not overwrites)", { timeout: 10_000 }, async () => {
@@ -598,7 +598,7 @@ describe("C1: live token accumulator", () => {
 
 		expect(d.tokenInput).toBe(250);   // 100+150 (agent_end does NOT accumulate)
 		expect(d.tokenOutput).toBe(450);   // 200+250
-		expect(d.tokenCached).toBe(125);   // 50+75
-		expect(d.ctxTokens).toBe(175);     // refreshed from agent_end's last assistant message
+		expect(d.tokenCached).toBe(75);    // last turn's cacheRead (not cumulative 50+75)
+		expect(d.ctxTokens).toBe(75);      // prompt tokens: input(50) + cacheRead(25) + cacheWrite(0)
 	});
 });

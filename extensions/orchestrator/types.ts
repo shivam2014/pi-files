@@ -61,7 +61,7 @@ export interface ActivityFeedState {
 	tokenInput?: number;
 	/** Accumulated output tokens */
 	tokenOutput?: number;
-	/** Accumulated cached/read tokens */
+	/** Latest turn's cacheRead tokens (per-turn, not cumulative) */
 	tokenCached?: number;
 	/** Current context token count */
 	ctxTokens?: number;

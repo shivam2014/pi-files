@@ -677,8 +677,8 @@ export class SubagentRunner {
 						if (usage) {
 							accInput += usage.input || 0;
 							accOutput += usage.output || 0;
-							accCached += usage.cacheRead || 0;
-							ctxTokens = usage.totalTokens || 0;
+							accCached = usage.cacheRead || 0;
+							ctxTokens = (usage.input || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
 							if (!ctxWindow && model?.contextWindow) ctxWindow = model.contextWindow;
 							progressScheduler.schedule();
 						}
@@ -829,7 +829,8 @@ export class SubagentRunner {
 					const messages = event.messages as any[];
 					for (let i = messages.length - 1; i >= 0; i--) {
 						if (messages[i].role === "assistant" && messages[i].usage) {
-							ctxTokens = messages[i].usage.totalTokens || ctxTokens;
+							const u = messages[i].usage;
+							ctxTokens = ((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0)) || ctxTokens;
 							break;
 						}
 					}
