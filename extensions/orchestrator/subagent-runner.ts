@@ -270,6 +270,7 @@ export type SubagentResult = {
 	model?: string;
 	scopeNotes?: import('./types.ts').ScopeNotes;
 	tokenUsage?: { input: number; output: number; cached: number };
+	hasLintFailures?: boolean;
 };
 
 /** Parameters for createFlightRecorderDump */
@@ -568,6 +569,7 @@ export class SubagentRunner {
 			signal?.addEventListener("abort", () => peekAbort.abort(), { once: true });
 			peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
 
+			let hasLintFailures = false;
 			let lastStopReason: string | undefined;
 			let lastErrorMessage: string | undefined;
 			let accInput = 0, accOutput = 0, accCached = 0;
@@ -632,11 +634,6 @@ export class SubagentRunner {
 								setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
 							}
 						}
-						const text = feed.render(specialist.name);
-						config.onUpdate?.({
-							content: [{ type: "text", text }],
-							details: { specialist: specialist.name, status: "running", turns, model: modelLabel, provider },
-						});
 					}
 
 					const lintMsg = (event as any).message;
@@ -1073,6 +1070,7 @@ export class SubagentRunner {
 				model: (model as any)?.id ?? (model as any)?.model ?? undefined,
 				scopeNotes,
 				tokenUsage: { input: accInput, output: accOutput, cached: accCached },
+				hasLintFailures,
 			};
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);

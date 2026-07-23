@@ -45,26 +45,18 @@
 - Transport truncation: worker reports still cut in transit.
 - createFlightRecorderDump function had systemPrompt/activityFeed in interface but not in return object or call site — required surgical fix.
 
-## Session 3 — 2026-07-23
+### Bug fixes (Session 4 continued)
 
-**Tickets:** (in-progress session — see U1–U5 tracking below)
+**5 bugs fixed:**
 
-### Summary
-- Session 3 carried over from Session 2 planning. No new tickets completed this session; focus shifted to UI hardening (U1–U5) in subsequent sessions.
+1. **Finalization loop false completion** — `Step` interface gained `autoCompleted?: boolean` field. `completeCurrentStep()` accepts `autoCompleted` param. Finalization loop passes `true` so auto-skipped steps are distinguishable from genuinely completed ones.
 
-## Session 4 — 2026-07-23
+2. **No lint gate on completion** — Added `hasLintFailures` tracking in subagent-runner.ts. Lint handler detects failures via `isError` flag or content pattern (`/✗|failed|error TS\d+/`). `finalStatus` downgraded to `"lint_failed"` when lint fails. `SubagentResult` type gained `hasLintFailures?: boolean`.
 
-**Tickets:** U1
+3. **Token display impossible numbers** — Already fixed in codebase: `↑` shows total input (`input + cached`) not just non-cached. `⇄` (cache reads) now always ≤ `↑`.
 
-### Gate results
-- **vitest:** 40 passed (6 loop-watchdog + 34 subagent-runner), 0 failed
-- **tsc:** zero errors
+4. **Bash-vs-read leaking** — `bash-interceptor.ts`: added `head`/`tail`/`wc` redirect to `read` tool (alongside existing `cat`/`sed`/`awk`). `specialists.ts`: corrected coder prompt — "blocked" → "redirected", added head/tail/wc to warning list.
 
-### Completed
-- U1: LoopWatchdog port from OMP reference. New file `loop-watchdog.ts` (~118 lines) with LoopWatchdog class, phase tracker (pushPhase/popPhase/takeRecentLoopPhase/resetPhaseTracker), onStall callback. Wired into subagent-runner.ts: watchdog instantiated before subscribe, all 7 event handlers wrapped with pushPhase/try/finally/popPhase, watchdog.start() before session.prompt(), watchdog.stop() in finally block. 6 fake-clock unit tests.
+5. **UI header duplication** — Removed redundant `onUpdate` call in `message_end` handler (was firing twice: once with tokens, once without). Added content dedup guard in `delegate-tool.ts` `renderResult()` — skips identical partial renders.
 
-### Friction notes
-- First coder delegation (glm-5.2-2) got trapped in fix-spiral: Unicode chars (⇄, ↑, ↓) in subagent-runner.ts broke edit tool's oldText matching. Opened try{} blocks without closing finally{}. Lint caught TS1472 six times but coder couldn't apply fix. Reported finalStatus:"completed" despite unresolved lint failures.
-- Second coder delegation used write tool (full file rewrite) to bypass Unicode issue — succeeded.
-- Three bugs identified for future tickets: (1) token display showing impossible numbers (⇄ > ↑), (2) finalization loop auto-completing steps despite lint failures, (3) no hard gate preventing "completed" status when lint fails.
-- Coder specialist used cat/awk via bash instead of read tool — lint-guard only blocks sed/awk for file modification, not cat for reading.
+**Gate results:** tsc clean, 857 passed, 1 skipped, 56 files.

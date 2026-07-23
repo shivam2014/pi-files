@@ -155,7 +155,10 @@ export function getBashToolReplacement(command: string | undefined, override?: b
   const { name, rest } = cmd;
   const text = `${name} ${rest}`;
   switch (name) {
-    case "cat": return { allowed: true, tool: "read" };
+    case "cat":
+    case "head":
+    case "tail":
+    case "wc": return { allowed: true, tool: "read" };
     case "grep":
     case "rg": return { allowed: true, tool: "grep" };
     case "find": return { allowed: true, tool: "find" };

@@ -113,6 +113,10 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			const details = result.details as any;
 			const text = result?.content?.[0]?.type === "text" ? result.content[0].text : "";
 
+		// Dedup: skip if content text unchanged since last render
+		if (text && text === state.lastRenderedText && isPartial) return context.lastComponent ?? new Text("", 0, 0);
+		if (text) state.lastRenderedText = text;
+
 			if (isPartial && !state.interval) {
 					context.invalidate(); // first paint so spinner shows before ✓
 					state.interval = setInterval(() => {

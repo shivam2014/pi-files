@@ -39,6 +39,7 @@ export interface Substep {
 export interface Step {
 	label: string;
 	completed: boolean;
+	autoCompleted?: boolean;
 	substeps: Substep[];
 	startTime?: number;
 	endTime?: number;

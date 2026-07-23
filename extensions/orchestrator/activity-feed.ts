@@ -307,7 +307,7 @@ export function updateActiveSubstepOutput(state: ActivityFeedState, outputPrevie
 	return { ...state, steps: newSteps };
 }
 
-export function completeCurrentStep(state: ActivityFeedState): ActivityFeedState {
+export function completeCurrentStep(state: ActivityFeedState, autoCompleted = false): ActivityFeedState {
 	if (state.currentStep < 0 || state.currentStep >= state.steps.length) return state;
 	const now = Date.now();
 	const newSteps = state.steps.map((s, i) => {
@@ -315,6 +315,7 @@ export function completeCurrentStep(state: ActivityFeedState): ActivityFeedState
 		return {
 			...s,
 			completed: true,
+			autoCompleted,
 			endTime: now,
 			substeps: s.substeps.map(sub => ({ ...sub, completed: true, endTime: sub.endTime || now })),
 		};
@@ -859,8 +860,8 @@ export class ActivityFeed {
 		return this;
 	}
 
-	completeCurrentStep(): this {
-		this.state = completeCurrentStep(this.state);
+	completeCurrentStep(autoCompleted = false): this {
+		this.state = completeCurrentStep(this.state, autoCompleted);
 		return this;
 	}
 
