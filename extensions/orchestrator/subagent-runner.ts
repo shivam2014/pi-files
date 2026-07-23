@@ -47,6 +47,53 @@ import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearVie
 import { gitReadTool, ghTool } from "./scout-tools.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
 
+/**
+ * Timer-based progress emission coalescer.
+ *
+ * Instead of checking Date.now() - lastEmit >= threshold (which still emits
+ * immediately when threshold has passed), this uses a deferred emission model:
+ * 1. When any event wants to emit progress, call schedule()
+ * 2. If a timer is already armed, do nothing (pending emit will include this update)
+ * 3. If no timer armed, schedule one for coalesceMs ahead
+ * 4. When timer fires: call the actual emit function, clear the timer
+ * 5. Naturally batches bursts: 9 calls in 10ms -> 1 emission 150ms later
+ */
+class ProgressScheduler {
+	private timer: ReturnType<typeof setTimeout> | null = null;
+	private readonly coalesceMs: number;
+	private readonly emit: () => void;
+
+	constructor(emit: () => void, coalesceMs: number = 150) {
+		this.emit = emit;
+		this.coalesceMs = coalesceMs;
+	}
+
+	schedule(): void {
+		if (this.timer !== null) return; // Already armed - pending emit will cover this
+		this.timer = setTimeout(() => {
+			this.timer = null;
+			this.emit();
+		}, this.coalesceMs);
+	}
+
+	/** Force an immediate emission, canceling any pending timer. */
+	flush(): void {
+		if (this.timer !== null) {
+			clearTimeout(this.timer);
+			this.timer = null;
+		}
+		this.emit();
+	}
+
+	/** Cancel any pending timer without emitting. */
+	dispose(): void {
+		if (this.timer !== null) {
+			clearTimeout(this.timer);
+			this.timer = null;
+		}
+	}
+}
+
 /** Optional orchestrator UI for dynamic status messages */
 export interface OrchestratorUi {
 	setWorkingMessage: (msg?: string) => void;
@@ -575,8 +622,19 @@ export class SubagentRunner {
 			let accInput = 0, accOutput = 0, accCached = 0;
 			let ctxTokens = 0;
 			let ctxWindow: number | undefined;
-			let lastProgressEmit = 0;
 			const PROGRESS_COALESCE_MS = 150;
+
+			// Timer-based progress coalescer — batches rapid emissions into one per window
+			const progressScheduler = new ProgressScheduler(() => {
+				const elapsed = Date.now() - startTime;
+				feed.feedState = { ...feed.feedState, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, ctxWindow };
+				const text = feed.render(specialist.name);
+				config.onUpdate?.({
+					content: [{ type: "text", text }],
+					details: { specialist: specialist.name, status: "running", turns, model: modelLabel, provider, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, ctxWindow, elapsedMs: elapsed },
+				});
+				setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
+			}, PROGRESS_COALESCE_MS);
 
 			const watchdog = new LoopWatchdog({
 				onStall: (info) => { debugLog("[watchdog] loop-blocked:", info); },
@@ -596,11 +654,7 @@ export class SubagentRunner {
 							recordTimelineFrame("step_started", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
 						}
 						pushStreamingText(event.assistantMessageEvent.delta);
-						const textDelta = feed.render(specialist.name);
-						config.onUpdate?.({
-							content: [{ type: "text", text: textDelta }],
-							details: { status: "running", streaming: true, model: modelLabel, provider },
-						});
+						progressScheduler.schedule();
 					} finally {
 						popPhase();
 					}
@@ -622,17 +676,7 @@ export class SubagentRunner {
 							accCached += usage.cacheRead || 0;
 							ctxTokens = usage.totalTokens || 0;
 							if (!ctxWindow && model?.contextWindow) ctxWindow = model.contextWindow;
-							const now = Date.now();
-							if (now - lastProgressEmit >= PROGRESS_COALESCE_MS) {
-								lastProgressEmit = now;
-								feed.feedState = { ...feed.feedState, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, ctxWindow };
-								const text = feed.render(specialist.name);
-								config.onUpdate?.({
-									content: [{ type: "text", text }],
-									details: { specialist: specialist.name, status: "running", turns, model: modelLabel, provider, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, elapsedMs: now - startTime },
-								});
-								setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
-							}
+							progressScheduler.schedule();
 						}
 					}
 
@@ -673,11 +717,7 @@ export class SubagentRunner {
 					} else {
 						updatePlanStepDetail(substepLabel, orchestratorCtx);
 					}
-					const text = feed.render(specialist.name);
-					config.onUpdate?.({
-						content: [{ type: "text", text }],
-						details: { specialist: specialist.name, status: "running", tool: event.toolName, model: modelLabel, provider },
-					});
+					progressScheduler.schedule();
 					} finally {
 						popPhase();
 					}
@@ -699,8 +739,7 @@ export class SubagentRunner {
 									if (newActiveStep) {
 										updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps), orchestratorCtx);
 									}
-									const text = feed.render(specialist.name);
-									config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", tool: event.toolName, model: modelLabel, provider } })
+									progressScheduler.schedule();
 								}
 							}
 						}
@@ -772,11 +811,7 @@ export class SubagentRunner {
 					if (activeStep && activeStep.substeps.length > 0) {
 						updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
 					}
-					const text = feed.render(specialist.name);
-					config.onUpdate?.({
-						content: [{ type: "text", text }],
-						details: { specialist: specialist.name, status: "running", model: modelLabel, provider },
-					});
+					progressScheduler.schedule();
 					} finally {
 						popPhase();
 					}
@@ -798,10 +833,7 @@ export class SubagentRunner {
 					const cachePart = accCached > 0 ? ` \u21C4${formatTokens(accCached)}` : "";
 					updatePlanStepDetail([`tokens: \u2191${formatTokens(accInput)}${cachePart} \u2193${formatTokens(accOutput)}`], orchestratorCtx);
 					setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
-					config.onUpdate?.({
-						content: [{ type: "text", text: feed.render(specialist.name) }],
-						details: { specialist: specialist.name, status: "running", tokens: total, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
-					});
+					progressScheduler.schedule();
 					} finally {
 						popPhase();
 					}
@@ -817,39 +849,10 @@ export class SubagentRunner {
 				}
 			});
 
-			// Periodic re-render timer
-			let renderTimer: ReturnType<typeof setInterval> | null = null;
+			// Periodic elapsed-time timer (1s) — uses flush for forced immediate emission
 			let elapsedTimer: ReturnType<typeof setInterval> | null = null;
-			let _lastRenderText: string | null = null;
-			let _lastFrame: string = "";
-
-			const startRenderTimer = () => {
-				renderTimer = setInterval(() => {
-					if (feed.steps.length > 0 || output.length > 0) {
-						const text = feed.render(specialist.name);
-						const frame = currentFrame();
-						if (frame !== _lastFrame || text !== _lastRenderText) {
-							_lastRenderText = text;
-							_lastFrame = frame;
-							config.onUpdate?.({
-								content: [{ type: "text", text }],
-								details: { specialist: specialist.name, status: "running", model: modelLabel, provider },
-							});
-						}
-					}
-				}, SPINNER_INTERVAL_MS);
-			};
-			startRenderTimer();
-
-			// Periodic elapsed-time timer (1s)
 			elapsedTimer = setInterval(() => {
-				const elapsed = Date.now() - startTime;
-				feed.feedState = { ...feed.feedState, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, ctxWindow };
-				config.onUpdate?.({
-					content: [{ type: "text", text: feed.render(specialist.name) }],
-					details: { specialist: specialist.name, status: "running", elapsedMs: elapsed, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxWindow, model: modelLabel, provider },
-				});
-				setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
+				progressScheduler.flush();
 			}, 1000);
 
 			// Abort handler
@@ -903,19 +906,15 @@ export class SubagentRunner {
 			} finally {
 				watchdog.stop();
 				unsubscribe();
-				if (renderTimer) {
-					clearInterval(renderTimer);
-					renderTimer = null;
-				}
+				progressScheduler.dispose();
 				if (elapsedTimer) {
 					clearInterval(elapsedTimer);
 					elapsedTimer = null;
 				}
 				delete process.env[SubagentRunner.SUBAGENT_ENV_KEY];
-				_lastRenderText = null;
 				if (signal) signal.removeEventListener("abort", abortHandler);
 
-				// ── Flight Recorder: dump full session conversation for post-hoc debugging ──
+				// -- Flight Recorder: dump full session conversation for post-hoc debugging --
 				try {
 					const debugDir = '/tmp/orchestrator-debug';
 					try { mkdirSync(debugDir, { recursive: true }); } catch {}
@@ -1023,6 +1022,8 @@ export class SubagentRunner {
 				}
 			}
 
+			// Flush any pending coalesced progress before sending final status
+			progressScheduler.flush();
 			const finalText = feed.render(specialist.name);
 			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached } });
 			setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
@@ -1055,7 +1056,7 @@ export class SubagentRunner {
 					scopeNotes = {
 						blockedTools,
 						assessment,
-						summary: `${blockedTools.length} tool call(s) blocked — ${blockedTools.map(b => `${b.tool}(${b.target})`).join(', ')}`,
+						summary: `${blockedTools.length} tool call(s) blocked \u2014 ${blockedTools.map(b => `${b.tool}(${b.target})`).join(', ')}`,
 					};
 				}
 			}

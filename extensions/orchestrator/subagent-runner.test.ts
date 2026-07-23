@@ -545,6 +545,9 @@ describe("C1: live token accumulator", () => {
 		// toolResult message_end should be ignored
 		ref.subscribeCb!({ type: "message_end", message: { role: "tool", usage: { input: 999, output: 999, cacheRead: 999, totalTokens: 2997 } } });
 
+		// Wait for scheduler to flush (150ms coalesce window)
+		await new Promise(resolve => setTimeout(resolve, 200));
+
 		// Last token-bearing update (unconditional emission follows each coalesced one)
 		const d = updates.findLast((u: any) => u.details?.tokenInput !== undefined)?.details;
 
@@ -563,6 +566,9 @@ describe("C1: live token accumulator", () => {
 		}, { timeout: 5000 });
 
 		ref.subscribeCb!({ type: "message_end", message: { role: "assistant", usage: { input: 1000, output: 2000, cacheRead: 500, totalTokens: 15000 } } });
+
+		// Wait for scheduler to flush
+		await new Promise(resolve => setTimeout(resolve, 200));
 
 		const d = updates.findLast((u: any) => u.details?.ctxTokens !== undefined)?.details;
 		expect(d.ctxTokens).toBe(15000);
@@ -584,7 +590,10 @@ describe("C1: live token accumulator", () => {
 		// agent_end has no event.usage — should NOT add to accumulators, only refresh ctxTokens
 		ref.subscribeCb!({ type: "agent_end", messages: [{ role: "assistant", usage: { input: 50, output: 100, cacheRead: 25, cacheWrite: 0, totalTokens: 175 } }] });
 
-		const lastUpdate = updates[updates.length - 1];
+		// Wait for scheduler to flush
+		await new Promise(resolve => setTimeout(resolve, 200));
+
+		const lastUpdate = updates.findLast((u: any) => u.details?.tokenInput !== undefined);
 		const d = lastUpdate.details;
 
 		expect(d.tokenInput).toBe(250);   // 100+150 (agent_end does NOT accumulate)

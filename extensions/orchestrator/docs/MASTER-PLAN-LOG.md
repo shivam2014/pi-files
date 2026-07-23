@@ -39,19 +39,41 @@
 - maxTurns removal: Removed 30-turn hard abort from subagent-runner.ts. Subagents now run until natural completion or timeout.
 - Replay cleanup: Removed broken /replay command from commands.ts. Reverted replay mode from peek-overlay.ts.
 
-### Token display fix (Session 4 continued)
-
-**Token display clarity fix:**
-- Added cache hit rate `CH{pct}%` after `⇄` — explains why cache reads can exceed non-cached input
-- Changed `ctx` → `↕` to visually distinguish point-in-time context from cumulative metrics
-- Format: `↑80k ⇄770k CH91% ↓7.1k ↕40k/1.0M`
-- `CH%` and `⇄` hidden when no caching (cacheRead === 0)
-- Updated 2 test assertions in activity-feed-tokens.test.ts
-
-**Gate results:** tsc clean, 857 passed, 1 skipped, 56 files.
-
 ### Friction notes
 - Coder subagent hit maxTurns=30 THREE TIMES, each time leaving file in broken state (syntax errors from incomplete edits). Root cause: no turn budget awareness in subagent prompt + 30-turn limit too low for complex multi-edit tasks. Fix: removed maxTurns entirely.
 - Coder wasted 2 turns per session on blocked bash calls (sed, cat blocked by interceptor, then python3 workaround).
 - Transport truncation: worker reports still cut in transit.
 - createFlightRecorderDump function had systemPrompt/activityFeed in interface but not in return object or call site — required surgical fix.
+
+## WS-U Complete — U2-U5 (Session 4 continued)
+
+**U2 — Collapse viewport:**
+- Replaced naive `trimToBudget` with OMP-inspired `selectCollapsedSteps` in plan-panel.ts
+- Active-steps-first selection policy: open steps prioritized, fill remaining with pending after active
+- PAN-005 fixed: goal line always preserved as first output line
+- Removed dead code: `activeIdx` variable, `_spinnerRe` field, `SPINNER_FRAMES` import
+- Added "… N more" summary line for hidden pending steps
+
+**U3 — Progress emission dedup:**
+- Added `ProgressScheduler` class with `schedule()`, `flush()`, `dispose()` methods
+- Replaced 13 uncoordinated `config.onUpdate` calls with timer-based 150ms coalesce
+- 6 event handlers now use `progressScheduler.schedule()` (deferred emission)
+- Error/abort/plan-changes/lint still emit immediately (not coalesced)
+- Removed 80ms render timer (scheduler handles periodic updates)
+- Elapsed timer uses `progressScheduler.schedule()` instead of direct onUpdate
+- Burst of tool calls → ≤1 emission per 150ms window
+
+**U4 — recentTools surface:**
+- Bumped `renderSubstepLines` default `maxLines` from 3 → 5 in activity-feed.ts
+- Plan panel step detail now shows up to 5 recent tool calls (substeps)
+- Data already existed in `feed.steps[currentStep].substeps[]` — rendering change only
+
+**U5 — tui-smoke.sh modernization:**
+- Fixed test 2 (render log exists): added `mkdir -p /tmp/tui`
+- Fixed test 3 (plan panel visible): grep pattern corrected to match `◆` and `Step [0-9]+:`
+- Fixed test 6 (plan panel not collapsed): renamed to `test_plan_panel_cleared_after_complete`, inverted assertion — now passes when panel cleared post-completion (correct behavior)
+- New test 10: `test_token_glyphs_visible` — checks for `↑` or `↕` glyphs
+- New test 11: `test_fold_line_after_complete` — checks for `✓ N completed` fold line
+- Test count: 9 → 11
+
+**Gate results:** tsc clean, 857 passed, 1 skipped, 56 files. bash -n clean for tui-smoke.sh.

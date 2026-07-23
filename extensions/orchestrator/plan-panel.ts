@@ -5,7 +5,7 @@ import { styledSymbol, formatDuration as thFormatDuration, partialStrikethrough,
 import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilState, LoopIteration, LoopUntilStepInput } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
-import { SPINNER_INTERVAL_MS, SPINNER_FRAMES, resetSpinner } from "./spinner-state.ts";
+import { SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
 
 import { debugLog } from "./debug.ts";
 import { getSessionMode } from "./orchestrator-config";
@@ -207,64 +207,106 @@ export class PlanPanel {
 		};
 	}
 
-	private _spinnerRe = new RegExp(`^[${SPINNER_FRAMES.join("")}]`);
-
   // ── Strike animation state ──────────────────────────────────────
   private _strikeTimer: ReturnType<typeof setInterval> | null = null;
   private _strikeFrame = 0;
   private _strikeLabelText: string = "";
   private _strikeStepIdx: number = -1;
 
-private trimToBudget(lines: string[], budget: number): string[] {
+private selectCollapsedSteps(lines: string[], budget: number): string[] {
 	if (lines.length <= budget) return lines;
+	if (!this.planState) return lines;
 
-	// Find the active step line (spinner character)
-	let activeIdx = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (this._spinnerRe.test(lines[i].trimStart())) { activeIdx = i; break; }
-	}
-
-	// Separate: goal (line 0), dots (line 1), steps (line 2+)
+	// Always preserve goal (line 0) + dots (line 1) — PAN-005 fix
 	const goalLine = lines[0] ?? "";
 	const dotsLine = lines[1] ?? "";
-	const stepLines = lines.slice(2);
+	const restLines = lines.slice(2);
 
-	// Count completed steps (lines starting with ✓ status icon)
-	const completedPrefixes = stepLines.filter(l => l.includes("✓") && !l.includes("⠋") && !l.includes("⠙") && !l.includes("⠹") && !l.includes("⠸") && !l.includes("⠼") && !l.includes("⠴") && !l.includes("⠦") && !l.includes("⠧") && !l.includes("⠇") && !l.includes("⠏"));
-	const completedCount = completedPrefixes.length;
+	// ── Classify steps using planState data (robust vs ANSI regex) ──
+	const steps = this.planState.steps;
+	const completedCount = steps.filter(s => s.completed).length;
+	const hasFold = completedCount > 0;
 
-	// Find active step index within stepLines
-	let activeStepIdx = -1;
-	for (let i = 0; i < stepLines.length; i++) {
-		if (this._spinnerRe.test(stepLines[i].trimStart())) { activeStepIdx = i; break; }
+	// Map rendered lines to step groups by "Step N:" pattern
+	const stepHeaderRe = /Step (\d+):/;
+	const stepRanges: { start: number; end: number; stepIdx: number }[] = [];
+	let currentStepIdx = -1;
+	let currentStart = -1;
+
+	for (let i = 0; i < restLines.length; i++) {
+		const m = restLines[i].match(stepHeaderRe);
+		if (m) {
+			const stepNum = parseInt(m[1], 10) - 1;
+			if (currentStepIdx >= 0) {
+				stepRanges.push({ start: currentStart, end: i, stepIdx: currentStepIdx });
+			}
+			currentStepIdx = stepNum;
+			currentStart = i;
+		}
+	}
+	if (currentStepIdx >= 0) {
+		stepRanges.push({ start: currentStart, end: restLines.length, stepIdx: currentStepIdx });
 	}
 
-	// Build output: goal + dots + optional fold line + active + next 2 pending
+	// Separate into active, pending, completed (using planState, not regex)
+	const activeRanges: typeof stepRanges = [];
+	const pendingRanges: typeof stepRanges = [];
+
+	for (const range of stepRanges) {
+		const step = steps[range.stepIdx];
+		if (!step || step.completed) continue;
+		if (step.active) {
+			activeRanges.push(range);
+		} else {
+			pendingRanges.push(range);
+		}
+	}
+
+	const totalOpen = activeRanges.length + pendingRanges.length;
+
+	// ── Budget: goal(1) + dots(1) + fold(0/1) + steps + summary(0/1) ──
+	const baseOverhead = 2 + (hasFold ? 1 : 0);
+	let stepBudget = budget - baseOverhead - 1; // reserve 1 for potential summary
+	if (stepBudget < 1) stepBudget = 1;
+
+	// ── OMP selection policy: active first, then fill with pending ──
+	const selectedRanges: typeof stepRanges = [];
+	for (const range of activeRanges) {
+		if (selectedRanges.length >= stepBudget) break;
+		selectedRanges.push(range);
+	}
+	for (const range of pendingRanges) {
+		if (selectedRanges.length >= stepBudget) break;
+		selectedRanges.push(range);
+	}
+
+	// If all open steps fit, try adding one more (reserved slot freed)
+	if (selectedRanges.length < totalOpen && selectedRanges.length < stepBudget + 1) {
+		// hidden > 0 — summary needed, slot already reserved
+	} else if (selectedRanges.length === totalOpen && selectedRanges.length < budget - baseOverhead) {
+		// All open fit and room to spare — nothing more to add
+	}
+
+	const hiddenCount = totalOpen - selectedRanges.length;
+
+	// ── Build output ──
 	const result: string[] = [goalLine, dotsLine];
-	let usedLines = 2;
-
-	// Fold line: if there are completed steps, show "✓ N completed"
-	if (completedCount > 0) {
+	if (hasFold) {
 		result.push(`  ✓ ${completedCount} completed`);
-		usedLines++;
 	}
 
-	// Budget remaining after goal + dots + fold
-	const remaining = budget - usedLines;
+	// Include preamble (non-step lines between dots and first step, e.g. token line)
+	const firstStepLine = stepRanges.length > 0 ? stepRanges[0].start : restLines.length;
+	result.push(...restLines.slice(0, firstStepLine));
 
-	if (activeStepIdx >= 0) {
-		// Show active step + up to 2 pending after it
-		const afterActive = stepLines.slice(activeStepIdx);
-		const keep = Math.min(afterActive.length, remaining);
-		for (let i = 0; i < keep; i++) {
-			result.push(afterActive[i]);
-		}
-	} else {
-		// No active step — show last `remaining` lines
-		const keep = Math.min(stepLines.length, remaining);
-		for (let i = stepLines.length - keep; i < stepLines.length; i++) {
-			result.push(stepLines[i]);
-		}
+	// Selected step groups in original order
+	selectedRanges.sort((a, b) => a.start - b.start);
+	for (const range of selectedRanges) {
+		result.push(...restLines.slice(range.start, range.end));
+	}
+
+	if (hiddenCount > 0) {
+		result.push(`  … ${hiddenCount} more`);
 	}
 
 	return result;
@@ -272,7 +314,7 @@ private trimToBudget(lines: string[], budget: number): string[] {
 
 	private renderPlanLines(): string[] {
 		if (!this.planState) return [];
-		return this.trimToBudget(renderActivityFeed("", this.toFeedState(this.planState)).split("\n"), BUDGET);
+		return this.selectCollapsedSteps(renderActivityFeed("", this.toFeedState(this.planState)).split("\n"), BUDGET);
 	}
 
 	private _renderWidget(): void {

@@ -508,7 +508,7 @@ export function appendWebSearchResults(label: string, totalResults: number): str
  * Returns indented lines with status icons (✓ for completed, ▶ for active)
  * and optional output preview appended to completed substeps.
  */
-export function renderSubstepLines(substeps: Substep[], maxLines: number = 3): string[] {
+export function renderSubstepLines(substeps: Substep[], maxLines: number = 5): string[] {
 	const visible = substeps.slice(-maxLines);
 	const hidden = substeps.length - visible.length;
 	const lines: string[] = [];

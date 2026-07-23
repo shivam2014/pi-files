@@ -5,56 +5,54 @@
 
 ## Where we are
 
-**Session 3 complete (2026-07-22).** Committed [hash] on main.
+**Session 5 complete (2025-07-22).** Commits: 963c87a (U1 LoopWatchdog), 38accda (5 bug fixes), 018680e (token display CH% + ↕).
 
-WS-T (tokens) is shipped (T1 + T2 + T3). Next session picks up at WS-U (UI hardening).
+U1 — LoopWatchdog ported from OMP. Next session picks up at U2 — Collapse viewport.
 
-### What shipped in Session 3
-- **T1** — SDK-true token accumulator: fixed field names in subagent-runner.ts (usage.inputTokens→input, outputTokens→output, cachedTokens→cacheRead). agent_end handler fixed: reads from event.messages[] last assistant message (no event.usage exists). Removed dead "done" event check. All test mocks updated to SDK Usage shape.
-- **T2** — Token line render in activity-feed: ↑{input} ⇄{cacheRead} ↓{output} · ctx {cur}/{win}. New renderTokenLine() function. SYMBOLS gained token.input (↑), token.output (↓), token.cacheRead (⇄). ActivityFeedState gained token fields. ⇄ hidden when cacheRead==0. Line frozen on completion. 10 new tests in activity-feed-tokens.test.ts.
-- **T3** — Secondary surfaces: plan-panel step detail shows live tokens via detailLines array. peek-overlay header gets token segment via new setViewerTokens() API. delegate-tool.ts cache glyph changed from ◎ to ⇄. subagent-runner.ts feeds token data to all three surfaces.
+### What shipped this session
+
+- **U1 — LoopWatchdog port from OMP.** New loop-watchdog.ts (118 lines), wired into subagent-runner.ts (all 7 event handlers with pushPhase/try/finally/popPhase, watchdog lifecycle). 6 fake-clock unit tests. Commit 963c87a.
+- **5 bug fixes** found during U1, all fixed. Commit 38accda:
+  1. Finalization loop false completion → autoCompleted flag on Step
+  2. No lint gate on completion → hasLintFailures tracking, finalStatus="lint_failed"
+  3. Token display misleading → CH{pct}% cache hit rate + ↕ for point-in-time. Commit 018680e.
+  4. Bash cat/head/tail/wc not blocked → redirected to read tool by bash-interceptor
+  5. UI header duplication → removed redundant onUpdate + render dedup guard in delegate-tool.ts
+
+### Commits this session
+
+- `963c87a` — U1: LoopWatchdog port
+- `38accda` — Fix 5 bugs: finalization loop, lint gate, token display, bash-vs-read, UI dup
+- `018680e` — Token display: add CH% cache hit rate, ↕ for point-in-time context
+
+### Gate results
+
+- `tsc`: zero errors
+- `vitest`: 857 passed, 1 skipped, 56 files
 
 ## Next steps (in order)
-1. **WS-U (UI hardening):** U1 LoopWatchdog (port from ~/omp-reference), U2 collapse viewport, U3 progress dedup, U4 recentTools, U5 tui-smoke modernization.
-2. **WS-PR (prompt layer):** P1-P6 — worker truth gaps, dead prompt machinery, findings salvage, routing table, prompt compression, communication contract.
-3. **WS-P (PBT guard):** Scoping grill with CEO first. Property-based testing as deterministic worker feedback.
-4. **WS-L (loop engine v2):** Metric abstraction + trajectory classifier + best-so-far rollback + fresh-context iterations + budget governor + loop UI.
 
-## Critical context for any session
+1. **U2 — Collapse viewport.** Adapt OMP selectCollapsedTodos. Active-steps-first selection replaces naive trimToBudget; fix PAN-005 (goal line can drop in fallback). Keep "✓ N completed" fold line. Accept: 12-step plan ≤9 lines, active always visible, goal never dropped.
+2. **U3 — Progress emission dedup.** OMP scheduleProgress pattern. Replace inline Date.now() coalesce with timer-based dedup. Accept: burst of tool calls → ≤1 emission per 150ms window.
+3. **U4 — recentTools surface.** Last ≤5 tool calls shown in plan-panel step detail for debugging stuck workers. Accept: detail renders recent tool history.
+4. **U5 — tui-smoke.sh modernization.** Detect panel from tmux capture-pane; match real widget output ('⠋ Plan:', '✓ N completed'); assert cleared-after-complete as correct behavior; add token glyph (↑/↕/CH) assertions. Accept: 9/9 or documented remaining gaps.
+5. **H1 — End-of-session mechanical:** sync + commit + push from ~/pi-files; append docs/MASTER-PLAN-LOG.md.
+6. **WS-PR (prompt layer):** P1-P6
+7. **WS-P (PBT guard):** Scoping grill with CEO first.
+8. **WS-L (loop engine v2)**
 
-### CEO communication contract
-- User is CEO, orchestrator is manager. CEO steers at architecture-part-level (knows every part + purpose, not code).
-- ADHD-shaped output: lead with next action, numbered steps, restate state per turn, ≤5 items per list, one concrete next action, no preamble/closer.
-- No silent mechanisms: every new guard/check/feature announced in plain language before or as it ships.
-- Internals (file:line) on request only.
-- No model-strength detection — design for weakest, never degrade strong.
-- CEO priority: full tool call I/O capture in flight recorder for debugging. Replay/peek is secondary.
+## Friction notes this session
 
-### Known issues (not bugs, tracked tickets)
-- Transport truncation: long worker reports get cut in transit to orchestrator — P3 ticket.
-- DEFAULTS.delegation.maxTurns (30) still in orchestrator-config.ts — not enforced anymore but config is stale.
-- Coder subagents waste turns on blocked bash calls (sed/cat blocked by interceptor, then python3 workaround). Subagent prompts don't mention turn budget or blocked tool workarounds.
+- First U1 coder delegation (glm-5.2-2) got trapped in fix-spiral: Unicode chars (⇄, ↑, ↓) in subagent-runner.ts broke edit tool's oldText matching. Lint caught TS1472 six times but coder couldn't apply fix. Reported finalStatus:"completed" despite unresolved lint failures. Second coder delegation used write tool (full file rewrite) to bypass — succeeded.
+- Edit tool consistently fails on files with Unicode characters. Workaround: use write tool for full file rewrite. Affects every delegation touching subagent-runner.ts, activity-feed.ts, or any file with theme symbols.
+- No hard gate prevented "completed" status when lint failed — now fixed with hasLintFailures tracking.
+- Finalization loop auto-completed steps despite lint failures — now fixed with autoCompleted flag.
 
-### Key files
-- docs/MASTER-PLAN.md — tickets, session breakdown, verification gates
-- docs/VISION.md — Core Doctrine (8 items), 19 principles, non-goals
-- docs/MASTER-PLAN-LOG.md — per-session log with friction notes
-- ~/omp-reference/ — OMP codebase (parts bin, NOT /tmp)
-- delegate-pipeline.ts — delegation pipeline (diagnostic triggers widened in O2)
-- subagent-runner.ts — subagent session runner + flight recorder dump (enriched in O3, maxTurns removed)
-- subagent-diagnostics.ts — diagnostic capture (widened in O2: tool_errors + blocked_calls kinds)
-- prompt-builder.ts — orchestrator system prompt assembly (WS-PR)
-- specialists.ts — specialist definitions + prompts (WS-PR)
-- vitest.setup.ts — theme singleton mock for tests (new in Session 2)
-- plan-tool.ts — plan tool handler (object-type step label fix)
+## Artifacts
 
-### Baseline
-- 851 vitest tests green, 1 skipped (55 files)
-- tsc zero errors
-- Git: main branch, github.com/shivam2014/pi-files
-
-### Flight recorder debugging workflow
-1. Delegations run → JSON written to /tmp/orchestrator-debug/delegation-<timestamp>-<specialist>.json
-2. JSON now includes: full tool call inputs/outputs (not truncated), systemPrompt, activityFeed snapshot, blockedCalls, planSteps, metrics, tokenSummary
-3. To investigate a past delegation: bring the JSON to a session and analyze with the orchestrator
-4. Diagnostic records also written to {agentDir}/extensions/orchestrator/diagnostics/ on tool errors, blocked calls, silent failures, and crashes
+- MASTER-PLAN.md: `/Users/shivam94/.pi/agent/extensions/orchestrator/docs/MASTER-PLAN.md`
+- MASTER-PLAN-LOG.md: `/Users/shivam94/.pi/agent/extensions/orchestrator/docs/MASTER-PLAN-LOG.md`
+- VISION.md: `/Users/shivam94/.pi/agent/extensions/orchestrator/docs/VISION.md`
+- OMP reference: `/Users/shivam94/omp-reference/`
+- Token diagnosis report: `/tmp/token-diagnosis-report.md`
+- UI/bash diagnosis report: `/tmp/orchestrator-ui-bash-diagnosis.md`
