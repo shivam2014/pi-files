@@ -677,7 +677,7 @@ export class SubagentRunner {
 						if (usage) {
 							accInput += usage.input || 0;
 							accOutput += usage.output || 0;
-							accCached = usage.cacheRead || 0;
+							accCached += usage.cacheRead || 0;
 							ctxTokens = (usage.input || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
 							if (!ctxWindow && model?.contextWindow) ctxWindow = model.contextWindow;
 							progressScheduler.schedule();

@@ -437,6 +437,7 @@ export class DelegatePipeline {
 			stopReason: result?.stopReason,
 			errorMessage: result?.errorMessage,
 			partialResults: hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]"),
+			partialMarker: (hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]")) ? "⚠ PARTIAL" : undefined,
 			// Model info for UI display badge
 			model: (() => {
 				const m = (ctx as any)?.model;
@@ -559,8 +560,8 @@ export class DelegatePipeline {
 				total: allResults.length,
 				succeeded: allResults.filter(r => r.success).length,
 				failed: allResults.filter(r => !r.success).length,
-				totalElapsed_ms: totalElapsed,
-				maxConcurrent,
+				partialResults: false,
+				partialMarker: undefined,
 			},
 		};
 	}

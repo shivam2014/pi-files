@@ -4,6 +4,23 @@
 > Supersedes v1 (2026-07-22 CEO review). Doctrine: docs/VISION.md "Core Doctrine".
 > Orchestrator: read this file at session start, pick first unblocked unchecked ticket, declare plan, delegate, verify, check off.
 
+## Status Summary
+
+| Completed Workspaces | Status |
+|---|---|
+| WS-H — Housekeeping | ✅ H0 done |
+| WS-R — Removal | ✅ R1-R4 done |
+| WS-T — Live tokens | ✅ T1-T3 done |
+| WS-O — Flight recorder | ✅ O1-O3 done |
+| WS-U — UI hardening | ✅ U1-U5 done |
+| WS-PR — Prompt & info layer | ✅ P1-P6 done |
+
+| Remaining Workspaces | Blocked by |
+|---|---|
+| WS-P — PBT guard | WS-R..WS-PR, grill first |
+| WS-L — Loop engine v2 | T1; informed by WS-U |
+| WS-E — Execution infrastructure | alongside all |
+
 ## 0. Context & hard-won constraints
 
 - Subagents may run on WEAK models. Observed failure modes: lost final reports, announce-then-stop, identity confusion, scattered exploration on broad tasks.
@@ -44,13 +61,13 @@ Problem: activity feed shows rich behavior live (blocked commands, tool errors, 
 - [x] U4. recentTools surface. Last ≤5 tool calls shown in plan-panel step detail for debugging stuck workers. Accept: detail renders recent tool history.
 - [x] U5. tui-smoke.sh modernization (v1 E6). Detect panel from tmux capture-pane; match real widget output ('⠋ Plan:', '✓ N completed'); assert cleared-after-complete as correct behavior; add token glyph (↑/ctx) assertions. Accept: 9/9 or documented remaining gaps.
 
-## WS-PR — Prompt & information layer [no blockers]
-- [ ] P1. Worker truth gaps. Reviewer prompt: full interceptor redirect list (cat→read, find→find, ls→ls — currently only rg/grep warned). Researcher prompt: mention git-read (granted but undocumented), add gh to NOT-have list. Files: specialists.ts. Accept: prompt-truth test per specialist.
-- [ ] P2. Delete dead prompt machinery: _scoutToolDoc/_coderToolDoc/etc + updateToolDocs() in specialists.ts (exported, never imported). Accept: suite green.
-- [ ] P3. Findings salvage chain. Verify A4 salvage from diagnostics JSON works for read-only specialists (scout/researcher/reviewer); orchestrator-side: results cut in transport must be marked "⚠ PARTIAL". Accept: killed-mid-run delegation still yields findings; cut transport flagged.
-- [ ] P4. Routing table extension. Task-type → specialist → default skills rows: coding, review, docs/essay (writer + humanizer/edit-article), deep research (researcher + research). ask-matt stays a normal skill, never a routing layer. Fix stale fallback skill name (review → code-review). Files: prompt-builder.ts, specialists.ts. Accept: routing snapshot test.
-- [ ] P5. Prompt compression. Remove duplicate static tool table (keep dynamic generateToolDocumentation); add interactive_shell to intro tool list; move loop_until docs (~50 lines) to on-demand skill "orchestrator-loops". Target ~2.5k tokens from ~4k. Accept: prompt snapshot + token-count assertion.
-- [ ] P6. Communication contract. Replace TERSE_INSTRUCTION block with CEO-communication block: ADHD output rules (lead with next action, numbered steps, restate state per turn, ≤5 items per list, one concrete next action) + architecture-part-level reporting + no silent mechanisms + internals on request. Files: prompt-builder.ts. Accept: prompt contains contract; old caveman block gone.
+## WS-PR — Prompt & information layer ✅
+- [x] P1. Worker truth gaps. Reviewer prompt: full interceptor redirect list (cat→read, find→find, ls→ls — currently only rg/grep warned). Researcher prompt: mention git-read (granted but undocumented), add gh to NOT-have list. Files: specialists.ts. Accept: prompt-truth test per specialist.
+- [x] P2. Delete dead prompt machinery: _scoutToolDoc/_coderToolDoc/etc + updateToolDocs() in specialists.ts (exported, never imported). Accept: suite green.
+- [x] P3. Findings salvage chain. Verify A4 salvage from diagnostics JSON works for read-only specialists (scout/researcher/reviewer); orchestrator-side: results cut in transport must be marked "⚠ PARTIAL". Accept: killed-mid-run delegation still yields findings; cut transport flagged.
+- [x] P4. Routing table extension. Task-type → specialist → default skills rows: coding, review, docs/essay (writer + humanizer/edit-article), deep research (researcher + research). ask-matt stays a normal skill, never a routing layer. Fix stale fallback skill name (review → code-review). Files: prompt-builder.ts, specialists.ts. Accept: routing snapshot test.
+- [x] P5. Prompt compression. Remove duplicate static tool table (keep dynamic generateToolDocumentation); add interactive_shell to intro tool list; move loop_until docs (~50 lines) to on-demand skill "orchestrator-loops". Target ~2.5k tokens from ~4k. Accept: prompt snapshot + token-count assertion.
+- [x] P6. Communication contract. Replace TERSE_INSTRUCTION block with CEO-communication block: ADHD output rules (lead with next action, numbered steps, restate state per turn, ≤5 items per list, one concrete next action) + architecture-part-level reporting + no silent mechanisms + internals on request. Files: prompt-builder.ts. Accept: prompt contains contract; old caveman block gone.
 
 ## WS-P — PBT guard [blocked by WS-R..WS-PR; grill first]
 - [ ] PBT-0. Scoping grill with CEO before ticketing: which languages, trigger point (after every edit? on demand?), who writes properties (worker-written vs generated), feedback loop shape, token budget. Reference: quickcheck-in-every-language (fast-check TS, hypothesis Python, proptest Rust, gopter Go, jqwik JVM, StreamData Elixir, FsCheck .NET).
@@ -77,7 +94,7 @@ CEO spec: goal + objective metric + hard iteration cap + best-so-far wins. Orche
 | 2 | O1-O3 | flight recorder (delegation observability) |
 | 3 | T1-T3 | the heartbeat |
 | 4 | U1-U5 | UI hardening |
-| 5 | P1-P6 | prompt & info layer |
+| 5 | P1-P6 (done) | prompt & info layer |
 | 6 | PBT-0 grill + PBT track | doctrine track |
 | 7+ | L1-L6 | loop engine |
 
