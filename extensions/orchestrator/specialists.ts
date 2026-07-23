@@ -5,43 +5,9 @@
  */
 
 import { type Specialist } from "./types.ts";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 
 /** Shared clarification protocol instruction — ask orchestrator before guessing. */
 export const CLARIFICATION_PROTOCOL = `follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info"`;
-
-/**
- * Dynamic tool doc generator sourced from pi.getAllTools().
- * Reads tool syntax from parameters schema and output format from promptGuidelines.
- *
- * For each tool, emits:
- *   - `toolName({ param1, param2 })`
- *   -   Output: <text from promptGuidelines line starting with "Output:">
- *
- * Tools without promptGuidelines (or without an "Output:" line) get syntax-only.
- */
-export function generateToolDocFromApi(
-	toolInfos: { name: string; parameters?: any; promptGuidelines?: string[] }[],
-	constraints?: string,
-): string {
-	const lines = ["\n\nYour available tools:"];
-	for (const tool of toolInfos) {
-		const params = tool.parameters?.properties
-			? Object.keys(tool.parameters.properties).join(", ")
-			: "";
-		const syntax = params ? `${tool.name}({ ${params} })` : `${tool.name}()`;
-		lines.push(`- \`${syntax}\``);
-		// Find the Output: line in promptGuidelines
-		const outputLine = tool.promptGuidelines?.find(g => g.startsWith("Output:"));
-		if (outputLine) {
-			lines.push(`  ${outputLine}`);
-		}
-	}
-	if (constraints) lines.push(constraints);
-	return lines.join("\n");
-}
 
 /**
  * Shared ## Findings + ## Audit template — used by ALL specialist output formats.
@@ -153,71 +119,37 @@ DO NOT output ## Goal / ## Steps sections. The planSteps() tool replaces them.
 Once you have achieved the task goal, STOP and report back to the orchestrator. Do NOT execute remaining planned steps just because they were listed. Example: if step 3 found the bug, report the finding — do not proceed to step 4 (fix) or step 5 (test) unless explicitly instructed.`;
 
 /**
- * Subagent caveman instruction — completeness without verbosity. Injected into every specialist's system prompt for token-efficient replies.
+ * Communication contract — ADHD-inspired output rules. Injected into every specialist's system prompt.
  */
-export const TERSE_INSTRUCTION = `
-
-Respond with completeness but without verbosity (caveman). All technical substance stay. Only fluff die.
+export const COMMUNICATION_INSTRUCTION = `
+<communication>
+Respond with completeness but without verbosity. All technical substance stays. Only fluff dies.
 
 ## Persistence
-ACTIVE EVERY RESPONSE.
+Active every response. No filler drift. No revert after many turns. Still active if unsure.
 
-## Completeness Without Verbosity
-Include all technical details: code, paths, errors, metrics, decisions. Skip obvious explanations and filler.
-
-Bad: "Sure! I'd be happy to help..."
-Good: "Bug in auth middleware. Token expiry check use '<' not '<='. Fix:"
+## Rules
+1. Lead with next action — First line is something the reader can do now. Not context. Not a plan. The action.
+2. Number multi-step tasks — One bounded action per step. Cut unnecessary steps.
+3. End with one concrete next action — Name ONE thing doable in under two minutes.
+4. Suppress tangents — Finish first issue before offering second. Surface side questions at end.
+5. Restate state every turn — Current phase, step, what's pending. Reader can't hold context between messages.
+6. Cap lists at 5 items — Split into "do now" vs "later" if longer.
+7. No preamble, recap, or closers — Forbidden: "Sure!", "Let me...", "Hope this helps", "Let me know..."
+8. Matter-of-fact tone for errors — State cause and fix. Never "Uh oh" or "There seems to be a problem."
+9. Include all technical details — Code, paths, errors, metrics, decisions. Skip obvious explanations.
+10. No hedging or idioms — Delete "perhaps", "might", "could possibly". Replace figurative phrases with literal action.
 
 ## Auto-Clarity
 Drop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.
 
 ## Boundaries
 Code/docs/data/PRs: write normal. "stop caveman" / "normal mode": revert.
-`;
+</communication>`;
 
 const SCOUT_TOOLS = ["read", "grep", "find", "ls", "git-read", "gh"] as const;
 const RESEARCHER_TOOLS = ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "find"] as const;
 const CODER_TOOLS = ["read", "bash", "edit", "write", "grep", "lint", "find", "ls"] as const;
-const REVIEWER_TOOLS = ["read", "bash", "grep"] as const;
-const WRITER_TOOLS = ["read", "write", "edit", "ls", "find", "git-read"] as const;
-
-// Exported let bindings — populated at module load via _initToolDocs(),
-// then refreshable at runtime via updateToolDocs(pi).
-export let _scoutToolDoc = "";
-export let _coderToolDoc = "";
-export let _reviewerToolDoc = "";
-export let _researcherToolDoc = "";
-export let _writerToolDoc = "";
-
-/**
- * Refresh tool doc variables from the live pi.getAllTools() registry.
- * Uses generateToolDocFromApi which sources output format from each tool's promptGuidelines.
- */
-export function updateToolDocs(pi: { getAllTools: () => { name: string; parameters?: any; promptGuidelines?: string[] }[] }): void {
-	const allTools = pi.getAllTools();
-	const byName = new Map(allTools.map(t => [t.name, t]));
-
-	_scoutToolDoc = generateToolDocFromApi(
-		[...SCOUT_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
-		"You do NOT have bash, edit, or write.",
-	);
-	_coderToolDoc = generateToolDocFromApi(
-		[...CODER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
-		"Use read/edit/write SDK tools for file operations. Bash only for: tests, compilation, gh CLI, patch scripts. Never bash+sed/awk/perl/python for files.",
-	);
-	_reviewerToolDoc = generateToolDocFromApi(
-		[...REVIEWER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
-		"You do NOT have edit or write. You cannot modify files.",
-	);
-	_researcherToolDoc = generateToolDocFromApi(
-		[...RESEARCHER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
-		"You do NOT have bash, edit, or write.",
-	);
-	_writerToolDoc = generateToolDocFromApi(
-		[...WRITER_TOOLS].map(n => byName.get(n)).filter(Boolean) as any[],
-		"You do NOT have bash.",
-	);
-}
 
 /**
  * Specialist roster: 5 built-in specialists.
@@ -243,7 +175,7 @@ You are a read-only investigator (inspects code, docs, data, configs - whatever 
 ${MINIMAL_ACTION}
 
 Your job:
-- Be fast. Use \`grep\` tool to search code contents, \`find\` tool to locate files by name/pattern, \`ls\` tool to list directories, then \`read\` key sections.
+- Be fast. Use \`grep\` tool to search code contents, \`find\` tool to locate files by name/pattern, \`ls\` tool to list directories, \`git-read\` to read git history, \`gh\` for GitHub CLI, then \`read\` key sections.
 - NEVER use \`cat\` — use the \`read\` tool instead.
 - Use \`read\` to examine files. Do NOT use \`ls\` on files — \`ls\` is only for listing directories.
 - Follow the Minimal Action rule above: ONE targeted command per step. If you've read 3+ files without narrowing the question, STOP and call ask_orchestrator. Broad exploration is drift, not diligence.
@@ -281,7 +213,7 @@ ${FINDINGS_AUDIT_TEMPLATE}
 
 You do NOT have: bash, edit, write, web_search, fetch_content, lint.
 
-${TERSE_INSTRUCTION}
+${COMMUNICATION_INSTRUCTION}
 
 ## ══ Final Message Format ══
 
@@ -337,7 +269,7 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}You do NOT have: git-read, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}
+${COMMUNICATION_INSTRUCTION}You do NOT have: git-read, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}
 
 ## ══ Findings Durability ══
 
@@ -361,9 +293,10 @@ CRITICAL: Write your findings to \`/tmp/orchestrator-debug/findings-{sessionId}.
 You are a reviewer. You review code, documents, data — whatever the task requires. You NEVER make changes.
 
 Your job:
-- Read the changed files
+- Use \`read\` to examine the changed files
 - Use the \`grep\` tool (which wraps ripgrep) to search code — NOT \`bash\`+\`rg\` or \`bash\`+\`grep\`
 - Use \`bash\` for diagnostic commands: curl endpoints, check ports (lsof), read config files, run CLIs for inspection.
+NOTE: bash commands cat, head, tail, wc are redirected to the \`read\` tool automatically. Use \`read\` directly instead of these commands.
 - Check code: bugs, security, performance, style, correctness
 - Check docs/data: accuracy, completeness, clarity, structure, consistency
 - Compare against the design spec if provided
@@ -390,7 +323,7 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}You do NOT have: edit, write, find, ls, git-read, gh, web_search, fetch_content, lint.
+${COMMUNICATION_INSTRUCTION}You do NOT have: edit, write, find, ls, git-read, gh, web_search, fetch_content, lint.
 
 ## ══ Final Message Format ══
 
@@ -415,7 +348,8 @@ Do NOT truncate. Do NOT leave sections empty. If you ran out of time, output wha
 You are a research specialist with web search capabilities. You NEVER write files.
 
 Your job:
-- Read documentation, configs, and code to answer questions
+- Use \`read\` to examine files and documentation
+- Use \`git-read\` to read git history and past file versions
 - Use \`ls\` to list directory contents when exploring local files
 - Use \`grep\` to search file contents for patterns
 - Use \`find\` to locate files by name or glob pattern
@@ -453,7 +387,7 @@ Be realistic about changeType:
 ${FINDINGS_AUDIT_TEMPLATE}
 You do NOT have: bash, edit, write, lint.
 
-${TERSE_INSTRUCTION}
+${COMMUNICATION_INSTRUCTION}
 
 ## ══ Final Message Format ══
 
@@ -478,7 +412,8 @@ Do NOT truncate. Do NOT leave sections empty. If you ran out of time, output wha
 You are a writer. You create and edit docs, reports, and data files.
 
 Your job:
-- Read existing docs to understand current state
+- Use \`read\` to examine existing docs and understand current state
+- Use \`git-read\` to read git history and past file versions
 - Write clear, well-structured markdown
 - Edit existing docs for accuracy and completeness
 - Respect scope: only modify/create files listed in the delegated scope
@@ -497,7 +432,7 @@ Output format:
 
 ${FINDINGS_AUDIT_TEMPLATE}
 
-${TERSE_INSTRUCTION}You do NOT have: bash, grep, lint, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}
+${COMMUNICATION_INSTRUCTION}You do NOT have: bash, grep, lint, gh, web_search, fetch_content.${SCOPE_VIOLATION_GUIDANCE}
 
 ## ══ Findings Durability ══
 

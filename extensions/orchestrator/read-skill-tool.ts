@@ -19,10 +19,10 @@ export function createReadSkillTool() {
 		description:
 			"Read the contents of a skill file by name. " +
 			"Skills are loaded from ~/.pi/agent/skills/{name}/SKILL.md. " +
-			"Example skill names: tdd, implement, review, diagnosing-bugs, agents-md-writer, domain-modeling.",
+			"Example skill names: tdd, implement, code-review, diagnosing-bugs, agents-md-writer, domain-modeling.",
 		parameters: Type.Object({
 			name: Type.String({
-				description: "Name of the skill to read (e.g., 'tdd', 'implement', 'review')",
+				description: "Name of the skill to read (e.g., 'tdd', 'implement', 'code-review')",
 			}),
 		}),
 		promptGuidelines: [

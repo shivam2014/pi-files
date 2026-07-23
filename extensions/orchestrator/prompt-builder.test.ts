@@ -15,7 +15,7 @@ vi.mock('./specialists', () => ({
 			tools: ['read', 'edit', 'write'],
 		},
 	},
-	TERSE_INSTRUCTION: '\n\nRespond with completeness but without verbosity (caveman). All technical substance stay. Only fluff die.\n\n## Auto-Clarity\nDrop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.\n',
+	COMMUNICATION_INSTRUCTION: '\n\nRespond with completeness but without verbosity (caveman). All technical substance stay. Only fluff die.\n\n## Auto-Clarity\nDrop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.\n',
 }));
 
 import { buildOrchestratorPrompt } from './prompt-builder';
@@ -177,7 +177,7 @@ describe("routing table (#43)", () => {
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt: "base", fusionEnabled: false });
 		expect(systemPrompt).toContain("diagnosing-bugs");
 		expect(systemPrompt).toContain("agents-md-writer");
-		expect(systemPrompt).toContain("review");
+		expect(systemPrompt).toContain("code-review");
 	});
 });
 

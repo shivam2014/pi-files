@@ -18,7 +18,7 @@ import { resolve, join } from "node:path";
 // ── Part 1: Mock specialists (traditional, matches prompt-builder.test.ts) ──
 vi.mock("./specialists", () => ({
 	listSpecialists: vi.fn(() => ["scout", "coder"]),
-	TERSE_INSTRUCTION: "",
+	COMMUNICATION_INSTRUCTION: "",
 	SPECIALISTS: {
 		scout: {
 			name: "scout",

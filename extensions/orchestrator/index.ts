@@ -29,7 +29,7 @@ import { buildOrchestratorPrompt } from "./prompt-builder.ts";
 import { registerAllTools } from "./registration-hub.ts";
 import { PLAN_TOOLS } from "./plan-tool.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
-import { SPECIALISTS, updateToolDocs } from "./specialists.ts";
+import { SPECIALISTS } from "./specialists.ts";
 import { join } from "node:path";
 import { getSessionMode } from "./orchestrator-config";
 
@@ -92,9 +92,6 @@ export default function (pi: ExtensionAPI) {
 		activeTools.push("vision_query");
 		activeTools.push("interactive_shell");
 		pi.setActiveTools(activeTools);
-		// Refresh tool docs after init — getAllTools() is an action method
-		// that throws if called during extension loading.
-		updateToolDocs(pi);
 	});
 
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──

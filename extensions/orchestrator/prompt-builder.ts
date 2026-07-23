@@ -6,7 +6,7 @@
  * fusion section, and delegation-specific instructions for orchestrator mode.
  */
 
-import { listSpecialists, SPECIALISTS, TERSE_INSTRUCTION } from "./specialists.ts";
+import { listSpecialists, SPECIALISTS, COMMUNICATION_INSTRUCTION } from "./specialists.ts";
 import { generateScopeDocumentation } from "./scope-manager.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getReadmePath, getDocsPath, getExamplesPath } from "@earendil-works/pi-coding-agent";
@@ -17,9 +17,11 @@ const ROUTING_TABLE = `
 |-----------|------------|----------------|
 | Investigate codebase / find files | scout | diagnosing-bugs |
 | Implement feature / fix bug | coder | implement, tdd |
-| Review code / diff / run bash diagnostics | reviewer | review |
+| Review code / diff / run bash diagnostics | reviewer | code-review |
 | Research docs / web | researcher | domain-modeling |
 | Create/edit docs | writer | agents-md-writer |
+| docs, essay, documentation | writer | humanizer, edit-article |
+| deep research, investigation with sources | researcher | research |
 `;
 
 /**
@@ -96,7 +98,6 @@ If the user provides a specific task, follow their instruction instead of the ma
 | read_skill(name) | Load skill instructions |
 | list_skills | List available skills |
 | list_tools | List available tools |
-
 
 ### Workflow:
 1. FIRST: Call plan(goal, steps) to declare the overall plan. The goal is a one-line summary. Step items MUST be one-line descriptions (5-10 words each). Full task specs go in delegate() task parameter. Examples:
@@ -399,9 +400,9 @@ Pi SDK docs (for reference — delegate to specialists who can read these):
 		.replace("{{DELEGATION_MODE}}", modeSection);
 
 	// Token measurement: added ~500 chars (tool docs, scope shape), removed ~2300 chars
-	// (TERSE_INSTRUCTION trimmed from ~700 to ~280 × 5 specialists, bash sections removed).
+	// (COMMUNICATION_INSTRUCTION trimmed from ~700 to ~280 × 5 specialists, bash sections removed).
 	// Net: approximately -1800 chars (token-negative).
 	return {
-		systemPrompt: baseWithNewIntro + "\n\n" + instructions + toolsSection + TERSE_INSTRUCTION,
+		systemPrompt: baseWithNewIntro + "\n\n" + instructions + toolsSection + COMMUNICATION_INSTRUCTION,
 	};
 }
