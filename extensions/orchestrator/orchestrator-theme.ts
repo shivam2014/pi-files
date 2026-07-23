@@ -26,6 +26,7 @@ export type SymbolKey =
   | "status.pending"
   | "status.running"
   | "status.done"
+  | "status.current"
   | "status.aborted"
   // GROUP 2 — Box drawing
   | "boxRound.topLeft"
@@ -66,6 +67,7 @@ export const SYMBOLS: Record<SymbolKey, string> = {
   "status.pending":   "○",
   "status.running":   "⠋",
   "status.done":      "●",
+  "status.current":   "◐",
   "status.aborted":   "−",
 
   // Box drawing

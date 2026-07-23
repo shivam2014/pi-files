@@ -87,8 +87,37 @@ describe("delegate tool rendering", () => {
 			theme,
 			context,
 		);
-		expect(comp.text).toContain("delegate Coder: fix auth");
+		expect(comp.text).toContain("delegate Coder");
 		expect(comp.text).toContain("done");
+	});
+
+	it("renderResult does not duplicate task in header and goal line", () => {
+		const theme = {
+			fg: (_name: string, text: string) => text,
+			bold: (text: string) => text,
+			dim: (text: string) => text,
+		};
+		// Set up context via renderCall (mimics real flow)
+		const context: any = {
+			invalidate: vi.fn(),
+		};
+		delegateTool.renderCall(
+			{ specialist: "coder", task: "fix auth bug", model: "gpt-4" },
+			theme,
+			context,
+		);
+		// Simulate a partial result where the feed text already contains the task
+		// in the goal line (e.g. from activity feed: "◆ fix auth bug\n●○○ 1/3")
+		const feedText = "\u25c6 fix auth bug\n\u25cf\u25cb\u25cb 1/3";
+		const comp = delegateTool.renderResult(
+			{ content: [{ type: "text", text: feedText }], details: { specialist: "coder", task: "fix auth bug", model: "gpt-4" } },
+			{ isPartial: true },
+			theme,
+			context,
+		);
+		// Task should appear EXACTLY ONCE — either in header or goal, not both
+		const matches = comp.text.match(/fix auth bug/g);
+		expect(matches).toHaveLength(1);
 	});
 });
 

@@ -252,7 +252,7 @@ function stubRenderActivityFeed(_name: string, state: ActivityFeedState): string
 	let dots = "";
 	for (let i = 0; i < total; i++) {
 		if (state.steps[i].completed) dots += "●";
-		else if (i === state.currentStep) dots += (Math.floor(Date.now() / 1000) % 2 === 0) ? "○" : "●";
+		else if (i === state.currentStep) dots += "◐";
 		else dots += "○";
 	}
 	lines.push(`${dots} ${completed}/${total}`);
@@ -564,8 +564,8 @@ describe("mock-e2e: activity feed state machine", () => {
 		// Step 2 active (has spinner prefix, not ✓ or ○ alone)
 		expect(output).toContain("Step 2: Editing test.ts (1 changes)");
 
-		// Progress dots (2 steps, 1 completed = ●○ 1/2)
-		expect(output).toMatch(/●○\s+1\/2/);
+		// Progress dots (2 steps, 1 completed = ●◐ 1/2)
+		expect(output).toMatch(/●◐\s+1\/2/);
 	});
 
 	// ── Test 8: final render output ──

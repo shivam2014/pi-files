@@ -666,8 +666,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 			if (state.steps[i].completed) {
 				dots += styledSymbol("status.done");
 			} else if (i === _currentStep) {
-				// Blink: sync with 80ms spinner frame
-				dots += (Math.floor(Date.now() / 1000) % 2 === 0) ? styledSymbol("status.pending") : styledSymbol("status.done");
+				dots += styledSymbol("status.current");        // ◐  half-filled, no blink
 			} else {
 				dots += styledSymbol("status.pending");
 			}

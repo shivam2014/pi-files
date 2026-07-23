@@ -155,6 +155,45 @@ describe("renderActivityFeed — snapshots", () => {
 });
 
 // ============================================================================
+// Regression — step dot/counter consistency on blink
+// ============================================================================
+describe("regression — step dot/counter consistency", () => {
+	it("current step blink does not inflate dot count beyond completed count", () => {
+		// Mock Date.now so blink shows ● (filled dot) for current step
+		// Condition: Math.floor(Date.now() / 1000) % 2 !== 0 → shows ●
+		const originalNow = Date.now;
+		Date.now = () => 1000; // floor(1000/1000)=1, 1%2=1 → ●
+
+		try {
+			// Build state: 5 completed steps + 1 current (6 total)
+			let feed = createActivityFeed();
+			for (let i = 0; i < 6; i++) {
+				feed = addStep(feed, `Step ${i + 1}`);
+			}
+			for (let i = 0; i < 5; i++) {
+				feed = completeCurrentStep(feed);
+			}
+			// currentStep=5 (6th step, not completed), steps.length=6, completed=5
+
+			const output = renderActivityFeed("coder", feed);
+
+			// Find the progress line: contains "/" like "●●●●●● 5/6"
+			const dotLine = output.split("\n").find(l => l.includes("/"));
+			expect(dotLine).toBeDefined();
+
+			const [dots, fraction] = dotLine!.split(" ");
+			const [count, total] = fraction!.split("/").map(Number);
+			const filledDots = (dots!.match(/\u25cf/g) || []).length;
+
+			// The numeric counter MUST match the visual dot count
+			expect(count).toBe(filledDots);
+		} finally {
+			Date.now = originalNow;
+		}
+	});
+});
+
+// ============================================================================
 // Local helpers
 // ============================================================================
 

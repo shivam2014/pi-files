@@ -141,7 +141,6 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				: "";
 			const prefix = name
 				? theme.fg("toolTitle", theme.bold(`delegate ${name}`)) +
-				  (task ? theme.fg("dim", `: ${task}`) : "") +
 				  modelBadge
 				: "";
 
