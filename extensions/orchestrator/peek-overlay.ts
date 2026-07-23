@@ -121,13 +121,19 @@ export class PeekComponent implements Component {
         if (_viewerTokens) {
             const parts: string[] = [];
             if (_viewerTokens.input) parts.push(`↑${formatTokens(_viewerTokens.input)}`);
-            if (_viewerTokens.cached) parts.push(`⇄${formatTokens(_viewerTokens.cached)}`);
+            if (_viewerTokens.cached) {
+                parts.push(`⇄${formatTokens(_viewerTokens.cached)}`);
+                const input = _viewerTokens.input ?? 0;
+                const total = input + _viewerTokens.cached;
+                const pct = Math.round(_viewerTokens.cached / total * 100);
+                parts.push(`CH${pct}%`);
+            }
             if (_viewerTokens.output) parts.push(`↓${formatTokens(_viewerTokens.output)}`);
             if (_viewerTokens.ctxTokens) {
                 if (_viewerTokens.ctxWindow) {
-                    parts.push(`ctx ${formatTokens(_viewerTokens.ctxTokens)}/${formatTokens(_viewerTokens.ctxWindow)}`);
+                    parts.push(`↕${formatTokens(_viewerTokens.ctxTokens)}/${formatTokens(_viewerTokens.ctxWindow)}`);
                 } else {
-                    parts.push(`ctx ${formatTokens(_viewerTokens.ctxTokens)}`);
+                    parts.push(`↕${formatTokens(_viewerTokens.ctxTokens)}`);
                 }
             }
             if (parts.length > 0) {

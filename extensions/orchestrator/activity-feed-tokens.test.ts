@@ -23,8 +23,9 @@ describe("renderTokenLine", () => {
 		}));
 		expect(line).toContain("↑");
 		expect(line).toContain("⇄");
+		expect(line).toContain("CH");
 		expect(line).toContain("↓");
-		expect(line).toContain("ctx");
+		expect(line).toContain("↕");
 		expect(line).toContain("/");
 	});
 
@@ -51,7 +52,7 @@ describe("renderTokenLine", () => {
 			tokenInput: 100, tokenOutput: 50,
 			ctxTokens: 150,
 		}));
-		expect(line).toContain("ctx");
+		expect(line).toContain("↕");
 		expect(line).not.toContain("/");
 	});
 

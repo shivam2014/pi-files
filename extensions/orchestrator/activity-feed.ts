@@ -47,9 +47,13 @@ export function renderTokenLine(state: ActivityFeedState): string {
 		parts.push(`${SYMBOLS["token.input"]}${formatTokens(state.tokenInput)}`);
 	}
 
-	// ⇄{cacheRead} — hidden when 0
+	// ⇄{cacheRead} CH{pct}% — hidden when 0
 	if (state.tokenCached) {
 		parts.push(`${SYMBOLS["token.cacheRead"]}${formatTokens(state.tokenCached)}`);
+		const input = state.tokenInput ?? 0;
+		const total = input + state.tokenCached;
+		const pct = Math.round(state.tokenCached / total * 100);
+		parts.push(`CH${pct}%`);
 	}
 
 	// ↓{output}
@@ -57,12 +61,12 @@ export function renderTokenLine(state: ActivityFeedState): string {
 		parts.push(`${SYMBOLS["token.output"]}${formatTokens(state.tokenOutput)}`);
 	}
 
-	// · ctx {cur}/{win}
+	// ↕ {cur}/{win} — point-in-time
 	if (state.ctxTokens) {
 		if (state.ctxWindow) {
-			parts.push(`ctx ${formatTokens(state.ctxTokens)}/${formatTokens(state.ctxWindow)}`);
+			parts.push(`↕${formatTokens(state.ctxTokens)}/${formatTokens(state.ctxWindow)}`);
 		} else {
-			parts.push(`ctx ${formatTokens(state.ctxTokens)}`);
+			parts.push(`↕${formatTokens(state.ctxTokens)}`);
 		}
 	}
 

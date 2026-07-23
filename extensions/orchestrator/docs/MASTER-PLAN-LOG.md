@@ -39,24 +39,19 @@
 - maxTurns removal: Removed 30-turn hard abort from subagent-runner.ts. Subagents now run until natural completion or timeout.
 - Replay cleanup: Removed broken /replay command from commands.ts. Reverted replay mode from peek-overlay.ts.
 
+### Token display fix (Session 4 continued)
+
+**Token display clarity fix:**
+- Added cache hit rate `CH{pct}%` after `⇄` — explains why cache reads can exceed non-cached input
+- Changed `ctx` → `↕` to visually distinguish point-in-time context from cumulative metrics
+- Format: `↑80k ⇄770k CH91% ↓7.1k ↕40k/1.0M`
+- `CH%` and `⇄` hidden when no caching (cacheRead === 0)
+- Updated 2 test assertions in activity-feed-tokens.test.ts
+
+**Gate results:** tsc clean, 857 passed, 1 skipped, 56 files.
+
 ### Friction notes
 - Coder subagent hit maxTurns=30 THREE TIMES, each time leaving file in broken state (syntax errors from incomplete edits). Root cause: no turn budget awareness in subagent prompt + 30-turn limit too low for complex multi-edit tasks. Fix: removed maxTurns entirely.
 - Coder wasted 2 turns per session on blocked bash calls (sed, cat blocked by interceptor, then python3 workaround).
 - Transport truncation: worker reports still cut in transit.
 - createFlightRecorderDump function had systemPrompt/activityFeed in interface but not in return object or call site — required surgical fix.
-
-### Bug fixes (Session 4 continued)
-
-**5 bugs fixed:**
-
-1. **Finalization loop false completion** — `Step` interface gained `autoCompleted?: boolean` field. `completeCurrentStep()` accepts `autoCompleted` param. Finalization loop passes `true` so auto-skipped steps are distinguishable from genuinely completed ones.
-
-2. **No lint gate on completion** — Added `hasLintFailures` tracking in subagent-runner.ts. Lint handler detects failures via `isError` flag or content pattern (`/✗|failed|error TS\d+/`). `finalStatus` downgraded to `"lint_failed"` when lint fails. `SubagentResult` type gained `hasLintFailures?: boolean`.
-
-3. **Token display impossible numbers** — Already fixed in codebase: `↑` shows total input (`input + cached`) not just non-cached. `⇄` (cache reads) now always ≤ `↑`.
-
-4. **Bash-vs-read leaking** — `bash-interceptor.ts`: added `head`/`tail`/`wc` redirect to `read` tool (alongside existing `cat`/`sed`/`awk`). `specialists.ts`: corrected coder prompt — "blocked" → "redirected", added head/tail/wc to warning list.
-
-5. **UI header duplication** — Removed redundant `onUpdate` call in `message_end` handler (was firing twice: once with tokens, once without). Added content dedup guard in `delegate-tool.ts` `renderResult()` — skips identical partial renders.
-
-**Gate results:** tsc clean, 857 passed, 1 skipped, 56 files.
