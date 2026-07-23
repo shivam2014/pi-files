@@ -45,35 +45,35 @@
 - Transport truncation: worker reports still cut in transit.
 - createFlightRecorderDump function had systemPrompt/activityFeed in interface but not in return object or call site — required surgical fix.
 
-## WS-U Complete — U2-U5 (Session 4 continued)
+## Session 3 (complete) — 2026-07-22
 
-**U2 — Collapse viewport:**
-- Replaced naive `trimToBudget` with OMP-inspired `selectCollapsedSteps` in plan-panel.ts
-- Active-steps-first selection policy: open steps prioritized, fill remaining with pending after active
-- PAN-005 fixed: goal line always preserved as first output line
-- Removed dead code: `activeIdx` variable, `_spinnerRe` field, `SPINNER_FRAMES` import
-- Added "… N more" summary line for hidden pending steps
+**Tickets:** T1, T2, T3
 
-**U3 — Progress emission dedup:**
-- Added `ProgressScheduler` class with `schedule()`, `flush()`, `dispose()` methods
-- Replaced 13 uncoordinated `config.onUpdate` calls with timer-based 150ms coalesce
-- 6 event handlers now use `progressScheduler.schedule()` (deferred emission)
-- Error/abort/plan-changes/lint still emit immediately (not coalesced)
-- Removed 80ms render timer (scheduler handles periodic updates)
-- Elapsed timer uses `progressScheduler.schedule()` instead of direct onUpdate
-- Burst of tool calls → ≤1 emission per 150ms window
+### Completed
+- T1: SDK-true accumulator — fixed usage field names to match provider schema (input, output, cacheRead, cacheWrite). Token counts now correctly accumulate from streamed deltas instead of relying on post-hoc re-derivation.
+- T2: Token line render — plan-panel footer now shows concise glyph line: ↑input ⇄cacheRead ↓output · ctx cur/win. Glyphs chosen for visual scanning: up-arrow for prompt input, bidirectional for cache hits, down-arrow for completion output, dot separator for context.
+- T3: Secondary surfaces — token summary now surfaces in three additional locations: plan-panel step detail (per-step cost visibility), peek header (quick-glance without full open), model tag line (model identity + session cost).
 
-**U4 — recentTools surface:**
-- Bumped `renderSubstepLines` default `maxLines` from 3 → 5 in activity-feed.ts
-- Plan panel step detail now shows up to 5 recent tool calls (substeps)
-- Data already existed in `feed.steps[currentStep].substeps[]` — rendering change only
+### Commit
+- 4b3e288
 
-**U5 — tui-smoke.sh modernization:**
-- Fixed test 2 (render log exists): added `mkdir -p /tmp/tui`
-- Fixed test 3 (plan panel visible): grep pattern corrected to match `◆` and `Step [0-9]+:`
-- Fixed test 6 (plan panel not collapsed): renamed to `test_plan_panel_cleared_after_complete`, inverted assertion — now passes when panel cleared post-completion (correct behavior)
-- New test 10: `test_token_glyphs_visible` — checks for `↑` or `↕` glyphs
-- New test 11: `test_fold_line_after_complete` — checks for `✓ N completed` fold line
-- Test count: 9 → 11
+## Session 4 (complete) — 2026-07-23
 
-**Gate results:** tsc clean, 857 passed, 1 skipped, 56 files. bash -n clean for tui-smoke.sh.
+**Tickets:** U1, U2, U3, U4, U5
+
+### Completed
+- U1: LoopWatchdog port — loop-watchdog.ts (118 lines), phase tracker with generation counter, 250ms interval/threshold, unref(). Wired around session subscribe in subagent-runner with phase attribution. 6 fake-clock unit tests.
+- U2: Collapse viewport — selectCollapsedSteps with active-steps-first selection replacing naive trimToBudget. Fixed PAN-005 (goal line no longer drops in fallback). "✓ N completed" fold line preserved.
+- U3: Progress dedup — ProgressScheduler with 150ms coalesce window. Burst of tool calls yields ≤1 emission per window.
+- U4: recentTools — maxLines 3→5, last 5 tool calls shown in plan-panel step detail.
+- U5: tui-smoke modernization — 9→11 tests. Panel detection from tmux capture-pane; real widget output matching ('⠋ Plan:', '✓ N completed'); cleared-after-complete asserted as correct; token glyph (↑/ctx) assertions.
+
+### Bug fixes (5)
+- Finalization loop false completion — subagent runner no longer prematurely marks done during finalization phase.
+- Lint gate — tightened lint rules to catch regressions.
+- Token display misleading — corrected glyph alignment and field mapping so display matches actual accumulation.
+- Bash cat/head/tail/wc not blocked — interceptor now correctly blocks these read-by-proxy commands that bypass the `read` tool.
+- UI header duplication — plan-panel header no longer renders twice on re-render.
+
+### Commits
+- 963c87a, 38accda, 018680e, 1fc2e0d

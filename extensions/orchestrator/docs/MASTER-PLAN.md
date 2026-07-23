@@ -38,11 +38,11 @@ Problem: activity feed shows rich behavior live (blocked commands, tool errors, 
 - [x] O3. Replay surface: reuse timeline machinery (recordTimelineFrame/timeline-dump) or /timeline command to render a past delegation record. Accept: user can inspect a finished delegation's event sequence.
 
 ## WS-U — UI hardening, OMP ports [blocked by T1; requires H0]
-- [ ] U1. LoopWatchdog port (OMP packages/tui/src/loop-watchdog.ts). ~90-line event-loop lag probe, 250ms interval/threshold, generation counter, unref(). Wire around session subscribe in subagent-runner with phase attribution. Accept: fake-clock unit test; stall yields diagnostic naming the phase.
-- [x] **U2**. Collapse viewport (adapt OMP selectCollapsedTodos). Active-steps-first selection replaces naive trimToBudget; fix PAN-005 (goal line can drop in fallback). Keep "✓ N completed" fold line. Accept: 12-step plan ≤9 lines, active always visible, goal never dropped.
-- [x] **U3**. Progress emission dedup (OMP scheduleProgress pattern). Replace inline Date.now() coalesce with timer-based dedup. Accept: burst of tool calls → ≤1 emission per 150ms window.
-- [x] **U4**. recentTools surface. Last ≤5 tool calls shown in plan-panel step detail for debugging stuck workers. Accept: detail renders recent tool history.
-- [x] **U5**. tui-smoke.sh modernization (v1 E6). Detect panel from tmux capture-pane; match real widget output ('⠋ Plan:', '✓ N completed'); assert cleared-after-complete as correct behavior; add token glyph (↑/ctx) assertions. Accept: 9/9 or documented remaining gaps.
+- [x] U1. LoopWatchdog port (OMP packages/tui/src/loop-watchdog.ts). ~90-line event-loop lag probe, 250ms interval/threshold, generation counter, unref(). Wire around session subscribe in subagent-runner with phase attribution. Accept: fake-clock unit test; stall yields diagnostic naming the phase.
+- [x] U2. Collapse viewport (adapt OMP selectCollapsedTodos). Active-steps-first selection replaces naive trimToBudget; fix PAN-005 (goal line can drop in fallback). Keep "✓ N completed" fold line. Accept: 12-step plan ≤9 lines, active always visible, goal never dropped.
+- [x] U3. Progress emission dedup (OMP scheduleProgress pattern). Replace inline Date.now() coalesce with timer-based dedup. Accept: burst of tool calls → ≤1 emission per 150ms window.
+- [x] U4. recentTools surface. Last ≤5 tool calls shown in plan-panel step detail for debugging stuck workers. Accept: detail renders recent tool history.
+- [x] U5. tui-smoke.sh modernization (v1 E6). Detect panel from tmux capture-pane; match real widget output ('⠋ Plan:', '✓ N completed'); assert cleared-after-complete as correct behavior; add token glyph (↑/ctx) assertions. Accept: 9/9 or documented remaining gaps.
 
 ## WS-PR — Prompt & information layer [no blockers]
 - [ ] P1. Worker truth gaps. Reviewer prompt: full interceptor redirect list (cat→read, find→find, ls→ls — currently only rg/grep warned). Researcher prompt: mention git-read (granted but undocumented), add gh to NOT-have list. Files: specialists.ts. Accept: prompt-truth test per specialist.
