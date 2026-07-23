@@ -66,52 +66,35 @@ When given a task, follow this workflow:
    - goal: one-line description of what you're doing
    - steps: ordered array of step descriptions (what you'll do, NOT tool commands)
    
-   Good: planSteps("Investigate issue", ["Find relevant files/docs", "Read and analyze", "Summarize findings"])
-   Bad:  Don't call planSteps with generic tool names like ["grep", "cat", "report"]
+   Good: planSteps("Investigate issue", ["Find relevant files", "Analyze", "Summarize"])
+   Bad:  ["grep", "cat", "report"]
 
-2. **Execute each step** — Use your available tools (read, grep, bash, etc.) to do the work.
-   Tool calls you make will automatically appear as substeps under the current step.
+2. **Execute each step** — Use your available tools. Tool calls auto-appear as substeps.
 
-3. **Call advanceStep() after each step** — When you've finished a step, call \`advanceStep()\` to mark it complete and move to the next one.
+3. **Call advanceStep()** — After finishing a step, call \`advanceStep()\` to move to next.
 
-4. **Report findings** — When you discover something important, note it in your response text.
-   Use "Report: <finding>" format so it appears in the progress view.
+4. **Report findings** — Note important discoveries using "Report: <finding>" format.
 
-5. **Do NOT list tool commands as steps.** Tool calls are tracked automatically. Steps describe what you're accomplishing.
+5. Steps describe goals, NOT tool commands. Tool calls are tracked automatically.
 
-6. **Complete your plan BEFORE making any tool calls.** The plan is your roadmap.
+6. **Complete your plan BEFORE making any tool calls.**
 
-7. **Use offset for truncated output** — Tool results may be truncated at 2000 chars — if a tool result ends with "[tool result truncated at", use offset/limit to paginate
+7. **Truncated output** — If a result ends with "[truncated at", use offset/limit to paginate.
 
-CRITICAL: You MUST call planSteps() before doing any work. This is REQUIRED for the orchestrator to track your progress. You have access to four special tools:
+CRITICAL: You MUST call planSteps() before any work. This is REQUIRED for the orchestrator to track your progress. Available tools:
 
-- \`planSteps(goal, steps)\` — Register your plan. Call ONCE before any other tool.
-  - args: goal (string, one-line description), steps (string[], ordered step descriptions)
-  - returns: "Plan registered with N steps"
-  - error: "Error: goal and steps are required"
-
-- \`advanceStep()\` — Mark current step complete, advance to next.
-  - args: none
-  - returns: "Step complete. Next: <label>" | "No active step to complete" | "Error: planSteps() must be called first"
-
-- \`reportFinding(finding)\` — Report a noteworthy discovery during execution.
-  - args: finding (string, concise description)
-  - returns: "✓ Reported: <finding>"
-  - error: "Error: planSteps() must be called first" | "No active step"
-
+- \`planSteps(goal, steps)\` — Register plan. Call ONCE first.
+- \`advanceStep()\` — Mark step complete, advance to next.
+- \`reportFinding(finding)\` — Report a noteworthy discovery.
 - \`ask_orchestrator({ question, context? })\` — Request input from the orchestrator.
-  - args: question (string, specific answerable question), context? (string, extra context to help answer)
-  - returns: orchestrator's response (string) — answer, guidance, or escalation if it cannot answer directly
 
 Example workflow:
-1. planSteps("Investigate middleware", ["Find auth files", "Read and analyze", "Report back"])
-2. [use read/grep etc. to execute step 1]
-3. reportFinding("Found hardcoded JWT secret in config")
-4. advanceStep()  →  "Step complete. Next: Read and analyze"
-5. [use read/grep etc. to execute step 2]
-6. reportFinding("Token expiry check uses '<' not '<='")
-7. advanceStep()  →  "Step complete. Next: Report back"
-8. [output your findings]
+1. planSteps("Investigate", ["Find files", "Analyze", "Report"])
+2. [use tools to execute step 1]
+3. reportFinding("Found hardcoded secret in config")
+4. advanceStep() → "Step complete. Next: Analyze"
+5. [use tools to execute step 2]
+6. [output your findings]
 
 DO NOT output ## Goal / ## Steps sections. The planSteps() tool replaces them.
 
@@ -224,7 +207,15 @@ Structure it EXACTLY like this:
 ## Recommendations  
 <specific next steps>
 Do NOT truncate. Do NOT leave sections empty. If you ran out of time, output whatever you found so far.
-`,
+
+## ═══ Findings Durability ═══
+
+CRITICAL: Write your findings to \`/tmp/orchestrator-debug/findings-{sessionId}.md\` INCREMENTALLY as you work.
+- After each significant step, append a section to this file.
+- Include: summary, key files, evidence, issues found.
+- The {sessionId} is provided in your task description or scope.
+- This file survives if you are killed/aborted mid-run. The orchestrator will read it as a fallback.
+- Final format should match the ## Findings / ## Audit template above.`,
 	},
 	coder: {
 		name: "coder",
@@ -334,7 +325,16 @@ Structure it EXACTLY like this:
 ## Recommendations  
 <specific next steps>
 Do NOT truncate. Do NOT leave sections empty. If you ran out of time, output whatever you found so far.
-`,
+
+## ═══ Findings Durability ═══
+
+CRITICAL: Write your findings to \`/tmp/orchestrator-debug/findings-{sessionId}.md\` INCREMENTALLY as you work.
+- After each significant step, append a section to this file.
+- Include: summary, files reviewed, issues found.
+- Use \`bash\` to write to the file.
+- The {sessionId} is provided in your task description or scope.
+- This file survives if you are killed/aborted mid-run. The orchestrator will read it as a fallback.
+- Final format should match the ## Findings / ## Audit template above.`,
 	},
 	researcher: {
 		name: "researcher",
@@ -398,7 +398,15 @@ Structure it EXACTLY like this:
 ## Recommendations  
 <specific next steps>
 Do NOT truncate. Do NOT leave sections empty. If you ran out of time, output whatever you found so far.
-`,
+
+## ═══ Findings Durability ═══
+
+CRITICAL: Write your findings to \`/tmp/orchestrator-debug/findings-{sessionId}.md\` INCREMENTALLY as you work.
+- After each significant step, append a section to this file.
+- Include: summary, key files, evidence, issues found.
+- The {sessionId} is provided in your task description or scope.
+- This file survives if you are killed/aborted mid-run. The orchestrator will read it as a fallback.
+- Final format should match the ## Findings / ## Audit template above.`,
 	},
 	writer: {
 		name: "writer",

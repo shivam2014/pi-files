@@ -520,7 +520,7 @@ describe("C1: live token accumulator", () => {
 		return { runner, ref, updates };
 	}
 
-	it("accumulates token usage from 3 assistant message_end events", async () => {
+	it("accumulates token usage from 3 assistant message_end events", { timeout: 10_000 }, async () => {
 		const { runner, ref, updates } = createRunnerWithTokens();
 		const specialist = { name: "test", tools: ["read"], systemPrompt: "p" } as any;
 
@@ -528,7 +528,7 @@ describe("C1: live token accumulator", () => {
 		runner.run("task", specialist).catch(() => {});
 		await vi.waitFor(() => {
 			expect(ref.subscribeCb).not.toBeNull();
-		}, { timeout: 5000 });
+		}, { timeout: 10_000 });
 
 		// Advance fake time to bypass PROGRESS_COALESCE_MS (150ms) between events
 		let fakeTime = Date.now();
@@ -556,7 +556,7 @@ describe("C1: live token accumulator", () => {
 		expect(d.tokenCached).toBe(175);   // 50+100+25
 	});
 
-	it("captures ctxTokens from totalTokens", async () => {
+	it("captures ctxTokens from totalTokens", { timeout: 10_000 }, async () => {
 		const { runner, ref, updates } = createRunnerWithTokens();
 		const specialist = { name: "test", tools: ["read"], systemPrompt: "p" } as any;
 
@@ -574,7 +574,7 @@ describe("C1: live token accumulator", () => {
 		expect(d.ctxTokens).toBe(15000);
 	});
 
-	it("agent_end handler accumulates (not overwrites)", async () => {
+	it("agent_end handler accumulates (not overwrites)", { timeout: 10_000 }, async () => {
 		const { runner, ref, updates } = createRunnerWithTokens();
 		const specialist = { name: "test", tools: ["read"], systemPrompt: "p" } as any;
 

@@ -131,9 +131,9 @@ export class PeekComponent implements Component {
             if (_viewerTokens.output) parts.push(`↓${formatTokens(_viewerTokens.output)}`);
             if (_viewerTokens.ctxTokens) {
                 if (_viewerTokens.ctxWindow) {
-                    parts.push(`↕${formatTokens(_viewerTokens.ctxTokens)}/${formatTokens(_viewerTokens.ctxWindow)}`);
+                    parts.push(`ctx↕${formatTokens(_viewerTokens.ctxTokens)}/${formatTokens(_viewerTokens.ctxWindow)}`);
                 } else {
-                    parts.push(`↕${formatTokens(_viewerTokens.ctxTokens)}`);
+                    parts.push(`ctx↕${formatTokens(_viewerTokens.ctxTokens)}`);
                 }
             }
             if (parts.length > 0) {

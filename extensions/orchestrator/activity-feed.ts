@@ -64,9 +64,9 @@ export function renderTokenLine(state: ActivityFeedState): string {
 	// ↕ {cur}/{win} — point-in-time
 	if (state.ctxTokens) {
 		if (state.ctxWindow) {
-			parts.push(`↕${formatTokens(state.ctxTokens)}/${formatTokens(state.ctxWindow)}`);
+			parts.push(`ctx↕${formatTokens(state.ctxTokens)}/${formatTokens(state.ctxWindow)}`);
 		} else {
-			parts.push(`↕${formatTokens(state.ctxTokens)}`);
+			parts.push(`ctx↕${formatTokens(state.ctxTokens)}`);
 		}
 	}
 

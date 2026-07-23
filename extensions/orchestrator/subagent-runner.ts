@@ -464,6 +464,10 @@ export class SubagentRunner {
 						if (suggestedSkills && suggestedSkills.length > 0) {
 							prompt += buildSkillSection(specialist.name, suggestedSkills);
 						}
+						// Replace {sessionId} placeholder with actual session ID
+						if (sessionId) {
+							prompt = prompt.replace(/\{sessionId\}/g, sessionId);
+						}
 						return prompt;
 					},
 					noContextFiles: true,
@@ -900,9 +904,14 @@ export class SubagentRunner {
 				config.onUpdate?.({content: [{ type: "text", text: errorText }],
 					details: { specialist: specialist.name, status: isAborted ? "aborted" : "error", error: errorMsg, model: modelLabel, provider },
 				});
-				output = isAborted
-					? `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`
-					: `[error] ${errorMsg}`;
+				const prevOutput = output;
+				if (isAborted) {
+					const marker = `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`;
+					output = marker + (prevOutput ? "\n\n--- Partial output before abort: ---\n\n" + prevOutput : "");
+				} else {
+					const marker = `[error] ${errorMsg}`;
+					output = marker + (prevOutput ? "\n\n--- Partial output before error: ---\n\n" + prevOutput : "");
+				}
 			} finally {
 				watchdog.stop();
 				unsubscribe();
@@ -1024,6 +1033,8 @@ export class SubagentRunner {
 
 			// Flush any pending coalesced progress before sending final status
 			progressScheduler.flush();
+			// Freeze tokens so they persist in the final render
+			feed.feedState = { ...feed.feedState, tokensFrozen: true };
 			const finalText = feed.render(specialist.name);
 			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached } });
 			setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });

@@ -18,6 +18,22 @@ import os from "os";
 import { statusIcon, styledSymbol, getTheme } from "./orchestrator-theme.ts";
 import { getSessionMode, loadOrchestratorConfig } from "./orchestrator-config";
 
+
+/**
+ * Extract the `## Findings` section from subagent output.
+ * Returns everything from `## Findings` to the next `##` heading or end of string.
+ */
+function extractFindingsText(output: string | undefined): string | undefined {
+	if (!output) return undefined;
+	const idx = output.indexOf('## Findings');
+	if (idx === -1) return undefined;
+	const afterHeading = output.indexOf('\n', idx);
+	if (afterHeading === -1) return output.slice(idx).trim();
+	const nextHeading = output.indexOf('\n## ', afterHeading + 1);
+	if (nextHeading === -1) return output.slice(idx).trim();
+	return output.slice(idx, nextHeading).trim();
+}
+
 /** Result type returned by executeDelegate */
 export interface ExecuteDelegateResult {
 	content: Array<{ type: "text"; text: string }>;
@@ -565,7 +581,7 @@ export class DelegatePipeline {
 	): SubagentDiagnostic | null {
 		if (!isDiagnosticsEnabled()) return null;
 
-		const diagnostic = captureDiagnostic({
+		let diagnostic = captureDiagnostic({
 			output: result?.output || '',
 			turns: result?.turns || 0,
 			toolCallTrail: result?.toolCallTrail || [],
@@ -579,7 +595,27 @@ export class DelegatePipeline {
 			model: result?.model,
 			stopReason: result?.stopReason,
 			errorMessage: result?.errorMessage,
+			findingsText: extractFindingsText(result?.output),
 		});
+
+		// Always capture diagnostic on abort, even if captureDiagnostic returned null
+		if (!diagnostic && result?.output?.startsWith('[aborted]')) {
+			diagnostic = captureDiagnostic({
+				output: result?.output || '',
+				turns: result?.turns || 0,
+				toolCallTrail: [],
+				elapsedMs: Date.now() - startTime,
+				specialist: specialistName,
+				task,
+				sessionId: ctx.sessionId || 'unknown',
+				metrics,
+				agentDir: getAgentDir(),
+				model: result?.model,
+				stopReason: result?.stopReason,
+				errorMessage: result?.errorMessage || 'Aborted by user',
+				findingsText: extractFindingsText(result?.output),
+			});
+		}
 
 		if (!diagnostic) return null;
 

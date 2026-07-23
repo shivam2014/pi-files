@@ -2,17 +2,42 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mock specialists module ──────────────────────────────────────────────
 vi.mock('./specialists', () => ({
-	listSpecialists: vi.fn(() => ['scout', 'coder']),
+	listSpecialists: vi.fn(() => ['scout', 'coder', 'reviewer', 'researcher', 'writer']),
 	SPECIALISTS: {
 		scout: {
 			name: 'scout',
-			description: 'Read-only investigator',
+			description: 'Read-only investigator.',
 			tools: ['read', 'grep', 'find'],
+			routingLabel: 'Investigate codebase / find files',
+			suggestedSkills: ['diagnosing-bugs'],
 		},
 		coder: {
 			name: 'coder',
-			description: 'Implementation specialist',
+			description: 'Implementation specialist.',
 			tools: ['read', 'edit', 'write'],
+			routingLabel: 'Implement features / fix bugs',
+			suggestedSkills: ['implement', 'tdd'],
+		},
+		reviewer: {
+			name: 'reviewer',
+			description: 'Read-only code reviewer with bash access.',
+			tools: ['read', 'bash', 'grep'],
+			routingLabel: 'Review code changes / run bash diagnostics',
+			suggestedSkills: ['code-review'],
+		},
+		researcher: {
+			name: 'researcher',
+			description: 'Read-only research specialist with web search.',
+			tools: ['read', 'web_search', 'grep'],
+			routingLabel: 'Research docs / web',
+			suggestedSkills: ['domain-modeling'],
+		},
+		writer: {
+			name: 'writer',
+			description: 'Documentation specialist with read/write access.',
+			tools: ['read', 'write', 'edit'],
+			routingLabel: 'Create/edit docs',
+			suggestedSkills: ['agents-md-writer'],
 		},
 	},
 	COMMUNICATION_INSTRUCTION: '\n\nRespond with completeness but without verbosity (caveman). All technical substance stay. Only fluff die.\n\n## Auto-Clarity\nDrop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.\n',
