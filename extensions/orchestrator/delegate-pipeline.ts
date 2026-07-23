@@ -247,8 +247,13 @@ export class DelegatePipeline {
 			onAskOrchestrator: createAskOrchestratorResolver(ctx, pendingQuestions),
 		};
 
+		// ── Append acceptance test instructions for coder tasks ──
+		const effectiveTask = (params.specialist === "coder" && params.task)
+		    ? params.task + "\n\n## Acceptance Tests\nAfter implementing, describe acceptance tests (vitest assertions, plain text) that verify your work:\n- Happy path — confirm feature works as expected\n- Edge cases — boundary conditions are handled\n- Regression (if fixing a bug) — fix stays effective\n\nInclude these as plain-text assertions under a ## Acceptance Tests section in your output. Do NOT use the plan() tool.\n"
+		    : params.task;
+
 		const result = await runSubagent(
-			specialist, params.task, ctx.cwd,
+			specialist, effectiveTask, ctx.cwd,
 			parentCtx,
 			effectiveSignal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
 			ctx, // orchestratorCtx: thread session context to plan-panel calls
@@ -360,6 +365,7 @@ export class DelegatePipeline {
 		}
 
 		// ── Format result output ──
+		let autoAdvancedStep: string | undefined;
 		try {
 			if (!hasError && result?.output) {
 				// Dynamic status: processing result
@@ -393,7 +399,7 @@ export class DelegatePipeline {
 			if (hasError) {
 				errorPlanStep(ctx, isAborted, result?.errorMessage);
 			} else {
-				finalizePlanStep(ctx);
+				autoAdvancedStep = finalizePlanStep(ctx);
 			}
 		} finally {
 			decrementDelegationCount(ctx);
@@ -438,6 +444,7 @@ export class DelegatePipeline {
 			errorMessage: result?.errorMessage,
 			partialResults: hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]"),
 			partialMarker: (hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]")) ? "⚠ PARTIAL" : undefined,
+			autoAdvancedStep: autoAdvancedStep || undefined,
 			// Model info for UI display badge
 			model: (() => {
 				const m = (ctx as any)?.model;

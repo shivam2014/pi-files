@@ -70,7 +70,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
                             criterion: Type.String({ description: 'Human-readable success condition' }),
                             evaluator: Type.String({ description: 'Specialist name that evaluates results (default: reviewer)' }),
                             maxIterations: Type.Optional(Type.Number({ minimum: 1, maximum: 50, description: 'Safety cap on iterations (default: 10)' })),
-                            maxTokens: Type.Optional(Type.Number({ description: 'Token budget for entire loop' })),
+                            tokenBudget: Type.Optional(Type.Number({ description: 'Token budget for entire loop' })),
                             mode: Type.Optional(Type.Union([
                                 Type.Literal('single-pass'),
                                 Type.Literal('satisficing'),

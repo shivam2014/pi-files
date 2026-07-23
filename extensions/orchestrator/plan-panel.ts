@@ -1,7 +1,7 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { truncateLabel } from "../token-saver.ts";
-import { styledSymbol, formatDuration as thFormatDuration, partialStrikethrough, HOLD_FRAMES, REVEAL_FRAMES, TOTAL_STRIKE_FRAMES } from "./orchestrator-theme.ts";
+import { styledSymbol, formatDuration as thFormatDuration, partialStrikethrough, HOLD_FRAMES, REVEAL_FRAMES, TOTAL_STRIKE_FRAMES, formatTokens } from "./orchestrator-theme.ts";
 import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilState, LoopIteration, LoopUntilStepInput } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
@@ -97,6 +97,37 @@ export class PlanPanel {
 		} catch { /* silent */ }
 	}
 
+	private _loopStatePath(stepLabel: string): string {
+		const safeLabel = stepLabel.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
+		return `/tmp/orchestrator-debug/loop-${this._sessionId ?? 'unknown'}-${safeLabel}.json`;
+	}
+
+	private saveLoopState(stepLabel: string): void {
+		const step = this.planState?.steps.find(s => s.label === stepLabel);
+		if (!step?.loopUntilState) return;
+		try {
+			const dir = '/tmp/orchestrator-debug';
+			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+			const state = {
+				panelId: this._sessionId,
+				stepLabel,
+				loopUntilState: step.loopUntilState,
+				timestamp: Date.now(),
+			};
+			writeFileSync(this._loopStatePath(stepLabel), JSON.stringify(state, null, 2));
+		} catch { /* best-effort */ }
+	}
+
+	private loadLoopState(stepLabel: string): LoopUntilState | null {
+		try {
+			const path = this._loopStatePath(stepLabel);
+			if (!existsSync(path)) return null;
+			const raw = JSON.parse(readFileSync(path, 'utf8'));
+			if (raw.stepLabel !== stepLabel || raw.panelId !== this._sessionId) return null;
+			return raw.loopUntilState as LoopUntilState;
+		} catch { return null; }
+	}
+
 	/** Find the first pending (non-completed, non-errored, non-active) step and activate it. */
 	private _activateNextPending(): void {
 		if (!this.planState) return;
@@ -142,21 +173,81 @@ export class PlanPanel {
 
 	private toFeedState(state: { goal: string; steps: PlanStep[]; startTime: number }): ActivityFeedState {
 		const steps: Step[] = state.steps.map(ps => {
-			// Loop step rendering — shows iteration progress
+			// Enhanced loop step rendering — shows metric trajectory and token line (L6)
 			if (ps.kind === 'loop_until' && ps.loopUntilState) {
 				const loopState = ps.loopUntilState;
 				const config = ps.loopUntil!;
-				const progress = `[${loopState.currentIteration}/${config.maxIterations}]`;
-				const mode = config.mode === 'satisficing' ? 'satisficing' : '';
+				const iterationNum = loopState.currentIteration;
+				const maxIter = config.maxIterations;
+
+				// Build metric trajectory string: 60→40→80
+				let trajectoryStr = '';
+				if (config.metric && loopState.iterations.length > 0) {
+					const metricVals = loopState.iterations
+						.filter(i => i.metricValue !== undefined)
+						.map(i => i.metricValue!);
+					if (metricVals.length > 0) {
+						const displayVals = metricVals.slice(-5); // Show last 5
+						trajectoryStr = ' · ' + displayVals.join('→');
+						// Append best
+						if (loopState.bestMetricValue !== undefined) {
+							trajectoryStr += ` · best ${loopState.bestMetricValue}`;
+						}
+					}
+				}
+
+				// Main label line
+				const progressLabel = `⟳ ${ps.label} iter ${iterationNum}/${maxIter}${trajectoryStr}`;
+
+				// Build token line: ↑5k ⇄1k CH200 ctx↕12k/1.0M
+				let tokenLine = '';
+				if (loopState.operationalTokens || loopState.evaluationTokens) {
+					const opTokens = loopState.operationalTokens ?? 0;
+					const evTokens = loopState.evaluationTokens ?? 0;
+					const totalBudget = config.tokenBudget;
+
+					const parts: string[] = [];
+					if (opTokens > 0) parts.push(`↑${formatTokens(opTokens)}`);
+					if (evTokens > 0) parts.push(`⇄${formatTokens(evTokens)}`);
+					if (totalBudget !== undefined) {
+						const remaining = totalBudget - opTokens - evTokens;
+						parts.push(`CH${formatTokens(remaining)}`);
+					}
+					// Context tokens from rolling summary length as rough proxy
+					const ctxEstimate = loopState.rollingSummary.length * 0.25; // rough chars→tokens
+					if (ctxEstimate > 100) {
+						parts.push(`ctx↕${formatTokens(Math.round(ctxEstimate))}/${totalBudget ? formatTokens(totalBudget) : '∞'}`);
+					}
+
+					if (parts.length > 0) {
+						tokenLine = parts.join(' ');
+					}
+				}
+
+				// Build substeps
+				const substeps: Substep[] = [];
+
+				// Add token line as a substep
+				if (tokenLine) {
+					substeps.push({ label: tokenLine, completed: false });
+				}
+
+				// Add last 3 iteration summaries
+				for (const i of loopState.iterations.slice(-3)) {
+					const icon = i.status === 'pass' ? '✓' : i.status === 'fail' ? '✗' : '○';
+					const metricPart = i.metricValue !== undefined ? ` [${i.metricValue}]` : '';
+					substeps.push({
+						label: `Iter ${i.index + 1}: ${icon} ${i.summary}${metricPart}`,
+						completed: i.status === 'pass',
+					});
+				}
+
 				return {
-					label: truncateLabel(`⟳ ${ps.label} ${progress} ${mode}`, 58),
+					label: truncateLabel(progressLabel, 58),
 					completed: ps.completed,
 					startTime: ps.startTime,
 					endTime: ps.endTime,
-					substeps: loopState.iterations.slice(-3).map(i => ({
-						label: `Iter ${i.index + 1}: ${i.status === 'pass' ? '✓' : i.status === 'fail' ? '✗' : '○'} ${i.summary}`,
-						completed: i.status === 'pass',
-					})),
+					substeps,
 				};
 			}
 
@@ -506,7 +597,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		}
 	}
 
-	public advanceStep(): { status: 'completed'; label: string } | { status: 'skipped'; reason: string } | { status: 'error'; error: string } {
+		public advanceStep(): { status: 'completed'; label: string } | { status: 'skipped'; reason: string } | { status: 'error'; error: string } | { status: 'loop-started'; label: string } {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) {
 			return { status: 'error', error: 'No active plan' };
 		}
@@ -518,6 +609,22 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 				return { status: 'completed', label: lastCompleted?.label ?? '' };
 			}
 			return { status: 'error', error: 'no active step' };
+		}
+		// Loop_until steps: initialize state and let orchestrator drive the loop
+		if (activeStep.kind === 'loop_until' && activeStep.loopUntil) {
+			// Try to restore persisted state first (for resume)
+			const restored = this.loadLoopState(activeStep.label);
+			if (restored) {
+				_loopStates.set(activeStep.label, restored);
+				activeStep.loopUntilState = restored;
+				this.updatePlanStepDetail(`Resumed loop at iteration ${restored.currentIteration}`);
+				this._renderWidget();
+				return { status: 'loop-started', label: activeStep.label };
+			}
+			// First time — initialize
+			this.initLoopState(activeStep.label, activeStep.loopUntil);
+			this._renderWidget();
+			return { status: 'loop-started', label: activeStep.label };
 		}
 		if (activeStep.kind === 'delegation') {
 			return { status: 'skipped', reason: 'managed by delegate pipeline' };
@@ -552,8 +659,10 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame("step_complete");
 	}
 
-	finalizePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
-		return this.completePlanStep(ctx);
+	finalizePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): string {
+		const label = this.planState?.steps?.find((s) => s.active)?.label || '';
+		this.completePlanStep(ctx);
+		return label;
 	}
 
 	clearPlanIfComplete(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
@@ -740,6 +849,10 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			status: 'running',
 			iterations: [],
 		};
+		// Normalize tokenBudget from maxTokens for backward compat
+		if ((config as any).maxTokens && !config.tokenBudget) {
+			(config as any).tokenBudget = (config as any).maxTokens;
+		}
 		_loopStates.set(stepLabel, state);
 		// Also store on step for rendering access
 		const step = this.planState?.steps.find(s => s.label === stepLabel);
@@ -904,6 +1017,253 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		this.recordTimelineFrame('loop_complete');
 	}
 
+	/**
+	 * Execute a loop_until step — runs iterations, evaluates criterion,
+	 * tracks budget, persists state. Returns final status.
+	 *
+	 * @param stepLabel - Label of the loop_until step
+	 * @param onIteration - Callback to delegate an iteration. The orchestrator
+	 *   provides this, typically using runSubagent from subagent-runner.ts.
+	 *   Signature: (specialist: string, task: string, scope?: any, iteration?: number)
+	 *   -> Promise<{ output: string; tokenUsage?: { input: number; output: number; cached: number } }>
+	 */
+	async executeLoopStep(
+		stepLabel: string,
+		onIteration: (
+			specialist: string,
+			task: string,
+			scope?: any,
+			iteration?: number,
+		) => Promise<{
+			output: string;
+			tokenUsage?: { input: number; output: number; cached: number };
+		}>,
+	): Promise<{ status: string; reason?: string; label?: string }> {
+		const step = this.planState?.steps.find(s => s.label === stepLabel);
+		if (!step || step.kind !== 'loop_until' || !step.loopUntil) {
+			return { status: 'error', reason: 'Not a loop_until step' };
+		}
+
+		const config = step.loopUntil;
+		let state = _loopStates.get(stepLabel);
+
+		// If no state, try restore from disk
+		if (!state) {
+			const restored = this.loadLoopState(stepLabel);
+			if (restored) {
+				_loopStates.set(stepLabel, restored);
+				state = restored;
+				step.loopUntilState = restored;
+			}
+		}
+
+		if (!state) {
+			return { status: 'error', reason: 'No loop state — call advanceStep() first' };
+		}
+
+		state.status = 'running';
+
+		// Budget tracking (L5)
+		if (!state.operationalTokens) state.operationalTokens = 0;
+		if (!state.evaluationTokens) state.evaluationTokens = 0;
+
+		for (; ; ) {
+			// ── Budget check (L5) ──
+			if (config.tokenBudget !== undefined) {
+				const totalTokens = (state.operationalTokens ?? 0) + (state.evaluationTokens ?? 0);
+				if (totalTokens >= config.tokenBudget) {
+					state.status = 'completed';
+					// Return best-so-far
+					if (state.bestIteration !== undefined && state.iterations[state.bestIteration]) {
+						state.rollingSummary = `Budget exhausted. Best result from iteration ${state.bestIteration + 1}.`;
+					} else {
+						state.rollingSummary = 'Budget exhausted. No successful iterations.';
+					}
+					this.saveLoopState(stepLabel);
+					break;
+				}
+			}
+
+			// ── Max iterations check ──
+			if (state.currentIteration >= config.maxIterations) {
+				state.status = 'max-reached';
+				this.updatePlanStepDetail(`Max iterations (${config.maxIterations}) reached`);
+				this._renderWidget();
+				this.saveLoopState(stepLabel);
+				break;
+			}
+
+			// ── Build iteration task ──
+			state.currentIteration++;
+			const iterationNum = state.currentIteration;
+
+			// Build task with rolling summary and context injection
+			let task = config.iterationTemplate.task
+				.replace(/\{\{iteration\.N\}\}/g, String(iterationNum));
+
+			// Inject context: rolling summary, objective, metric history, best-so-far, remaining budget
+			const contextParts: string[] = [];
+			if (state.rollingSummary) {
+				contextParts.push(`## Prior Iterations\n${state.rollingSummary}`);
+			}
+			contextParts.push(`## Objective\n${config.criterion}`);
+
+			// Metric history
+			if (config.metric && state.iterations.length > 0) {
+				const metricValues = state.iterations
+					.filter(i => i.metricValue !== undefined)
+					.map(i => `  Iter ${i.index + 1}: ${i.metricValue}`);
+				if (metricValues.length > 0) {
+					contextParts.push(`## Metric History\n${metricValues.join('\n')}`);
+				}
+				if (state.bestIteration !== undefined && state.bestMetricValue !== undefined) {
+					contextParts.push(`## Best So Far\nIteration ${state.bestIteration + 1}: ${state.bestMetricValue}`);
+				}
+			}
+
+			// Remaining budget
+			if (config.tokenBudget !== undefined) {
+				const remaining = config.tokenBudget - ((state.operationalTokens ?? 0) + (state.evaluationTokens ?? 0));
+				contextParts.push(`## Remaining Budget\n${formatTokens(remaining)} tokens`);
+			}
+
+			const fullTask = contextParts.length > 0
+				? `${task}\n\n${contextParts.join('\n\n')}`
+				: task;
+
+			this.updatePlanStepDetail(`Iteration ${iterationNum}/${config.maxIterations}: running...`);
+			this._renderWidget();
+
+			// ── Delegate iteration ──
+			let iterationOutput: string;
+			let iterationTokenUsage: { input: number; output: number; cached: number } | undefined;
+			try {
+				const result = await onIteration(
+					config.iterationTemplate.specialist,
+					fullTask,
+					config.iterationTemplate.scope,
+					iterationNum,
+				);
+				iterationOutput = result.output;
+				iterationTokenUsage = result.tokenUsage;
+			} catch (err) {
+				// Iteration failed
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				const failedIter: LoopIteration = {
+					index: iterationNum,
+					status: 'error',
+					summary: `Error: ${errorMsg}`,
+				};
+				this.updateRollingSummary(state, failedIter);
+				this.saveLoopState(stepLabel);
+
+				// Check stall
+				const stall = this.detectStall(state);
+				if (stall.stalled) {
+					state.status = 'error';
+					state.rollingSummary = `Stalled: ${stall.reason}`;
+					this.saveLoopState(stepLabel);
+					break;
+				}
+
+				// Continue to next iteration
+				continue;
+			}
+
+			// Track operational tokens
+			if (iterationTokenUsage) {
+				state.operationalTokens = (state.operationalTokens ?? 0) + 
+					iterationTokenUsage.input + iterationTokenUsage.output + (iterationTokenUsage.cached ?? 0);
+			}
+
+			// ── Run metric command if configured (L5) ──
+			let metricValue: number | undefined;
+			if (config.metric) {
+				try {
+					// Dynamic import to avoid needing the module at class level
+					const { runMetricCommand } = await import('./loop-engine.ts');
+					metricValue = await runMetricCommand(config.metric);
+				} catch {
+					// Metric command failed — continue without metric
+				}
+			}
+
+			// ── Evaluate criterion ──
+			const evaluation = this.evaluateLoopCriterion(iterationOutput, config, state);
+			const iteration: LoopIteration = {
+				index: iterationNum,
+				status: evaluation.pass ? 'pass' : 'fail',
+				scores: evaluation.scores,
+				feedback: evaluation.feedback,
+				summary: evaluation.pass ? 'Criterion met' : 'Criterion not met',
+				metricValue,
+			};
+
+			// Update best-so-far
+			if (metricValue !== undefined && config.metric) {
+				const direction = config.metric.direction;
+				const isBetter = state.bestMetricValue === undefined || 
+					(direction === 'higher-better' ? metricValue > state.bestMetricValue : metricValue < state.bestMetricValue);
+				if (isBetter) {
+					state.bestMetricValue = metricValue;
+					state.bestIteration = iterationNum - 1; // 0-based index
+				}
+			}
+
+			// Satisficing mode
+			if (config.mode === 'satisficing') {
+				if (evaluation.pass) {
+					state.consecutivePasses++;
+					if (state.consecutivePasses >= config.satisficingPasses) {
+						iteration.status = 'pass';
+						state.status = 'completed';
+					}
+				} else {
+					state.consecutivePasses = 0;
+				}
+			}
+
+			this.updateRollingSummary(state, iteration);
+
+			// Check for completion
+			if (state.status === 'completed') {
+				this.saveLoopState(stepLabel);
+				break;
+			}
+
+			// Check stall
+			const stall = this.detectStall(state);
+			if (stall.stalled) {
+				state.status = 'error';
+				state.rollingSummary = `Stalled: ${stall.reason}`;
+				this.updatePlanStepDetail(`Stalled: ${stall.reason}`);
+				this._renderWidget();
+				this.saveLoopState(stepLabel);
+				break;
+			}
+
+			// Persist after each iteration
+			this.saveLoopState(stepLabel);
+		}
+
+		// ── Loop complete ──
+		// Clean up state file
+		try {
+			const path = this._loopStatePath(stepLabel);
+			if (existsSync(path)) writeFileSync(path, '{}');
+		} catch { /* best-effort */ }
+
+		// Mark step done
+		const finalStatus = state.status as LoopUntilState['status'];
+		this.completeLoopStep(stepLabel, finalStatus);
+
+		const statusMsg = finalStatus === 'completed' ? 'completed' :
+			finalStatus === 'max-reached' ? 'max-reached' :
+			finalStatus === 'error' ? 'error' : finalStatus;
+
+		return { status: statusMsg, label: stepLabel, reason: state.rollingSummary };
+	}
+
 	/** Get the module-level loop state map (for orchestrator access). */
 	static getLoopStates(): Map<string, LoopUntilState> {
 		return _loopStates;
@@ -1046,4 +1406,26 @@ export function composeFeedback(
 
 export function completeLoopStep(stepLabel: string, finalStatus: LoopUntilState['status'], ctx: unknown): void {
 	resolvePlanPanel(ctx)?.completeLoopStep(stepLabel, finalStatus);
+}
+
+/**
+ * Execute a loop_until step. Async — drives the full loop lifecycle.
+ * The orchestrator provides onIteration which handles specialist delegation.
+ */
+export async function executeLoopStep(
+	stepLabel: string,
+	onIteration: (
+		specialist: string,
+		task: string,
+		scope?: any,
+		iteration?: number,
+	) => Promise<{
+		output: string;
+		tokenUsage?: { input: number; output: number; cached: number };
+	}>,
+	ctx?: unknown,
+): Promise<{ status: string; reason?: string; label?: string }> {
+	const panel = resolvePlanPanel(ctx);
+	if (!panel) return { status: 'error', reason: 'No active plan' };
+	return panel.executeLoopStep(stepLabel, onIteration);
 }

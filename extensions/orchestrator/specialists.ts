@@ -293,6 +293,8 @@ Before finishing, note any problems encountered and how you handled them:
 - scope_stayed: [yes/no — did you stay within the assigned task?]
 - scope_notes: [if no, what you deviated from and why]
 
+You do NOT have: git-read, gh, web_search, fetch_content.
+
 ${COMMUNICATION_INSTRUCTION}
 
 ${buildFindingsDurability("write")}`,

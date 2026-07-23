@@ -118,12 +118,16 @@ export interface LoopUntilConfig {
 	evaluator: string;
 	/** Hard cap on iterations (default: 10) */
 	maxIterations: number;
-	/** Token budget for entire loop (optional) */
-	maxTokens?: number;
 	/** Evaluation mode (default: 'satisficing') */
 	mode: 'single-pass' | 'satisficing';
 	/** Consecutive passes required in satisficing mode (default: 2) */
 	satisficingPasses: number;
+	/** Optional metric config for automated quality evaluation */
+	metric?: MetricConfig;
+	/** Token budget for the entire loop (stops when exhausted) */
+	tokenBudget?: number;
+	/** Consecutive stall classifications before stopping (default: 2) */
+	patience?: number;
 	/** The delegation spec to run each iteration */
 	iterationTemplate: {
 		specialist: string;
@@ -140,6 +144,14 @@ export interface LoopUntilState {
 	rollingSummary: string;
 	status: 'idle' | 'running' | 'completed' | 'max-reached' | 'error';
 	iterations: LoopIteration[];
+	/** Index of best iteration */
+	bestIteration?: number;
+	/** Best score achieved */
+	bestMetricValue?: number;
+	/** Tokens used by operational (worker) delegations */
+	operationalTokens?: number;
+	/** Tokens used by evaluator delegations */
+	evaluationTokens?: number;
 }
 
 /** Record of a single loop iteration */
@@ -149,6 +161,18 @@ export interface LoopIteration {
 	scores?: Record<string, number>;
 	feedback?: string;
 	summary: string;
+	/** The score this iteration achieved */
+	metricValue?: number;
+}
+
+/** Direction for metric evaluation */
+export type MetricDirection = 'higher-better' | 'lower-better';
+
+/** Configuration for running a metric command to evaluate loop iteration quality */
+export interface MetricConfig {
+	command: string;    // Shell/eval command that outputs a single number
+	direction: MetricDirection;
+	target?: number;   // Optional — loop stops when met
 }
 
 /** Structured loop step input for plan() */
