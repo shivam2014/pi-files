@@ -98,7 +98,7 @@ export function classifyTrajectory(
     const firstVal = history[0];
     const lastVal = history[history.length - 1];
 
-    // STALLING: last 3 values within 2% of each other and not near target
+    // STALLING: last 3 values within 5% of each other and not near target
     {
       const max3 = Math.max(...last3);
       const min3 = Math.min(...last3);
@@ -129,7 +129,7 @@ export function classifyTrajectory(
     const firstVal = history[0];
     const secondLast = history[history.length - 2];
 
-    // STALLING: last 3 values within 2% of each other
+    // STALLING: last 3 values within 5% of each other
     {
       const max3 = Math.max(...last3);
       const min3 = Math.min(...last3);

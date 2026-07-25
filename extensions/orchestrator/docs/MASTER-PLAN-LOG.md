@@ -94,8 +94,9 @@
   - 6 property patterns with code examples
   - Budget defaults + shrink caps
   - Workflow + output format
+- **H1** — End-of-session sync + commit + push (commit 9a830f1, 33 files, 1217+/88-)
 
 ### Status
+- H1: ✅ Done
 - PBT-0: ✅ Done (grill complete, decisions locked)
-- PBT-1: ✅ Done (skill document created)
-- PBT-2+: Pending (Tickets from grill outcome — may not be needed since skill is already written)
+- PBT-1: ✅ Done (skill document created at ~/.pi/agent/skills/pbt/SKILL.md)

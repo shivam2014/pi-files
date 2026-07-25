@@ -9,6 +9,8 @@ import { SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
 
 import { debugLog } from "./debug.ts";
 import { getSessionMode } from "./orchestrator-config";
+import { classifyTrajectory, findBestIndex } from "./loop-engine.ts";
+import type { TrajectoryClass } from "./loop-engine.ts";
 
 export interface TimelineEntry {
 	t: number;
@@ -995,6 +997,45 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		return { stalled: false };
 	}
 
+	/**
+	 * L2 — Trajectory-aware stall detection.
+	 * Uses classifyTrajectory when metric is configured, falls back to detectStall.
+	 */
+	classifyAndCheckStall(
+		config: LoopUntilConfig,
+		state: LoopUntilState,
+	): { stalled: boolean; reason?: string; trajectoryClass?: TrajectoryClass } {
+		// Only use trajectory classifier when metric is configured
+		if (config.metric && state.iterations.length >= 3) {
+			const metricHistory = state.iterations
+				.filter(i => i.metricValue !== undefined)
+				.map(i => i.metricValue!);
+
+			if (metricHistory.length >= 3) {
+				const trajectoryClass = classifyTrajectory(
+					metricHistory,
+					config.metric.direction,
+					config.metric.target,
+				);
+
+				switch (trajectoryClass) {
+					case 'STALLING':
+						return { stalled: true, reason: 'stalled', trajectoryClass };
+					case 'OSCILLATING':
+						return { stalled: true, reason: 'oscillating', trajectoryClass };
+					case 'DIVERGING':
+						return { stalled: true, reason: 'diverging', trajectoryClass };
+					case 'CONVERGING':
+					case 'INSUFFICIENT_DATA':
+						return { stalled: false, trajectoryClass };
+				}
+			}
+		}
+
+		// Fallback: inline detectStall for non-metric loops or insufficient data
+		return { ...this.detectStall(state), trajectoryClass: undefined };
+	}
+
 	/** Compose human-readable feedback for an iteration evaluation. */
 	composeFeedback(
 		config: LoopUntilConfig,
@@ -1067,7 +1108,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			output: string;
 			tokenUsage?: { input: number; output: number; cached: number };
 		}>,
-	): Promise<{ status: string; reason?: string; label?: string }> {
+	): Promise<{ status: string; reason?: string; label?: string; bestIteration?: number; bestMetricValue?: number; bestIterationOutput?: string }> {
 		const step = this.planState?.steps.find(s => s.label === stepLabel);
 		if (!step || step.kind !== 'loop_until' || !step.loopUntil) {
 			return { status: 'error', reason: 'Not a loop_until step' };
@@ -1186,8 +1227,8 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 				this.updateRollingSummary(state, failedIter);
 				this.saveLoopState(stepLabel);
 
-				// Check stall
-				const stall = this.detectStall(state);
+				// Check stall (L2: trajectory-aware when metric configured)
+				const stall = this.classifyAndCheckStall(config, state);
 				if (stall.stalled) {
 					state.status = 'error';
 					state.rollingSummary = `Stalled: ${stall.reason}`;
@@ -1260,8 +1301,8 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 				break;
 			}
 
-			// Check stall
-			const stall = this.detectStall(state);
+			// Check stall (L2: trajectory-aware when metric configured)
+			const stall = this.classifyAndCheckStall(config, state);
 			if (stall.stalled) {
 				state.status = 'error';
 				state.rollingSummary = `Stalled: ${stall.reason}`;
@@ -1290,7 +1331,41 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			finalStatus === 'max-reached' ? 'max-reached' :
 			finalStatus === 'error' ? 'error' : finalStatus;
 
-		return { status: statusMsg, label: stepLabel, reason: state.rollingSummary };
+		// L3: Find best iteration via findBestIndex
+		let bestIteration: number | undefined;
+		let bestMetricValue: number | undefined;
+		let bestIterationOutput: string | undefined;
+		if (config.metric && state.iterations.length > 0) {
+			const metricHistory = state.iterations
+				.filter(i => i.metricValue !== undefined)
+				.map(i => i.metricValue!);
+			if (metricHistory.length > 0) {
+				const bestIdx = findBestIndex(metricHistory, config.metric.direction);
+				if (bestIdx >= 0) {
+					// Map back to iteration index (metricHistory may skip error iterations)
+					const metricIterations = state.iterations.filter(i => i.metricValue !== undefined);
+					const bestIter = metricIterations[bestIdx];
+					if (bestIter) {
+						bestIteration = bestIter.index;
+						bestMetricValue = bestIter.metricValue;
+						// Find the full iteration output from the loop's iteration history
+						const fullIter = state.iterations.find(i => i.index === bestIter.index);
+						if (fullIter) {
+							bestIterationOutput = fullIter.summary;
+						}
+					}
+				}
+			}
+		}
+
+		return {
+			status: statusMsg,
+			label: stepLabel,
+			reason: state.rollingSummary,
+			bestIteration,
+			bestMetricValue,
+			bestIterationOutput,
+		};
 	}
 
 	/** Get the module-level loop state map (for orchestrator access). */
@@ -1453,7 +1528,7 @@ export async function executeLoopStep(
 		tokenUsage?: { input: number; output: number; cached: number };
 	}>,
 	ctx?: unknown,
-): Promise<{ status: string; reason?: string; label?: string }> {
+): Promise<{ status: string; reason?: string; label?: string; bestIteration?: number; bestMetricValue?: number; bestIterationOutput?: string }> {
 	const panel = resolvePlanPanel(ctx);
 	if (!panel) return { status: 'error', reason: 'No active plan' };
 	return panel.executeLoopStep(stepLabel, onIteration);

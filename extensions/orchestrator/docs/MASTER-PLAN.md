@@ -15,11 +15,11 @@
 | WS-U — UI hardening | ✅ U1-U5 done |
 | WS-PR — Prompt & info layer | ✅ P1-P6 done |
 | WS-P — PBT guard | ✅ PBT-0, PBT-1 done |
+| WS-L — Loop engine v2 | ✅ L1-L6 done |
+| WS-E — Execution infrastructure | ✅ E1-E3 done |
 
 | Remaining Workspaces | Blocked by |
 |---|---|
-| WS-L — Loop engine v2 | T1; informed by WS-U |
-| WS-E — Execution infrastructure | alongside all |
 
 ## 0. Context & hard-won constraints
 
@@ -35,7 +35,7 @@
 
 ## WS-H — Housekeeping [FIRST]
 - [x] H0. OMP currently lives in /private/tmp/oh-my-pi — /tmp vanishes on reboot. Copy to permanent home (~/omp-reference or inside ~/pi-files) BEFORE any WS-U port ticket. Accept: reference copy exists outside /tmp.
-- [ ] H1. End-of-session mechanical: sync + commit + push from ~/pi-files; append docs/MASTER-PLAN-LOG.md (date, tickets, pass/fail, friction). Not optional.
+- [x] H1. End-of-session mechanical: sync + commit + push from ~/pi-files; append docs/MASTER-PLAN-LOG.md (date, tickets, pass/fail, friction). Not optional.
 
 ## WS-R — Removal [no blockers]
 - [x] R1. Cut prose-regex guards. Delete TOOL_PATTERNS + validateTaskCapabilities + call site in delegate-pipeline.ts (~L31-101, ~L142) + delegate-capability.test.ts. Replace isLikelyQATask prose-regex in subagent-diagnostics.ts with toolCalls===0 signal. Accept: suite green; task text "search the codebase" to scout delegates fine.
@@ -73,19 +73,19 @@ Problem: activity feed shows rich behavior live (blocked commands, tool errors, 
 - [x] PBT-0. Scoping grill with CEO before ticketing: which languages, trigger point (after every edit? on demand?), who writes properties (worker-written vs generated), feedback loop shape, token budget. Reference: quickcheck-in-every-language (fast-check TS, hypothesis Python, proptest Rust, gopter Go, jqwik JVM, StreamData Elixir, FsCheck .NET).
 - [x] PBT-1 (skill doc). Skill created at `/Users/shivam94/.pi/agent/skills/pbt/SKILL.md`. Covers 8 languages, 6 property patterns, budget defaults, workflow + output format.
 
-## WS-L — Loop engine v2 [blocked by T1; informed by WS-U]
+## WS-L — Loop engine v2 ✅ [DONE]
 CEO spec: goal + objective metric + hard iteration cap + best-so-far wins. Orchestrator monitors; worker iterates fresh each round with history handed over. Example: efficiency 50%→90% goal, scores 60/40/80/83/88/81, cap 6 → final result = iteration 5 (88%), never the last.
-- [ ] L1. Metric abstraction (v1 D1). loopUntil gains metric (command → number), direction (higher-better | lower-better), target. Accept: schema test; metric command yields number.
-- [ ] L2. Trajectory classifier (v1 D2). CONVERGING / STALLING / OSCILLATING / DIVERGING from metric history; stop on target, stall+patience k=2, oscillation 2 consecutive, or cap. Files: new loop-engine.ts. Accept: unit tests per trajectory.
-- [ ] L3. Best-so-far rollback (v1 D3). Loop returns argbest iteration result per direction, never last. Accept: CEO example sequence returns iteration 5.
-- [ ] L4. Fresh-context iterations + state file (v1 D4). New worker session per iteration; orchestrator passes {objective, metric history, best-so-far, remaining budget}; state persisted to /tmp/orchestrator-debug/loop-<id>.json. Accept: kill mid-loop, resume, count continues.
-- [ ] L5. Budget governor (v1 D5). tokenBudget with operational vs evaluation split from T1 accumulator. Accept: simulated loop stops at budget with best-so-far returned.
-- [ ] L6. Loop UI (v1 D6). Panel shows "⠸ iter 3/6 · metric 60→40→80 · best 80" + token line. Accept: smoke test live trajectory.
+- [x] L1. Metric abstraction (v1 D1). loopUntil gains metric (command → number), direction (higher-better | lower-better), target. Accept: schema test; metric command yields number.
+- [x] L2. Trajectory classifier (v1 D2). CONVERGING / STALLING / OSCILLATING / DIVERGING from metric history; stop on target, stall+patience k=2, oscillation 2 consecutive, or cap. Files: new loop-engine.ts. Accept: unit tests per trajectory.
+- [x] L3. Best-so-far rollback (v1 D3). Loop returns argbest iteration result per direction, never last. Accept: CEO example sequence returns iteration 5.
+- [x] L4. Fresh-context iterations + state file (v1 D4). New worker session per iteration; orchestrator passes {objective, metric history, best-so-far, remaining budget}; state persisted to /tmp/orchestrator-debug/loop-<id>.json. Accept: kill mid-loop, resume, count continues.
+- [x] L5. Budget governor (v1 D5). tokenBudget with operational vs evaluation split from T1 accumulator. Accept: simulated loop stops at budget with best-so-far returned.
+- [x] L6. Loop UI (v1 D6). Panel shows "⠸ iter 3/6 · metric 60→40→80 · best 80" + token line. Accept: smoke test live trajectory.
 
-## WS-E — Execution infrastructure [alongside all]
-- [ ] E1. Per-ticket acceptance tests included in coder delegation task text (no tdd skill on weak workers — induces spurious plan calls).
-- [ ] E2. Session feedback loop: report delegation friction per session; fold into tickets.
-- [ ] E3. Regression gate per session: vitest green + tui-smoke clean + H1 commit done.
+## WS-E — Execution infrastructure ✅ [DONE]
+- [x] E1. Per-ticket acceptance tests included in coder delegation task text (no tdd skill on weak workers — induces spurious plan calls).
+- [x] E2. Session feedback loop: report delegation friction per session; fold into tickets.
+- [x] E3. Regression gate per session: vitest green + tui-smoke clean + H1 commit done.
 
 ## Session breakdown (suggested)
 | Session | Tickets | Why |
