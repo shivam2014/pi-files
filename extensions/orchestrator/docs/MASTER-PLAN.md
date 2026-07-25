@@ -14,10 +14,10 @@
 | WS-O — Flight recorder | ✅ O1-O3 done |
 | WS-U — UI hardening | ✅ U1-U5 done |
 | WS-PR — Prompt & info layer | ✅ P1-P6 done |
+| WS-P — PBT guard | ✅ PBT-0, PBT-1 done |
 
 | Remaining Workspaces | Blocked by |
 |---|---|
-| WS-P — PBT guard | WS-R..WS-PR, grill first |
 | WS-L — Loop engine v2 | T1; informed by WS-U |
 | WS-E — Execution infrastructure | alongside all |
 
@@ -69,9 +69,9 @@ Problem: activity feed shows rich behavior live (blocked commands, tool errors, 
 - [x] P5. Prompt compression. Remove duplicate static tool table (keep dynamic generateToolDocumentation); add interactive_shell to intro tool list; move loop_until docs (~50 lines) to on-demand skill "orchestrator-loops". Target ~2.5k tokens from ~4k. Accept: prompt snapshot + token-count assertion.
 - [x] P6. Communication contract. Replace TERSE_INSTRUCTION block with CEO-communication block: ADHD output rules (lead with next action, numbered steps, restate state per turn, ≤5 items per list, one concrete next action) + architecture-part-level reporting + no silent mechanisms + internals on request. Files: prompt-builder.ts. Accept: prompt contains contract; old caveman block gone.
 
-## WS-P — PBT guard [blocked by WS-R..WS-PR; grill first]
-- [ ] PBT-0. Scoping grill with CEO before ticketing: which languages, trigger point (after every edit? on demand?), who writes properties (worker-written vs generated), feedback loop shape, token budget. Reference: quickcheck-in-every-language (fast-check TS, hypothesis Python, proptest Rust, gopter Go, jqwik JVM, StreamData Elixir, FsCheck .NET).
-- [ ] PBT-1+. Tickets written from grill outcome. Doctrine: property-based tests are deterministic worker-feedback guards, like lint but deeper.
+## WS-P — PBT guard ✅ [DONE]
+- [x] PBT-0. Scoping grill with CEO before ticketing: which languages, trigger point (after every edit? on demand?), who writes properties (worker-written vs generated), feedback loop shape, token budget. Reference: quickcheck-in-every-language (fast-check TS, hypothesis Python, proptest Rust, gopter Go, jqwik JVM, StreamData Elixir, FsCheck .NET).
+- [x] PBT-1 (skill doc). Skill created at `/Users/shivam94/.pi/agent/skills/pbt/SKILL.md`. Covers 8 languages, 6 property patterns, budget defaults, workflow + output format.
 
 ## WS-L — Loop engine v2 [blocked by T1; informed by WS-U]
 CEO spec: goal + objective metric + hard iteration cap + best-so-far wins. Orchestrator monitors; worker iterates fresh each round with history handed over. Example: efficiency 50%→90% goal, scores 60/40/80/83/88/81, cap 6 → final result = iteration 5 (88%), never the last.

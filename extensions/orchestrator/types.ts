@@ -63,6 +63,8 @@ export interface ActivityFeedState {
 	tokenOutput?: number;
 	/** Latest turn's cacheRead tokens (per-turn, not cumulative) */
 	tokenCached?: number;
+	/** Accumulated cache write tokens */
+	tokenCacheWrite?: number;
 	/** Current context token count */
 	ctxTokens?: number;
 	/** Context window size */

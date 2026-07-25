@@ -66,7 +66,7 @@ let _viewerOutput: string = "";
 let _viewerStatus: "idle" | "running" | "completed" | "error" = "idle";
 
 /** Token state for header display */
-let _viewerTokens: { input: number; output: number; cached: number; ctxTokens?: number; ctxWindow?: number } | null = null;
+let _viewerTokens: { input: number; output: number; cached: number; cacheWrite?: number; ctxTokens?: number; ctxWindow?: number } | null = null;
 
 
 // ============================================================================
@@ -124,7 +124,7 @@ export class PeekComponent implements Component {
             if (_viewerTokens.cached) {
                 parts.push(`⇄${formatTokens(_viewerTokens.cached)}`);
                 const input = _viewerTokens.input ?? 0;
-                const total = input + _viewerTokens.cached;
+                const total = input + _viewerTokens.cached + (_viewerTokens.cacheWrite ?? 0);
                 const pct = Math.round(_viewerTokens.cached / total * 100);
                 parts.push(`CH${pct}%`);
             }
@@ -374,7 +374,7 @@ export function setViewerSession(session: any, task: string): void {
 /**
  * Set token data for the viewer header.
  */
-export function setViewerTokens(tokens: { input: number; output: number; cached: number; ctxTokens?: number; ctxWindow?: number } | null): void {
+export function setViewerTokens(tokens: { input: number; output: number; cached: number; cacheWrite?: number; ctxTokens?: number; ctxWindow?: number } | null): void {
     _viewerTokens = tokens;
     scheduleRender();
 }

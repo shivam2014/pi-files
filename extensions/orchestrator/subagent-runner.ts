@@ -34,6 +34,7 @@ import {
 	renderSubstepLines,
 	appendWebSearchResults,
 	compressOutput,
+	sanitizeOutputForOrchestrator,
 } from "./activity-feed.ts";
 import { statusIcon, formatTokens } from "./orchestrator-theme.ts";
 
@@ -198,7 +199,7 @@ export function createFlightRecorderDump(params: FlightRecorderDumpParams): Reco
 		blockedCalls: params.blockedCalls ?? [],
 		planSteps: params.planSteps ?? [],
 		metrics: params.metrics ?? {},
-		tokenSummary: params.tokenSummary ?? { totalInput: 0, totalOutput: 0, totalCached: 0, ctxTokensFinal: 0 },
+		tokenSummary: params.tokenSummary ?? { totalInput: 0, totalOutput: 0, totalCached: 0, cacheWrite: 0, ctxTokensFinal: 0 },
 		systemPrompt: params.systemPrompt,
 		activityFeed: params.activityFeed,
 	};
@@ -339,7 +340,7 @@ export interface FlightRecorderDumpParams {
 	blockedCalls?: Array<{ tool: string; target: string; reason: string; timestamp: number }>;
 	planSteps?: Array<{ label: string; durationMs: number; completed: boolean }>;
 	metrics?: Record<string, number>;
-	tokenSummary?: { totalInput: number; totalOutput: number; totalCached: number; ctxTokensFinal: number };
+	tokenSummary?: { totalInput: number; totalOutput: number; totalCached: number; cacheWrite: number; ctxTokensFinal: number };
 }
 
 /**
@@ -623,7 +624,7 @@ export class SubagentRunner {
 			let hasLintFailures = false;
 			let lastStopReason: string | undefined;
 			let lastErrorMessage: string | undefined;
-			let accInput = 0, accOutput = 0, accCached = 0;
+			let accInput = 0, accOutput = 0, accCached = 0, accCacheWrite = 0;
 			let ctxTokens = 0;
 			let ctxWindow: number | undefined;
 			const PROGRESS_COALESCE_MS = 150;
@@ -677,8 +678,9 @@ export class SubagentRunner {
 						if (usage) {
 							accInput += usage.input || 0;
 							accOutput += usage.output || 0;
-							accCached = usage.cacheRead || 0;
-							ctxTokens = (usage.input || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
+							accCached += usage.cacheRead || 0;
+							accCacheWrite += usage.cacheWrite || 0;
+							ctxTokens = usage.totalTokens || (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
 							if (!ctxWindow && model?.contextWindow) ctxWindow = model.contextWindow;
 							progressScheduler.schedule();
 						}
@@ -830,7 +832,7 @@ export class SubagentRunner {
 					for (let i = messages.length - 1; i >= 0; i--) {
 						if (messages[i].role === "assistant" && messages[i].usage) {
 							const u = messages[i].usage;
-							ctxTokens = ((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0)) || ctxTokens;
+							ctxTokens = (u.totalTokens || ((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0))) || ctxTokens;
 							break;
 						}
 					}
@@ -1013,7 +1015,7 @@ export class SubagentRunner {
 							completed: s.completed,
 						})),
 						metrics: config.metrics ?? {},
-						tokenSummary: { totalInput: accInput, totalOutput: accOutput, totalCached: accCached, ctxTokensFinal: ctxTokens },
+						tokenSummary: { totalInput: accInput, totalOutput: accOutput, totalCached: accCached, cacheWrite: accCacheWrite, ctxTokensFinal: ctxTokens },
 						systemPrompt: specialist.systemPrompt,
 						activityFeed: { ...feed.feedState },
 					});
@@ -1037,11 +1039,12 @@ export class SubagentRunner {
 			// Freeze tokens so they persist in the final render
 			feed.feedState = { ...feed.feedState, tokensFrozen: true };
 			const finalText = feed.render(specialist.name);
-			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached } });
+			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, tokenCacheWrite: accCacheWrite } });
 			setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
 			recordTimelineFrame("step_finalized", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
 
-			const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);
+			const cleaned = sanitizeOutputForOrchestrator(compressOutput(output || "(no output)"));
+			const finalOutput = truncateSubagentOutput(cleaned, OUTPUT_CAP);
 
 			setViewerOutput(output);
 

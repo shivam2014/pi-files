@@ -17,6 +17,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import os from "os";
 import { statusIcon, styledSymbol, getTheme } from "./orchestrator-theme.ts";
 import { getSessionMode, loadOrchestratorConfig } from "./orchestrator-config";
+import { sanitizeOutputForOrchestrator as sanitizeOutputShared } from "./activity-feed.ts";
 
 
 /**
@@ -56,7 +57,7 @@ export class DelegatePipeline {
 	 * @returns Result with content and details
 	 */
 	async run(
-		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal; parallel?: boolean },
+		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal; parallel?: boolean; skipStepTracking?: boolean },
 		ctx: DelegateControllerContext,
 		onUpdate: (update: any) => void,
 	): Promise<ExecuteDelegateResult> {
@@ -187,7 +188,9 @@ export class DelegatePipeline {
 			debugLog('[delegate-pipeline] auto-created plan:', autoGoal);
 		}
 
-		startDelegationStep(stepLabel, ctx);
+		if (!params.skipStepTracking) {
+			startDelegationStep(stepLabel, ctx);
+		}
 
 		onUpdate?.({
 			content: [{ type: "text", text: `${currentFrame()} ${specialist.name}...` }],
@@ -396,10 +399,12 @@ export class DelegatePipeline {
 			}
 
 			// Mark plan step
-			if (hasError) {
-				errorPlanStep(ctx, isAborted, result?.errorMessage);
-			} else {
-				autoAdvancedStep = finalizePlanStep(ctx);
+			if (!params.skipStepTracking) {
+				if (hasError) {
+					errorPlanStep(ctx, isAborted, result?.errorMessage);
+				} else {
+					autoAdvancedStep = finalizePlanStep(ctx);
+				}
 			}
 		} finally {
 			decrementDelegationCount(ctx);
@@ -493,8 +498,18 @@ export class DelegatePipeline {
 
 		for (let i = 0; i < entries.length; i += maxConcurrent) {
 			const chunk = entries.slice(i, i + maxConcurrent);
+
+			// PRE-CREATE steps for each batch entry (sequential, not concurrent)
+			const stepIndices: number[] = [];
+			for (const entry of chunk) {
+				const stepLabel = `${entry.specialist}: ${entry.task.substring(0, 60)}`;
+				const idx = startDelegationStep(stepLabel, ctx, { isBatch: true });
+				stepIndices.push(idx);
+			}
+
+			// Run all concurrently, suppressing inner step tracking
 			const chunkResults = await Promise.allSettled(
-				chunk.map(async (entry) => {
+				chunk.map(async (entry, i) => {
 					const entryStart = Date.now();
 					try {
 						const result = await this.run(
@@ -505,6 +520,7 @@ export class DelegatePipeline {
 								scope: entry.scope,
 								signal,
 								parallel: true,
+								skipStepTracking: true,
 							},
 							ctx,
 							onUpdate,
@@ -514,6 +530,7 @@ export class DelegatePipeline {
 							specialist: entry.specialist,
 							success: true,
 							output,
+							stepIndex: stepIndices[i],
 							elapsed_ms: Date.now() - entryStart,
 						};
 					} catch (e) {
@@ -522,23 +539,31 @@ export class DelegatePipeline {
 							success: false,
 							output: "",
 							error: String(e),
+							stepIndex: stepIndices[i],
 							elapsed_ms: Date.now() - entryStart,
 						};
 					}
 			})
 			);
 
-			for (const r of chunkResults) {
-				if (r.status === "fulfilled") {
-					allResults.push(r.value);
+			// Finalize each entry's pre-created step and collect results
+			for (const settled of chunkResults) {
+				if (settled.status === 'fulfilled') {
+					const { stepIndex, ...rest } = settled.value;
+					allResults.push(rest);
+					if (rest.success) {
+						finalizePlanStep(ctx, stepIndex);
+					} else {
+						errorPlanStep(ctx, false, rest.error);
+					}
 				} else {
-					// Promise rejected — shouldn't happen since run() errors are caught, but defensive
 					allResults.push({
-						specialist: "unknown",
+						specialist: 'unknown',
 						success: false,
-						output: "",
-						error: r.status === "rejected" ? String(r.reason) : "Unknown error",
+						output: '',
+						error: String(settled.reason),
 					});
+					errorPlanStep(ctx, false, String(settled.reason));
 				}
 			}
 		}
@@ -794,48 +819,7 @@ export class DelegatePipeline {
 	 * When no report exists, leave output as-is (already diagnostic/salvaged).
 	 */
 	static sanitizeOutputForOrchestrator(output: string): string {
-		const hasReport = /##\s+(Findings|Completed|Audit|Verification|Scope|Notes|Recommendations|Pending Questions|Files Changed)\b/.test(output);
-		if (!hasReport) return output;
-
-		const lines = output.split('\n');
-		const keepSections = new Set([
-			'findings', 'completed', 'audit', 'verification',
-			'scope', 'notes', 'recommendations', 'pending questions',
-			'files changed',
-		]);
-		const kept: string[] = [];
-		let inReportSection = false;
-
-		for (const line of lines) {
-			if (/^\[Metrics:/.test(line) || /^\[Execution:/.test(line) || /^\[Scope:/.test(line)) {
-				kept.push(line); continue;
-			}
-			if (/^[✓✗⚠−]/.test(line)) {
-				kept.push(line); continue;
-			}
-			const sectionMatch = line.match(/^##\s+(.+)/);
-			if (sectionMatch) {
-				const sectionName = sectionMatch[1].toLowerCase().trim();
-				inReportSection = keepSections.has(sectionName);
-				if (inReportSection) { kept.push(line); continue; }
-			}
-			if (inReportSection) { kept.push(line); continue; }
-			// Strip noise outside report sections
-			if (/^\s*\{\s*"/.test(line) || /^\s*\[\s*\{\s*"/.test(line)) continue;
-			if (/^\s*\[tool result/.test(line) || /^\s*\[already read/.test(line)) continue;
-			if (/^\s*\[Tool Calls/.test(line)) continue;
-			if (/^\s*\[Findings:/.test(line)) continue;
-			if (/^\s*\[Error:/.test(line)) continue;
-			if (/^\s*\[(aborted|error)\]/.test(line)) continue;
-			if (/^⚠️?\s*\[Diagnostic\]/.test(line)) continue;
-			if (line.trim() === '' && kept.length > 0 && kept[kept.length - 1].trim() === '') continue;
-			kept.push(line);
-		}
-		let result = kept.join('\n').trim();
-		if (output.trim().length < 50) {
-			result = `⚠ PARTIAL — salvaged\n\n${result}`;
-		}
-		return result;
+		return sanitizeOutputShared(output);
 	}
 
 }
@@ -913,5 +897,5 @@ export function formatResult(params: FormatResultParams): {
 }
 
 export function sanitizeOutputForOrchestrator(output: string) {
-	return DelegatePipeline.sanitizeOutputForOrchestrator(output);
+	return sanitizeOutputShared(output);
 }

@@ -77,3 +77,25 @@
 
 ### Commits
 - 963c87a, 38accda, 018680e, 1fc2e0d
+
+## Session 9 — 2026-07-24
+
+### Completed
+- **Token tracking fix** — Fixed agent_end handler ctxTokens formula (line 835) and updated stale test expectations. All 34 tests pass.
+- **PBT-0 grill** — Completed scoping grill with CEO. Decisions:
+  - PBT as a skill (not automated gate) — loaded when writing test files
+  - Agent decides applicability based on decision criteria
+  - Per-language frameworks (fast-check, hypothesis, proptest, rapid, jqwik)
+  - Auto-install framework if missing
+  - Quality checklist with anti-tautology checks
+  - Seed capture + replay for all failures
+- **PBT skill created** — `/Users/shivam94/.pi/agent/skills/pbt/SKILL.md`
+  - 8 languages covered
+  - 6 property patterns with code examples
+  - Budget defaults + shrink caps
+  - Workflow + output format
+
+### Status
+- PBT-0: ✅ Done (grill complete, decisions locked)
+- PBT-1: ✅ Done (skill document created)
+- PBT-2+: Pending (Tickets from grill outcome — may not be needed since skill is already written)

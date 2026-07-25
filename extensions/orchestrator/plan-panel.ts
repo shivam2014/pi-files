@@ -560,8 +560,16 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		this._renderWidget();
 	}
 
-	startDelegationStep(label: string): void {
-		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
+	startDelegationStep(label: string, options?: { isBatch?: boolean }): number {
+		if (!this.planState || this.planState.sessionId !== this._sessionId) return -1;
+		if (options?.isBatch) {
+			// Always create a new step for batch entries — never reuse
+			this.pushPlanStep(label);
+			const newIdx = this.planState.steps.length - 1;
+			this.planState.steps[newIdx].active = true;
+			this.planState.steps[newIdx].kind = 'delegation';
+			return newIdx;
+		}
 		const activeIdx = this.planState.steps.findIndex((s) => s.active);
 		if (activeIdx >= 0 && !this.planState.steps[activeIdx].completed) {
 			this.planState.steps[activeIdx].active = true;
@@ -570,7 +578,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			resetSpinner();
 			this._renderWidget();
 			this.recordTimelineFrame("delegation_start");
-			return;
+			return activeIdx;
 		}
 		const pendingIdx = this.planState.steps.findIndex((s) => !s.completed && !s.active && !s.errored);
 		if (pendingIdx >= 0) {
@@ -580,11 +588,13 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			resetSpinner();
 			this._renderWidget();
 			this.recordTimelineFrame("delegation_start");
-			return;
+			return pendingIdx;
 		}
 		this.pushPlanStep(label);
+		const pushedIdx = this.planState.steps.length - 1;
 		this._renderWidget();
 		this.recordTimelineFrame("delegation_start");
+		return pushedIdx;
 	}
 
 	updatePlanStepDetail(detail: string | string[]): void {
@@ -659,7 +669,26 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame("step_complete");
 	}
 
-	finalizePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): string {
+	finalizePlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, stepIndex?: number): string {
+		if (!this.planState || this.planState.sessionId !== this._sessionId) return '';
+		if (stepIndex !== undefined) {
+			const step = this.planState.steps[stepIndex];
+			if (step) {
+				if (step.detailLines?.length) (step as any).substepLines = step.detailLines.slice(-3);
+				const label = step.label || '';
+				step.completed = true;
+				step.active = false;
+				step.detail = undefined;
+				step.detailLines = undefined;
+				step.endTime = Date.now();
+				this._activateNextPending();
+				this._renderWidget();
+				this.savePlanState();
+				this.recordTimelineFrame("step_complete");
+				return label;
+			}
+			return '';
+		}
 		const label = this.planState?.steps?.find((s) => s.active)?.label || '';
 		this.completePlanStep(ctx);
 		return label;
@@ -1325,7 +1354,7 @@ function _resolveOrCreate(ctx: unknown): PlanPanel {
 export const setupPlanPanel = (g: string, s: string[], c: unknown) => _resolveOrCreate(c).setupPlanPanel(g, s, c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
 export const clearPlanPanel = (c: unknown) => resolvePlanPanel(c)?.clearPlanPanel(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
 export const completePlanStep = (c: unknown) => resolvePlanPanel(c)?.completePlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
-export const finalizePlanStep = (c: unknown) => resolvePlanPanel(c)?.finalizePlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
+export const finalizePlanStep = (c: unknown, stepIndex?: number) => resolvePlanPanel(c)?.finalizePlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, stepIndex);
 export const clearPlanIfComplete = (c: unknown) => resolvePlanPanel(c)?.clearPlanIfComplete(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
 export const errorPlanStep = (c: unknown, a?: boolean, e?: string) => resolvePlanPanel(c)?.errorPlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, a, e);
 export const incrementDelegationCount = (ctx: unknown) => resolvePlanPanel(ctx)?.incrementDelegationCount();
@@ -1340,7 +1369,7 @@ export const getTimelineDiff = (ctx: unknown) => resolvePlanPanel(ctx)?.getTimel
 export const hasActivePlan = (ctx: unknown) => resolvePlanPanel(ctx)?.hasActivePlan() ?? false;
 export const getPlanState = (ctx: unknown) => resolvePlanPanel(ctx)?.getPlanState();
 export const pushPlanStep = (l: string, ctx: unknown) => resolvePlanPanel(ctx)?.pushPlanStep(l);
-export const startDelegationStep = (l: string, ctx: unknown) => resolvePlanPanel(ctx)?.startDelegationStep(l);
+export const startDelegationStep = (l: string, ctx: unknown, options?: { isBatch?: boolean }): number => resolvePlanPanel(ctx)?.startDelegationStep(l, options) ?? -1;
 export const updatePlanStepDetail = (d: string | string[], ctx: unknown) => resolvePlanPanel(ctx)?.updatePlanStepDetail(d);
 export const addSteps = (s: string[], ctx: unknown) => resolvePlanPanel(ctx)?.addSteps(s);
 export const retryPlanStep = (ctx: unknown) => resolvePlanPanel(ctx)?.retryPlanStep();

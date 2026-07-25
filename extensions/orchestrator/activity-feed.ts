@@ -51,7 +51,7 @@ export function renderTokenLine(state: ActivityFeedState): string {
 	if (state.tokenCached) {
 		parts.push(`${SYMBOLS["token.cacheRead"]}${formatTokens(state.tokenCached)}`);
 		const input = state.tokenInput ?? 0;
-		const total = input + state.tokenCached;
+		const total = input + state.tokenCached + (state.tokenCacheWrite ?? 0);
 		const pct = Math.round(state.tokenCached / total * 100);
 		parts.push(`CH${pct}%`);
 	}
@@ -808,6 +808,58 @@ export function compressOutput(output: string): string {
 	result = result.replace(ANSI_RE, "");
 	result = result.replace(/\n{3,}/g, "\n\n");
 	result = result.trim();
+	return result;
+}
+
+// ── Output sanitization ────────────────────────────────────────────────────
+
+/**
+ * Output hygiene: when a structured report exists in the output, strip raw
+ * JSON tool-result blocks and `[tool result]` markers that burn context tokens.
+ * When no report exists, leave output as-is (already diagnostic/salvaged).
+ */
+export function sanitizeOutputForOrchestrator(output: string): string {
+	const hasReport = /##\s+(Findings|Completed|Audit|Verification|Scope|Notes|Recommendations|Pending Questions|Files Changed)\b/.test(output);
+	if (!hasReport) return output;
+
+	const lines = output.split('\n');
+	const keepSections = new Set([
+		'findings', 'completed', 'audit', 'verification',
+		'scope', 'notes', 'recommendations', 'pending questions',
+		'files changed',
+	]);
+	const kept: string[] = [];
+	let inReportSection = false;
+
+	for (const line of lines) {
+		if (/^\[Metrics:/.test(line) || /^\[Execution:/.test(line) || /^\[Scope:/.test(line)) {
+			kept.push(line); continue;
+		}
+		if (/^[✓✗⚠−]/.test(line)) {
+			kept.push(line); continue;
+		}
+		const sectionMatch = line.match(/^##\s+(.+)/);
+		if (sectionMatch) {
+			const sectionName = sectionMatch[1].toLowerCase().trim();
+			inReportSection = keepSections.has(sectionName);
+			if (inReportSection) { kept.push(line); continue; }
+		}
+		if (inReportSection) { kept.push(line); continue; }
+		// Strip noise outside report sections
+		if (/^\s*\{\s*"/.test(line) || /^\s*\[\s*\{\s*"/.test(line)) continue;
+		if (/^\s*\[tool result/.test(line) || /^\s*\[already read/.test(line)) continue;
+		if (/^\s*\[Tool Calls/.test(line)) continue;
+		if (/^\s*\[Findings:/.test(line)) continue;
+		if (/^\s*\[Error:/.test(line)) continue;
+		if (/^\s*\[(aborted|error)\]/.test(line)) continue;
+		if (/^⚠️?\s*\[Diagnostic\]/.test(line)) continue;
+		if (line.trim() === '' && kept.length > 0 && kept[kept.length - 1].trim() === '') continue;
+		kept.push(line);
+	}
+	let result = kept.join('\n').trim();
+	if (output.trim().length < 50) {
+		result = `⚠ PARTIAL — salvaged\n\n${result}`;
+	}
 	return result;
 }
 
