@@ -63,6 +63,7 @@ const ShellParams = Type.Object({
 	attach: Type.Optional(Type.String({ description: "Reattach to background session" })),
 	timeout: Type.Optional(Type.Number({ description: "Auto-kill after N ms" })),
 	reason: Type.Optional(Type.String({ description: "UI display label for overlay header" })),
+	cwd: Type.Optional(Type.String({ description: "Working directory for the spawned command. Defaults to the parent session's cwd — set a neutral dir (e.g. /tmp) when launching `pi -ne` so its AGENTS.md context-file discovery doesn't pick up orchestrator instructions from ~." })),
 	monitor: Type.Optional(
 		Type.Object(
 			{
@@ -112,7 +113,7 @@ type ShellParamsType = Static<typeof ShellParams>;
 
 // ── Fallback executor (child_process) ──
 
-function executeFallback(params: ShellParamsType): {
+function executeFallback(params: ShellParamsType, ctx?: any): {
 	content: { type: "text"; text: string }[];
 	details: Record<string, unknown>;
 } {
@@ -239,6 +240,7 @@ function executeFallback(params: ShellParamsType): {
 		const child = spawn("sh", ["-c", params.command], {
 			stdio: ["pipe", "pipe", "pipe"],
 			env: { ...process.env },
+			cwd: params.cwd ?? ctx?.cwd ?? process.cwd(),
 		});
 
 		const session: ShellSession = {
@@ -376,7 +378,7 @@ export function registerInteractiveShellTool(pi: ExtensionAPI): void {
 			}
 
 			// Fallback: child_process-based implementation
-			return executeFallback(params);
+			return executeFallback(params, ctx);
 		},
 	});
 }

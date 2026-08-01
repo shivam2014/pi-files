@@ -451,3 +451,41 @@ describe("handleSubagentToolCall", () => {
 		});
 	});
 });
+
+// ── BUG-5: temp-scratch paths are exempt from scope checks ──
+
+describe("handleSubagentToolCall — BUG-5 temp-dir scope exemption", () => {
+	it("does not block bash writes to /tmp even when scope is strict", () => {
+		ScopeGuardMock.mockImplementationOnce(function (this: any, _cwd: string) {
+			this.isScopeValid = () => true;
+			this.isPathAllowed = () => ({ allowed: false, reason: "File not in approved scope" });
+			this.checkFileSize = () => ({ allowed: true });
+			this.requestExpansion = () => null;
+		});
+		vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
+
+		const result = handleSubagentToolCall({
+			toolName: "bash",
+			input: { command: "cat > /tmp/findings-x.md" },
+		}, true, { cwd: "/tmp" }, subagentCtx(true));
+
+		expect(result).toBeUndefined();
+	});
+
+	it("still blocks non-temp bash writes outside scope", () => {
+		ScopeGuardMock.mockImplementationOnce(function (this: any, _cwd: string) {
+			this.isScopeValid = () => true;
+			this.isPathAllowed = () => ({ allowed: false, reason: "File not in approved scope: secret.ts" });
+			this.checkFileSize = () => ({ allowed: true });
+			this.requestExpansion = () => null;
+		});
+		vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true });
+
+		const result = handleSubagentToolCall({
+			toolName: "bash",
+			input: { command: "cat > src/secret.ts" },
+		}, true, { cwd: "/tmp" }, subagentCtx(true));
+
+		expect(result).toEqual({ block: true, reason: "Scope violation: src/secret.ts is outside the allowed scope", expansionRequest: null });
+	});
+});

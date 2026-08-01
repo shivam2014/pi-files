@@ -209,7 +209,10 @@ export class DelegatePipeline {
 		incrementDelegationCount(ctx);
 
 		// ── Metrics tracking ──
-		const metrics: DelegationMetrics = {
+		// BUG-1: counters were previously fed from update.details.tool, which the
+		// runner never emits — they stayed 0 forever. Metrics now come from the
+		// runner's real tool-call counts (derived from SDK tool events).
+		const EMPTY_METRICS: DelegationMetrics = {
 			readCalls: 0,
 			grepCalls: 0,
 			findCalls: 0,
@@ -218,18 +221,8 @@ export class DelegatePipeline {
 			bashCalls: 0,
 			lsCalls: 0,
 		};
+		let metrics: DelegationMetrics = { ...EMPTY_METRICS };
 		const wrappedOnUpdate = (update: any) => {
-			if (update.details?.tool) {
-				switch (update.details.tool) {
-					case "read": metrics.readCalls++; break;
-					case "grep": metrics.grepCalls++; break;
-					case "find": metrics.findCalls++; break;
-					case "edit": metrics.editCalls++; break;
-					case "write": metrics.writeCalls++; break;
-					case "bash": metrics.bashCalls++; break;
-					case "ls": metrics.lsCalls++; break;
-				}
-			}
 			onUpdate?.(update);
 		};
 
@@ -275,6 +268,12 @@ export class DelegatePipeline {
 			metrics.scopeNotes = result.scopeNotes;
 		}
 
+		// Real metrics derived from the runner's tool-call trail (BUG-1)
+		metrics = { ...EMPTY_METRICS, ...(result?.metrics ?? {}) };
+		if (result?.scopeNotes) {
+			metrics.scopeNotes = result.scopeNotes;
+		}
+
 		const rawSubagentOutput = result?.output;
 
 		// Dynamic status: subagent completed
@@ -285,27 +284,34 @@ export class DelegatePipeline {
 		} catch {}
 
 		// ── Check for errors/abort ──
-		const isAborted = (effectiveSignal?.aborted || false) || (result?.output?.startsWith("[aborted]") ?? false);
-		let isError = !result || !result.output || result.output.startsWith("[error]") || result.output.startsWith("[aborted]");
-		if (!isError && result?.stopReason === "error") {
-			isError = true;
-		}
+		// BUG-4: single source of truth — the runner's finalStatus, not output sniffing
+		const isAborted = (effectiveSignal?.aborted || false) || result?.status === "aborted" || (result?.output?.startsWith("[aborted]") ?? false);
+		let isError = !result || !result.output || result.output.startsWith("[error]") || result.output.startsWith("[aborted]")
+			|| result?.status === "error" || result?.stopReason === "error";
 		let hasError = isAborted || isError;
 
 		// ── No-work detection for coder/writer ──
+		// BUG-2: heuristic reads REAL metrics + trail, so a coder that did 11 bash
+		// calls (backup cp, curl, tar) is no longer falsely failed for lacking
+		// `## Completed` deliverable markers.
 		const isCodeSpecialist = specialist.name === 'coder' || specialist.name === 'writer';
 		const hasMutatingCalls = metrics.editCalls > 0 || metrics.writeCalls > 0 || metrics.bashCalls > 0;
+		const hasAnyToolCalls = (result?.toolCallTrail?.length ?? 0) > 0;
 		const hasDeliverable = rawSubagentOutput && (
 			rawSubagentOutput.includes('## Completed') ||
 			rawSubagentOutput.includes('## Findings') ||
 			rawSubagentOutput.includes('## Files Changed')
 		);
-		const isNoWork = isCodeSpecialist && !hasMutatingCalls && !hasDeliverable && !hasError;
+		const isNoWork = isCodeSpecialist && !hasMutatingCalls && !hasAnyToolCalls && !hasDeliverable && !hasError;
 
 		if (isNoWork) {
 			hasError = true;
 			isError = true;
-			result.output = `⚠ no-work completion — ${specialist.name} returned ok with zero edits/writes/bash calls and no deliverable. Plan step NOT advanced.`;
+			// BUG-4: no-work must carry a real errorMessage so the failure banner is not
+			// "status:unknown — no error message"
+			result.errorMessage = `no-work completion — ${specialist.name} returned ok with zero tool calls and no deliverable.`;
+			result.stopReason = result.stopReason ?? "no-work";
+			result.output = `⚠ ${result.errorMessage} Plan step NOT advanced.`;
 		}
 
 		// ── Handle diagnostics (capture + persist, no UI) ──
@@ -447,6 +453,11 @@ export class DelegatePipeline {
 			elapsedMs,
 			stopReason: result?.stopReason,
 			errorMessage: result?.errorMessage,
+			toolCalls: result?.toolCallTrail?.length ?? 0,
+			lastAssistantMessage: result?.lastAssistantMessage ? result.lastAssistantMessage.slice(0, 500) : undefined,
+			planSteps: result?.planSteps,
+			autoCompletedSteps: (result?.planSteps ?? []).filter(p => p.autoCompleted).length,
+			metrics: result?.metrics,
 			partialResults: hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]"),
 			partialMarker: (hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]")) ? "⚠ PARTIAL" : undefined,
 			autoAdvancedStep: autoAdvancedStep || undefined,

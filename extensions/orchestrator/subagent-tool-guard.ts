@@ -172,6 +172,9 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 							const lastToken = before.split(/\s+/).pop() || '';
 							// Skip if preceded by a flag (e.g., -name, -path) — those are patterns, not file paths
 							if (lastToken.startsWith('-') && lastToken !== '--') continue;
+							// BUG-5: temp-scratch paths are exempt from scope checks — subagents
+							// legitimately write findings/scratch files under /tmp
+							if (match[0].startsWith('/tmp/') || match[0].startsWith('/private/tmp/')) continue;
 							filePaths.push(match[0]);
 						}
 					}

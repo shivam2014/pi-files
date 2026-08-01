@@ -1,0 +1,5 @@
+.DS_Store
+**/.DS_Store
+**/.pi/
+extensions/orchestrator/diagnostics/
+extensions/orchestrator/tsconfig.tsbuildinfo

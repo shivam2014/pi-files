@@ -227,12 +227,13 @@ describe("delegate scope resolution", () => {
 	});
 
 	it("scout/researcher does not cache scope for coder", async () => {
+		// Only ONE Once value — the coder call throws before reaching runSubagent,
+		// so a second Once would leak and desync the mock queue for later tests.
 		vi.mocked(runSubagent)
 			.mockResolvedValueOnce({
 				output: `## Scope\n- filesToModify: ["src/auth.ts"]\n- filesToCreate: []\n- changeType: single-file\n- maxLinesPerFile: 200\n`,
 				turns: 1,
-			})
-			.mockResolvedValueOnce({ output: "done", turns: 1 });
+			});
 
 		// Scout produces scope, but coder should NOT pick it up (no cache)
 		await execute({ specialist: "scout", task: "investigate" });
@@ -317,5 +318,104 @@ describe("delegate scope resolution", () => {
 			expect(mockStartDelegationStep).toHaveBeenCalled();
 			expect(runSubagent).toHaveBeenCalled();
 		});
+	});
+});
+
+// ─── BUG-1/2/4 regression: no-work heuristic must use real trail metrics ──
+
+describe("BUG-1/2/4 regression — no-work heuristic on real tool trail", () => {
+	let delegateTool: any;
+	let testDir: string;
+
+	beforeAll(() => {
+		const pi = createMockPi();
+		registerDelegateTool(pi as any);
+		delegateTool = pi.getAllTools().find((t: any) => t.name === "delegate");
+	});
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockHasActivePlan.mockReturnValue(true);
+		testDir = mkdtempSync(join(tmpdir(), "delegate-bugfix-"));
+		vi.mocked(runSubagent).mockResolvedValue({ output: "", turns: 0 });
+
+		// NOTE: these tests use mockResolvedValue (not mockResolvedValueOnce) so they
+		// are immune to Once-queue desync from earlier tests that leak unconsumed values.
+	});
+
+	async function execute(params: any) {
+		const fullCtx = {
+			cwd: testDir,
+			ui: {
+				setWidget: vi.fn(),
+				setWorkingMessage: vi.fn(),
+				setStatus: vi.fn(),
+				theme: {},
+			},
+		};
+		return delegateTool.execute("call-1", params, new AbortController().signal, () => {}, fullCtx);
+	}
+
+	it("coder that DID work (11 bash calls, no ## Completed markers) is NOT flagged no-work", async () => {
+		// Mirrors the real failed delegation: backup cp, curl download, tar extract —
+		// real mutating calls, but no `## Completed`/`## Findings` deliverable markers.
+		const trail = Array.from({ length: 11 }, (_, i) => ({
+			tool: `bash: command ${i}`,
+			completed: true,
+		}));
+		vi.mocked(runSubagent).mockResolvedValue({
+			output: "Downloaded tarball and extracted it. Ready for rsync.",
+			turns: 1,
+			toolCallTrail: trail,
+			metrics: { readCalls: 0, grepCalls: 0, findCalls: 0, editCalls: 0, writeCalls: 0, bashCalls: 11, lsCalls: 0 },
+			status: "completed",
+		});
+
+		const result = await execute({
+			specialist: "coder",
+			task: "update omp reference",
+			scope: { filesToModify: [], filesToCreate: [], directories: [testDir], maxFiles: 10 },
+		});
+
+		expect(result.details.status).toBe("done");
+		expect(result.content[0].text).not.toContain("no-work");
+		expect(result.details.toolCalls).toBe(11);
+		expect(result.details.metrics?.bashCalls).toBe(11);
+	});
+
+	it("coder with genuinely zero tool calls and no deliverable IS flagged no-work WITH error message", async () => {
+		vi.mocked(runSubagent).mockResolvedValue({
+			output: "ok",
+			turns: 0,
+			toolCallTrail: [],
+			metrics: { readCalls: 0, grepCalls: 0, findCalls: 0, editCalls: 0, writeCalls: 0, bashCalls: 0, lsCalls: 0 },
+			status: "completed",
+		});
+
+		const result = await execute({
+			specialist: "coder",
+			task: "do nothing",
+			scope: { filesToModify: [], filesToCreate: [], directories: [testDir], maxFiles: 10 },
+		});
+
+		expect(result.details.status).toBe("error");
+		// BUG-4: no-work must set errorMessage so the banner isn't "status:unknown — no error message"
+		expect(result.details.errorMessage).toContain("no-work");
+		expect(result.content[0].text).toContain("no-work");
+	});
+
+	it("writer with real write calls is not flagged no-work even without deliverable markers", async () => {
+		vi.mocked(runSubagent).mockResolvedValue({
+			output: "Wrote draft to docs/readme.md",
+			turns: 1,
+			toolCallTrail: [{ tool: "Writing readme.md", completed: true }],
+			metrics: { readCalls: 0, grepCalls: 0, findCalls: 0, editCalls: 0, writeCalls: 1, bashCalls: 0, lsCalls: 0 },
+			status: "completed",
+		});
+
+		const result = await execute({ specialist: "writer", task: "write readme" });
+
+		expect(result.details.status).toBe("done");
+		expect(result.content[0].text).not.toContain("no-work");
 	});
 });

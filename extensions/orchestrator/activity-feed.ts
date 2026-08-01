@@ -583,7 +583,8 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 					const duration = step.startTime && step.endTime
 						? thFormatDuration(step.endTime - step.startTime)
 						: "";
-					const summary = `  ${statusIcon("completed")} Step ${i + 1}: ${step.label}${duration ? ` (${duration})` : ""}`;
+					const autoMarker = step.autoCompleted ? getTheme().fg("dim", " (auto-closed)") : "";
+					const summary = `  ${statusIcon("completed")} Step ${i + 1}: ${step.label}${autoMarker}${duration ? ` (${duration})` : ""}`;
 					errorLines.push(summary);
 					// Show Report: substeps under completed steps (Collapse Not Erase)
 					for (const sub of step.substeps) {
@@ -691,7 +692,8 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 				? thFormatDuration(step.endTime - step.startTime)
 				: "";
 			const struckLabel = step.label.includes("\x1b[9m") ? step.label : partialStrikethrough(step.label, 0);
-			const summary = `  ${statusIcon("completed")} Step ${i + 1}: ${struckLabel}${duration ? ` (${duration})` : ""}`;
+			const autoMarker = step.autoCompleted ? getTheme().fg("dim", " (auto-closed)") : "";
+			const summary = `  ${statusIcon("completed")} Step ${i + 1}: ${struckLabel}${autoMarker}${duration ? ` (${duration})` : ""}`;
 			lines.push(summary);
 			// Show Report: substeps under completed steps (Collapse Not Erase)
 			for (const sub of step.substeps) {

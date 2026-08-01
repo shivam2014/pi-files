@@ -115,6 +115,23 @@ function isBlockedRmRecursive(command: string): boolean {
   return /-[^ ]*r[^ ]*f|-[^ ]*f[^ ]*r|--recursive.*--force|--force.*--recursive/.test(trimmed);
 }
 
+// ── Scoped /tmp exemptions (BUG-5) ──
+// Subagents legitimately write to scratch dirs (/tmp, /private/tmp, $TMPDIR):
+// `mkdir -p /tmp/orchestrator-debug`, `grep foo f > /tmp/results.txt`,
+// `cat > /tmp/findings.md`. These are workspace writes, not code mutations —
+// redirecting them to edit/write/grep tools produced false positives.
+// Dangerous-command blocks (rm -rf, git push -f, ...) still apply first.
+const TEMP_PATH_RE = /(?:\/private)?\/tmp(?:\/|$)|\$\{?TMPDIR\}?(?:\/|$)/;
+
+/**
+ * True when the command targets a temp scratch dir AND performs a write
+ * (redirection or write verb). Pure reads from /tmp still redirect to SDK tools.
+ */
+function hasScopedTempWrite(command: string): boolean {
+  if (!TEMP_PATH_RE.test(command)) return false;
+  return /\s>>?\s|\b(mkdir|touch|tee|cp|mv|sed|perl|tar|unzip|gzip|gunzip|bzip2|xz|python|python3|node)\b/.test(command);
+}
+
 // ── Tool replacement ──
 
 export interface BashReplacementResult {
@@ -149,6 +166,10 @@ export function getBashToolReplacement(command: string | undefined, override?: b
 			reason: "rm -rf is blocked. Set override:true in bash tool input to bypass. Use edit/write to modify files, or ask orchestrator for destructive operation approval."
 		};
 	}
+
+	// BUG-5: scoped /tmp scratch writes don't need tool redirection
+	if (hasScopedTempWrite(command)) return { allowed: true };
+
 
   const cmd = firstCommandName(command);
   if (!cmd) return { allowed: true };

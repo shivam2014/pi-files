@@ -161,3 +161,54 @@ describe("getBashToolReplacement", () => {
     });
   });
 });
+
+// ── BUG-5: scoped /tmp exemptions (temp-scratch writes must not be redirected) ──
+
+describe("getBashToolReplacement — BUG-5 scoped /tmp exemptions", () => {
+  it("allows `mkdir -p /tmp/...` without redirecting to write tool", () => {
+    const r = getBashToolReplacement("mkdir -p /tmp/orchestrator-debug");
+    expect(r.allowed).toBe(true);
+    expect(r.tool).toBeUndefined();
+  });
+
+  it("allows grep redirect into /tmp without redirecting to grep tool", () => {
+    const r = getBashToolReplacement("grep -rn 'auth' src > /tmp/results.txt");
+    expect(r.allowed).toBe(true);
+    expect(r.tool).toBeUndefined();
+  });
+
+  it("allows heredoc/redirect writes into /tmp", () => {
+    const r = getBashToolReplacement("cat > /tmp/findings.md");
+    expect(r.allowed).toBe(true);
+    expect(r.tool).toBeUndefined();
+  });
+
+  it("allows sed -i on /tmp files without redirecting to edit tool", () => {
+    const r = getBashToolReplacement("sed -i 's/x/y/' /tmp/f.txt");
+    expect(r.allowed).toBe(true);
+    expect(r.tool).toBeUndefined();
+  });
+
+  it("still blocks dangerous commands even when they target /tmp", () => {
+    const r = getBashToolReplacement("rm -rf /tmp/foo");
+    expect(r.allowed).toBe(false);
+  });
+
+  it("still redirects non-temp grep to the grep tool (regression guard)", () => {
+    const r = getBashToolReplacement("grep foo src/auth.ts");
+    expect(r.allowed).toBe(true);
+    expect(r.tool).toBe("grep");
+  });
+
+  it("still redirects pure reads from /tmp (no write indicator) to read tool", () => {
+    const r = getBashToolReplacement("cat /tmp/notes.md");
+    expect(r.allowed).toBe(true);
+    expect(r.tool).toBe("read");
+  });
+
+  it("still redirects non-temp mkdir to write tool (regression guard)", () => {
+    const r = getBashToolReplacement("mkdir -p src/generated");
+    expect(r.allowed).toBe(true);
+    expect(r.tool).toBe("write");
+  });
+});

@@ -23,7 +23,7 @@ import { join } from "path";
 
 import { subagentSessions } from "./subagent-sessions.ts";
 import { shortenLabel } from "../token-saver.ts";
-import type { Specialist, SubagentContext, Substep, DelegateControllerContext } from "./types.ts";
+import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics } from "./types.ts";
 import { resolveSpecialistModel, DEFAULTS } from "./orchestrator-config.ts";
 import type { Scope } from "./scope-manager.ts";
 import { buildSkillSection } from "./specialists.ts";
@@ -315,6 +315,19 @@ export type SubagentResult = {
 	toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[];
 	stopReason?: string;
 	errorMessage?: string;
+	/** Single source of truth for terminal state (BUG-4). */
+	status?: 'completed' | 'error' | 'aborted';
+	/** Real per-tool call counts derived from tool_execution_start events (BUG-1). */
+	metrics?: DelegationMetrics;
+	/** Plan steps with genuine vs auto-closed completion flags (reporting gap). */
+	planSteps?: Array<{ label: string; completed: boolean; autoCompleted: boolean; durationMs: number }>;
+	/** Text of the last assistant message, trimmed to 500 chars (reporting gap). */
+	lastAssistantMessage?: string;
+	/**
+	 * Real tool-call count — prefers the SDK's AgentSession.getSessionStats()
+	 * (counts toolCall blocks in assistant messages); falls back to trail length.
+	 */
+	toolCalls?: number;
 	model?: string;
 	scopeNotes?: import('./types.ts').ScopeNotes;
 	tokenUsage?: { input: number; output: number; cached: number };
@@ -418,7 +431,7 @@ export class SubagentRunner {
 			}
 
 			if (!model) {
-				return { output: "[error] No model available for subagent. Check API key configuration.", turns: 0 };
+				return { output: "[error] No model available for subagent. Check API key configuration.", turns: 0, status: "error" as const };
 			}
 
 			// Resolve model info for onUpdate metadata
@@ -624,6 +637,9 @@ export class SubagentRunner {
 			let hasLintFailures = false;
 			let lastStopReason: string | undefined;
 			let lastErrorMessage: string | undefined;
+			let lastAssistantMessage: string | undefined;
+			// Real per-tool call counts fed by tool_execution_start events (BUG-1)
+			const toolCallCounts: Record<string, number> = {};
 			let accInput = 0, accOutput = 0, accCached = 0, accCacheWrite = 0;
 			let ctxTokens = 0;
 			let ctxWindow: number | undefined;
@@ -673,6 +689,14 @@ export class SubagentRunner {
 						const assistantMsg = event.message as any;
 						lastStopReason = assistantMsg.stopReason;
 						lastErrorMessage = assistantMsg.errorMessage;
+						// Capture last assistant text (reporting gap: terminal state visibility)
+						if (Array.isArray(assistantMsg.content)) {
+							const text = assistantMsg.content
+								.filter((b: any) => b.type === "text" && typeof b.text === "string")
+								.map((b: any) => b.text)
+								.join("");
+							if (text) lastAssistantMessage = text.slice(0, 500);
+						}
 						// C1: Accumulate per-turn token usage
 						const usage = (event.message as any).usage;
 						if (usage) {
@@ -710,6 +734,7 @@ export class SubagentRunner {
 					pushPhase("tool_start:" + event.toolName);
 					try {
 						if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") return;
+					toolCallCounts[event.toolName] = (toolCallCounts[event.toolName] ?? 0) + 1;
 					const substepLabel = toolCallToSubstep(event.toolName, event.args);
 					feed.addSubstep(substepLabel, event.toolCallId);
 					const extraDetail = substepToolDetail(event.toolName, event.args);
@@ -926,6 +951,16 @@ export class SubagentRunner {
 				delete process.env[SubagentRunner.SUBAGENT_ENV_KEY];
 				if (signal) signal.removeEventListener("abort", abortHandler);
 
+				// Auto-complete remaining steps BEFORE the flight-recorder snapshot so the
+				// dump reflects the final rendered state (BUG-3). Steps closed here are
+				// flagged autoCompleted so the UI can distinguish them from steps the
+				// subagent genuinely advanced (reporting gap).
+				if (finalStatus !== "error" && finalStatus !== "aborted") {
+					while (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
+						feed.completeCurrentStep(true);
+					}
+				}
+
 				// -- Flight Recorder: dump full session conversation for post-hoc debugging --
 				try {
 					const debugDir = '/tmp/orchestrator-debug';
@@ -1013,8 +1048,17 @@ export class SubagentRunner {
 							label: s.label,
 							durationMs: (s.endTime ?? Date.now()) - (s.startTime ?? Date.now()),
 							completed: s.completed,
+							autoCompleted: s.autoCompleted ?? false,
 						})),
-						metrics: config.metrics ?? {},
+						metrics: {
+							readCalls: toolCallCounts.read ?? 0,
+							grepCalls: toolCallCounts.grep ?? 0,
+							findCalls: toolCallCounts.find ?? 0,
+							editCalls: toolCallCounts.edit ?? 0,
+							writeCalls: toolCallCounts.write ?? 0,
+							bashCalls: toolCallCounts.bash ?? 0,
+							lsCalls: toolCallCounts.ls ?? 0,
+						},
 						tokenSummary: { totalInput: accInput, totalOutput: accOutput, totalCached: accCached, cacheWrite: accCacheWrite, ctxTokensFinal: ctxTokens },
 						systemPrompt: specialist.systemPrompt,
 						activityFeed: { ...feed.feedState },
@@ -1026,12 +1070,6 @@ export class SubagentRunner {
 
 				session.dispose();
 				clearViewerState();
-			}
-
-			if (finalStatus !== "error" && finalStatus !== "aborted") {
-				while (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
-					feed.completeCurrentStep();
-				}
 			}
 
 			// Flush any pending coalesced progress before sending final status
@@ -1083,6 +1121,24 @@ export class SubagentRunner {
 				toolCallTrail,
 				stopReason: lastStopReason,
 				errorMessage: lastErrorMessage,
+				status: finalStatus as 'completed' | 'error' | 'aborted',
+				metrics: {
+					readCalls: toolCallCounts.read ?? 0,
+					grepCalls: toolCallCounts.grep ?? 0,
+					findCalls: toolCallCounts.find ?? 0,
+					editCalls: toolCallCounts.edit ?? 0,
+					writeCalls: toolCallCounts.write ?? 0,
+					bashCalls: toolCallCounts.bash ?? 0,
+					lsCalls: toolCallCounts.ls ?? 0,
+				},
+				planSteps: feed.steps.map(s => ({
+					label: s.label,
+					completed: s.completed,
+					autoCompleted: s.autoCompleted ?? false,
+					durationMs: (s.endTime ?? Date.now()) - (s.startTime ?? Date.now()),
+				})),
+				lastAssistantMessage,
+				toolCalls: (session as any).getSessionStats?.().toolCalls ?? toolCallTrail.length,
 				model: (model as any)?.id ?? (model as any)?.model ?? undefined,
 				scopeNotes,
 				tokenUsage: { input: accInput, output: accOutput, cached: accCached },
@@ -1094,6 +1150,7 @@ export class SubagentRunner {
 			return {
 				output: `[error] Subagent init failed: ${msg}${stack ? "\n" + stack.split("\n").slice(0, 5).join("\n") : ""}`,
 				turns: 0,
+				status: "error" as const,
 			};
 		} finally {
 			subagentSessions.delete(sessionId!);

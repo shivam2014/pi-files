@@ -32,6 +32,12 @@ vi.mock("./orchestrator-theme.ts", () => ({
 	formatTokens: vi.fn((count: number) => `${count}`),
 	partialStrikethrough: vi.fn((text: string) => text),
 	initTheme: vi.fn(),
+	// Mirrors the real module: renderTokenLine reads these when tokens are present
+	SYMBOLS: {
+		"token.input": "↑",
+		"token.output": "↓",
+		"token.cacheRead": "⇄",
+	},
 }));
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
@@ -600,5 +606,197 @@ describe("C1: live token accumulator", () => {
 		expect(d.tokenOutput).toBe(450);   // 200+250
 		expect(d.tokenCached).toBe(125);   // cumulative: 50+75 (not just last turn)
 		expect(d.ctxTokens).toBe(175);     // agent_end uses totalTokens=175
+	});
+});
+
+// ─── BUG-1/3/4 + reporting gap: trail metrics, dump ordering, single status ──
+
+describe("BUG regression loops — runner returns real metrics, status, planSteps", () => {
+	type SubscribeCb = (event: any) => void;
+	interface BugHarness {
+		ref: { subscribeCb: SubscribeCb | null };
+		resolvePrompt: () => void;
+		resultPromise: Promise<any>;
+	}
+
+	function createControllableRunner(specialistName = "bug-specialist", signal?: AbortSignal): BugHarness {
+		const ref = { subscribeCb: null as SubscribeCb | null };
+		let resolvePrompt: () => void = () => {};
+		let rejectPrompt: (e: Error) => void = () => {};
+		const mockSession = {
+			sessionId: "test-bugfix",
+			messages: [] as any[],
+			subscribe: vi.fn((cb: SubscribeCb) => {
+				ref.subscribeCb = cb;
+				return () => {};
+			}),
+			abort: vi.fn(() => {
+				// Mimic the SDK: aborting the session rejects the in-flight prompt
+				rejectPrompt(new Error("AbortError"));
+			}),
+			prompt: vi.fn(() => new Promise<void>((res, rej) => { resolvePrompt = res; rejectPrompt = rej; })),
+			dispose: vi.fn(),
+		};
+
+		const mockModel = { contextWindow: 200_000 };
+		const mockModelRegistry = {
+			find: vi.fn(() => mockModel),
+			getAvailable: vi.fn(() => [mockModel]),
+			getAll: vi.fn(() => [mockModel]),
+		} as any;
+
+		const runner = new SubagentRunner({
+			cwd: "/tmp",
+			modelRegistry: mockModelRegistry,
+			agentDir: "/Users/shivam94/.pi/agent",
+			signal,
+			agentSessionFactory: async () => ({ session: mockSession }),
+		} as any);
+
+		const specialist = { name: specialistName, tools: ["read", "edit", "bash"], systemPrompt: "p" } as any;
+		const resultPromise = runner.run("task", specialist);
+
+		return { ref, resolvePrompt: () => resolvePrompt(), resultPromise };
+	}
+
+	function toolStart(toolName: string, toolCallId: string, args: any = {}) {
+		return { type: "tool_execution_start", toolName, toolCallId, args };
+	}
+	function toolEnd(toolName: string, toolCallId: string, result: any = "ok") {
+		return { type: "tool_execution_end", toolName, toolCallId, result, isError: false };
+	}
+	function assistantEnd(stopReason: string, text: string, errorMessage?: string) {
+		return {
+			type: "message_end",
+			message: {
+				role: "assistant",
+				stopReason,
+				errorMessage,
+				content: [{ type: "text", text }],
+				usage: { input: 10, output: 5, totalTokens: 15 },
+			},
+		};
+	}
+
+	it("BUG-1: result carries real per-tool metrics derived from tool events", { timeout: 15_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createControllableRunner();
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		ref.subscribeCb!(toolStart("bash", "b1", { command: "cp -r a b" }));
+		ref.subscribeCb!(toolEnd("bash", "b1"));
+		ref.subscribeCb!(toolStart("bash", "b2", { command: "curl -o x" }));
+		ref.subscribeCb!(toolEnd("bash", "b2"));
+		ref.subscribeCb!(toolStart("edit", "e1", { path: "a.ts", edits: [{ oldText: "x", newText: "y" }] }));
+		ref.subscribeCb!(toolEnd("edit", "e1"));
+		ref.subscribeCb!(toolStart("read", "r1", { path: "a.ts" }));
+		ref.subscribeCb!(toolEnd("read", "r1"));
+		ref.subscribeCb!(assistantEnd("end_turn", "done"));
+
+		resolvePrompt();
+		const result = await resultPromise;
+
+		// Real metrics — the counters delegate-pipeline used to read were always 0
+		expect(result.metrics).toEqual({
+			readCalls: 1, grepCalls: 0, findCalls: 0,
+			editCalls: 1, writeCalls: 0, bashCalls: 2, lsCalls: 0,
+		});
+		// 4 tool calls + 1 auto-added `lint:` substep after the edit call
+		expect(result.toolCallTrail).toHaveLength(5);
+	});
+
+	it("BUG-3: flight-recorder dump snapshots plan steps AFTER auto-completion", { timeout: 15_000 }, async () => {
+		const name = "bug3-specialist";
+		const { ref, resolvePrompt, resultPromise } = createControllableRunner(name);
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		ref.subscribeCb!(toolStart("bash", "b1", { command: "ls" }));
+		ref.subscribeCb!(toolEnd("bash", "b1"));
+		ref.subscribeCb!(assistantEnd("end_turn", "done"));
+
+		resolvePrompt();
+		await resultPromise;
+
+		// Find the dump this run wrote
+		const { readdirSync, readFileSync, rmSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const dir = "/tmp/orchestrator-debug";
+		const files = readdirSync(dir).filter(f => f.includes(`-${name}.json`));
+		expect(files.length).toBeGreaterThan(0);
+		const dump = JSON.parse(readFileSync(join(dir, files[files.length - 1]), "utf-8"));
+
+		// Dump must reflect the final rendered state (all steps closed), not a stale pre-completion snapshot
+		expect(dump.planSteps.length).toBeGreaterThan(0);
+		for (const step of dump.planSteps) {
+			expect(step.completed).toBe(true);
+		}
+		// Dump metrics must be real, not the dead `config.metrics ?? {}`
+		expect(dump.metrics?.bashCalls ?? dump.metrics?.bash ?? 0).toBeGreaterThan(0);
+
+		// Cleanup this run's dump
+		for (const f of files) rmSync(join(dir, f));
+	});
+
+	it("BUG-4: result carries single source-of-truth status from runner", { timeout: 15_000 }, async () => {
+		// Normal completion
+		{
+			const { ref, resolvePrompt, resultPromise } = createControllableRunner();
+			await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+			ref.subscribeCb!(assistantEnd("end_turn", "done"));
+			resolvePrompt();
+			const result = await resultPromise;
+			expect(result.status).toBe("completed");
+		}
+		// Model error — message_end carries stopReason=error
+		{
+			const { ref, resolvePrompt, resultPromise } = createControllableRunner();
+			await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+			ref.subscribeCb!(assistantEnd("error", "", "rate limited"));
+			resolvePrompt();
+			const result = await resultPromise;
+			expect(result.status).toBe("error");
+			expect(result.output.startsWith("[error]")).toBe(true);
+		}
+		// Abort — signal fires before prompt resolves
+		{
+			const ac = new AbortController();
+			const { ref, resolvePrompt, resultPromise } = createControllableRunner("bug-abort", ac.signal);
+			await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+			ac.abort();
+			// Mock session.abort() rejects the in-flight prompt (SDK behavior)
+			const result = await resultPromise;
+			expect(result.status).toBe("aborted");
+		}
+	});
+
+	it("reporting gap: result carries last assistant message and real tool-call count", { timeout: 15_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createControllableRunner();
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		const finalText = "Implemented auth middleware. Tests pass locally.";
+		ref.subscribeCb!(toolStart("bash", "b1", { command: "npx vitest run" }));
+		ref.subscribeCb!(toolEnd("bash", "b1"));
+		ref.subscribeCb!(assistantEnd("end_turn", finalText));
+
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.lastAssistantMessage).toBe(finalText);
+		expect(result.toolCallTrail).toHaveLength(1);
+	});
+
+	it("reporting gap: auto-completed plan steps are flagged distinctly", { timeout: 15_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createControllableRunner();
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		ref.subscribeCb!(toolStart("bash", "b1", { command: "ls" }));
+		ref.subscribeCb!(toolEnd("bash", "b1"));
+		ref.subscribeCb!(assistantEnd("end_turn", "done"));
+
+		resolvePrompt();
+		const result = await resultPromise;
+
+		// The step was never advanced by the subagent — it was auto-closed by the runner
+		expect(result.planSteps).toHaveLength(1);
+		expect(result.planSteps[0]).toMatchObject({ completed: true, autoCompleted: true });
 	});
 });

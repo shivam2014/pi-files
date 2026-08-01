@@ -7,12 +7,14 @@
  * Fix: completeSubstepByToolCallId() targets substep by toolCallId instead.
  */
 
-import { describe, it, assert } from "vitest";
+import { describe, it, assert, expect } from "vitest";
 import type { ActivityFeedState, Step } from "./types.ts";
 import {
 	addSubstep,
 	completeLastSubstep,
 	completeSubstepByToolCallId,
+	completeCurrentStep,
+	renderActivityFeed,
 } from "./activity-feed.ts";
 
 /** Helper: create a minimal state with one step and given substeps */
@@ -147,5 +149,23 @@ describe("completeSubstepByToolCallId", () => {
 		const afterGrep = completeLastSubstep(afterRead, "grep output");
 		assert.equal(afterGrep.steps[0].substeps[1].completed, true);
 		assert.equal(afterGrep.steps[0].substeps[1].outputPreview, "grep output"); // WRONG — this is read's slot
+	});
+});
+
+// ── Reporting gap: auto-closed steps render distinctly from genuinely completed ──
+
+describe("renderActivityFeed — auto-closed step marker", () => {
+	it("renders autoCompleted steps with an (auto-closed) marker", () => {
+		const state = makeState(["bash: ls"]);
+		const completed = completeCurrentStep(state, true);
+		const out = renderActivityFeed("coder", completed);
+		expect(out).toContain("(auto-closed)");
+	});
+
+	it("renders genuinely completed steps WITHOUT the auto-closed marker", () => {
+		const state = makeState(["bash: ls"]);
+		const completed = completeCurrentStep(state, false);
+		const out = renderActivityFeed("coder", completed);
+		expect(out).not.toContain("(auto-closed)");
 	});
 });
