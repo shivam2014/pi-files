@@ -144,7 +144,8 @@ Summary: only call advance_plan_step() for orchestrator-owned steps.
 {{FUSION}}
 
 ### Scope requirement:
-When calling delegate(coder|writer, ...), include \`scope\`: { filesToModify, filesToCreate, directories, maxFiles, maxLinesPerFile, changeType, boundaries, requiresApprovalBeyondScope }.
+When calling delegate(coder|writer, ...), include a \`scope\` object matching this shape:
+{{SCOPE_SHAPE}}
 Get scope from scout's or researcher's \`## Scope\` output. Reuse cached scope across delegations for the same task.
 Writers: default to doc-friendly scope (only mentioned docs, minimal edits, preserve structure).
 

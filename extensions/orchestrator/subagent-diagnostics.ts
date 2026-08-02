@@ -1,6 +1,13 @@
 import { mkdirSync, writeFileSync, renameSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import type { SubagentDiagnostic, DelegationMetrics } from "./types.ts";
+import { DIAGNOSTIC_KINDS } from "./types.ts";
+
+export { DIAGNOSTIC_KINDS };
+
+// Destructured once — producers reference these so a reorder in DIAGNOSTIC_KINDS
+// can't silently swap kinds (SSOT: V7).
+const [KIND_SILENT_FAILURE, KIND_CRASH, KIND_TOOL_ERRORS, KIND_BLOCKED_CALLS] = DIAGNOSTIC_KINDS;
 
 export interface CaptureDiagnosticInput {
   output: string;
@@ -57,7 +64,7 @@ export function captureDiagnostic(input: CaptureDiagnosticInput): SubagentDiagno
       crashed: isCrash,
       outputPreview,
       metrics: { ...input.metrics },
-      kind: isCrash ? 'crash' : 'silent_failure',
+      kind: isCrash ? KIND_CRASH : KIND_SILENT_FAILURE,
       diagnosticId: `${new Date().toISOString()}-${input.specialist}-${simpleHash(input.task)}`,
       agentDir: input.agentDir,
       model: input.model,
@@ -86,7 +93,7 @@ export function captureDiagnostic(input: CaptureDiagnosticInput): SubagentDiagno
       crashed: false,
       outputPreview,
       metrics: { ...input.metrics },
-      kind: 'tool_errors',
+      kind: KIND_TOOL_ERRORS,
       diagnosticId: `${new Date().toISOString()}-${input.specialist}-${simpleHash(input.task)}`,
       agentDir: input.agentDir,
       model: input.model,
@@ -113,7 +120,7 @@ export function captureDiagnostic(input: CaptureDiagnosticInput): SubagentDiagno
       crashed: false,
       outputPreview,
       metrics: { ...input.metrics },
-      kind: 'blocked_calls',
+      kind: KIND_BLOCKED_CALLS,
       diagnosticId: `${new Date().toISOString()}-${input.specialist}-${simpleHash(input.task)}`,
       agentDir: input.agentDir,
       model: input.model,

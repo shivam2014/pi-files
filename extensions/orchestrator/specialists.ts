@@ -27,6 +27,13 @@ Before finishing, note any problems encountered and how you handled them:
 - scope_stayed: [yes/no — did you stay within the assigned task?]
 - scope_notes: [if no, what you deviated from and why]`;
 
+/**
+ * Headings that count as a deliverable for the no-work heuristic.
+ * Co-located with FINDINGS_AUDIT_TEMPLATE so renaming a template heading
+ * forces this list to be updated (SSOT: V4).
+ */
+export const DELIVERABLE_MARKERS = ["## Completed", "## Findings", "## Files Changed"] as const;
+
 /** Scope violation guidance — injected into specialists with write/edit access. */
 export const SCOPE_VIOLATION_GUIDANCE = `
 
@@ -134,7 +141,7 @@ Code/docs/data/PRs: write normal. "stop caveman" / "normal mode": revert.
 const SCOUT_TOOLS = ["read", "grep", "find", "ls", "git-read", "gh"] as const;
 const CODER_TOOLS = ["read", "bash", "edit", "write", "grep", "lint", "find", "ls"] as const;
 const REVIEWER_TOOLS = ["read", "bash", "grep"] as const;
-const RESEARCHER_TOOLS = ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "find"] as const;
+const RESEARCHER_TOOLS = ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "gh", "find"] as const;
 const WRITER_TOOLS = ["read", "write", "edit", "ls", "find", "git-read"] as const;
 
 /** Present-participle verb map for specialist working-loader messages */
@@ -442,6 +449,31 @@ ${buildFindingsDurability("write")}`,
 /** List all specialist names */
 export function listSpecialists(): string[] {
 	return Object.keys(SPECIALISTS);
+}
+
+/**
+ * Whether a specialist is read-only, per its declared registry flag.
+ * SSOT (V5): consumers must NOT hardcode specialist name lists.
+ */
+export function isReadOnlySpecialist(name: string): boolean {
+	return SPECIALISTS[name]?.readOnly === true;
+}
+
+/**
+ * Whether a specialist's tool set includes bash.
+ * SSOT (V5): derived from the registry's tools array, not a name list.
+ */
+export function canUseBash(name: string): boolean {
+	return SPECIALISTS[name]?.tools.includes("bash") ?? false;
+}
+
+/**
+ * Whether a specialist gets the custom git-read/gh tools.
+ * SSOT (V5): derived from the registry's tools array, not a name list.
+ */
+export function hasGitTools(name: string): boolean {
+	const tools = SPECIALISTS[name]?.tools ?? [];
+	return tools.includes("git-read") && tools.includes("gh");
 }
 
 /**

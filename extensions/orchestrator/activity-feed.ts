@@ -18,6 +18,13 @@ import { styledSymbol, statusIcon, formatDuration as thFormatDuration, formatTok
 // Constants
 // ============================================================================
 
+/**
+ * Prefix for ask_orchestrator completed substep labels (SSOT: V6).
+ * Produced in subagent-runner's createAskOrchestratorTool, consumed by the
+ * renderer below — shared so the protocol can't drift.
+ */
+export const CLARIFIED_PREFIX = "Clarified:";
+
 const MAX_LABEL_CHARS = 58;
 const MAX_FEED_SUBSTEPS = 8;
 
@@ -518,7 +525,7 @@ export function renderSubstepLines(substeps: Substep[], maxLines: number = 5): s
 	for (const sub of visible) {
 		if (sub.completed) {
 			if (sub.isReport) {
-				lines.push(sub.label.startsWith("Clarified:") ? `    ${statusIcon("completed")} ${sub.label}` : `    ${statusIcon("completed")} Report: ${sub.label}`);
+				lines.push(sub.label.startsWith(CLARIFIED_PREFIX) ? `    ${statusIcon("completed")} ${sub.label}` : `    ${statusIcon("completed")} Report: ${sub.label}`);
 			} else {
 				const label = sub.label.startsWith("Reading ") ? "Read " + sub.label.slice(8) : sub.label;
 				lines.push(`    ${statusIcon("completed")} ${label}`);
@@ -590,7 +597,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 					for (const sub of step.substeps) {
 						if (sub.isReport) {
 							errorLines.push(
-								sub.label.startsWith("Clarified:")
+								sub.label.startsWith(CLARIFIED_PREFIX)
 									? `    ${statusIcon("completed")} ${sub.label}`
 									: `    ${statusIcon("completed")} Report: ${sub.label}`
 							);
@@ -614,7 +621,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 								}
 							} else if (sub.isReport) {
 								errorLines.push(
-									sub.label.startsWith("Clarified:")
+									sub.label.startsWith(CLARIFIED_PREFIX)
 										? `    ${statusIcon("completed")} ${sub.label}`
 										: `    ${statusIcon("completed")} Report: ${sub.label}`
 								);
@@ -699,7 +706,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 			for (const sub of step.substeps) {
 				if (sub.isReport) {
 					lines.push(
-						sub.label.startsWith("Clarified:")
+						sub.label.startsWith(CLARIFIED_PREFIX)
 							? `    ${statusIcon("completed")} ${sub.label}`
 							: `    ${statusIcon("completed")} Report: ${sub.label}`
 					);
@@ -722,7 +729,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 						}
 					} else if (sub.isReport) {
 						lines.push(
-							sub.label.startsWith("Clarified:")
+							sub.label.startsWith(CLARIFIED_PREFIX)
 								? `    ${statusIcon("completed")} ${sub.label}`
 								: `    ${statusIcon("completed")} Report: ${sub.label}`
 						);

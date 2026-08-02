@@ -37,6 +37,7 @@ export function generateScopeDocumentation(): string {
     maxLinesPerFile: 400,
     changeType: "single-file" | "multi-file",
     requiresApprovalBeyondScope: true,
+    gateMode: "strict" | "relaxed",
     boundaries?: "do not modify src/legacy"
 }
 \`\`\`

@@ -22,6 +22,8 @@ vi.mock("./subagent-runner.ts", async () => {
 		_batchLoadSubagent: 0,
 		isSubagentContext: vi.fn(() => false),
 		isPlanParsed: vi.fn(() => false),
+		ERROR_MARKER: "[error]",
+		ABORT_MARKER: "[aborted]",
 	};
 });
 

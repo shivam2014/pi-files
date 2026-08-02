@@ -153,7 +153,9 @@ describe("ROUTING_TABLE covers all specialists", () => {
 // =====================================================================
 describe("changeType/maxLinesPerFile consistency", () => {
 	it("prompt mentions both changeType and maxLinesPerFile", () => {
-		const sourcePath = resolve(__dirname, "prompt-builder.ts");
+		// SSOT (V1): the prompt scope section is generated from
+		// scope-manager.ts generateScopeDocumentation — guard lives there.
+		const sourcePath = resolve(__dirname, "scope-manager.ts");
 		const source = readFileSync(sourcePath, "utf-8");
 
 		expect(source).toContain("changeType");

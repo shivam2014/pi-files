@@ -12,6 +12,7 @@
  */
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { isReadOnlySpecialist } from "./specialists.ts";
 import { join, resolve as pathResolve, isAbsolute, basename, extname } from "node:path";
 import type { Scope } from "./scope-manager.ts";
 
@@ -325,9 +326,8 @@ export function resolve(request: string, scope: ScopeForResolve | null, speciali
 		(!dirs || dirs.length === 0);
 
 	if (isEmptyScope) {
-		// Read-only specialists (scout, researcher, reviewer) can have empty scope
-		const readOnlySpecialists = ['scout', 'researcher', 'reviewer'];
-		if (readOnlySpecialists.includes(specialist ?? '')) {
+		// Read-only specialists can have empty scope — derived from registry flags (SSOT: V5)
+		if (specialist && isReadOnlySpecialist(specialist)) {
 			return "proceed";
 		}
 		// Non-read-only specialists (coder, writer) with empty scope likely forgot to include paths

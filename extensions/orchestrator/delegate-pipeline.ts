@@ -3,9 +3,9 @@
  * Inlined from handle-diagnostics.ts and delegate-result-processor.ts.
  */
 import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext, BatchDelegationEntry } from "./types.ts";
-import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills } from "./specialists.ts";
+import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills, DELIVERABLE_MARKERS, isReadOnlySpecialist } from "./specialists.ts";
 import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
-import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
+import { runSubagent, ERROR_MARKER, ABORT_MARKER, type OrchestratorUi } from "./subagent-runner.ts";
 import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { hidePeek, clearViewerState } from "./peek-overlay.ts";
@@ -87,8 +87,9 @@ export class DelegatePipeline {
 			throw new Error(`Unknown specialist: "${params.specialist}". Available: ${available}. Use one of the listed specialist names.`);
 		}
 
-		// Read-only specialists (no edit/write tools) don't need strict scope validation
-		const isReadOnly = !specialist.tools.includes('edit') && !specialist.tools.includes('write');
+		// Read-only specialists (no edit/write tools) don't need strict scope validation.
+		// SSOT (V5): use the registry's declared flag, not a re-derivation from tools.
+		const isReadOnly = isReadOnlySpecialist(specialist.name);
 
 		// Normalize specialist name for case-insensitive comparison downstream
 		params = { ...params, specialist: specialist.name };
@@ -285,8 +286,8 @@ export class DelegatePipeline {
 
 		// ── Check for errors/abort ──
 		// BUG-4: single source of truth — the runner's finalStatus, not output sniffing
-		const isAborted = (effectiveSignal?.aborted || false) || result?.status === "aborted" || (result?.output?.startsWith("[aborted]") ?? false);
-		let isError = !result || !result.output || result.output.startsWith("[error]") || result.output.startsWith("[aborted]")
+		const isAborted = (effectiveSignal?.aborted || false) || result?.status === "aborted" || (result?.output?.startsWith(ABORT_MARKER) ?? false);
+		let isError = !result || !result.output || result.output.startsWith(ERROR_MARKER) || result.output.startsWith(ABORT_MARKER)
 			|| result?.status === "error" || result?.stopReason === "error";
 		let hasError = isAborted || isError;
 
@@ -298,9 +299,7 @@ export class DelegatePipeline {
 		const hasMutatingCalls = metrics.editCalls > 0 || metrics.writeCalls > 0 || metrics.bashCalls > 0;
 		const hasAnyToolCalls = (result?.toolCallTrail?.length ?? 0) > 0;
 		const hasDeliverable = rawSubagentOutput && (
-			rawSubagentOutput.includes('## Completed') ||
-			rawSubagentOutput.includes('## Findings') ||
-			rawSubagentOutput.includes('## Files Changed')
+			DELIVERABLE_MARKERS.some(marker => rawSubagentOutput.includes(marker))
 		);
 		const isNoWork = isCodeSpecialist && !hasMutatingCalls && !hasAnyToolCalls && !hasDeliverable && !hasError;
 
@@ -458,8 +457,8 @@ export class DelegatePipeline {
 			planSteps: result?.planSteps,
 			autoCompletedSteps: (result?.planSteps ?? []).filter(p => p.autoCompleted).length,
 			metrics: result?.metrics,
-			partialResults: hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]"),
-			partialMarker: (hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]")) ? "⚠ PARTIAL" : undefined,
+			partialResults: hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith(ERROR_MARKER) && !rawSubagentOutput.startsWith(ABORT_MARKER),
+			partialMarker: (hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith(ERROR_MARKER) && !rawSubagentOutput.startsWith(ABORT_MARKER)) ? "⚠ PARTIAL" : undefined,
 			autoAdvancedStep: autoAdvancedStep || undefined,
 			// Model info for UI display badge
 			model: (() => {
@@ -730,7 +729,7 @@ export class DelegatePipeline {
 		}
 
 		// Prepend execution metadata
-		const execStatus = result?.startsWith("[error]") ? "error" : "ok";
+		const execStatus = result?.startsWith(ERROR_MARKER) ? "error" : "ok";
 		const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${turns}, status=${execStatus}]`];
 		if (execStatus === "error") {
 			execMeta.push(`[Error: ${result.slice(0, 200)}]`);
@@ -874,7 +873,7 @@ export function formatResult(params: FormatResultParams): {
 		statusLine = `${statusIcon('error')} Error (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
 	}
 
-	const metricsLine = `[Metrics: read=${metrics.readCalls}, grep=${metrics.grepCalls}, find=${metrics.findCalls}, edit=${metrics.editCalls}, write=${metrics.writeCalls}, bash=${metrics.bashCalls}, ls=${metrics.lsCalls}]`;
+	const metricsLine = formatMetricsLine(metrics);
 
 	let trailStr = '';
 	if (toolCallTrail && toolCallTrail.length > 0) {

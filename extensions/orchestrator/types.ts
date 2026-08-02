@@ -320,6 +320,14 @@ export interface DelegateControllerContext {
 	};
 }
 
+/**
+ * All diagnostic kinds (SSOT: V7).
+ * SubagentDiagnostic.kind derives from this; producers must use the const
+ * so adding a kind is a single-file change.
+ */
+export const DIAGNOSTIC_KINDS = ['silent_failure', 'crash', 'tool_errors', 'blocked_calls'] as const;
+export type DiagnosticKind = typeof DIAGNOSTIC_KINDS[number];
+
 /** Diagnostic metrics for a subagent session (issue #68) */
 export interface SubagentDiagnostic {
 	schemaVersion: number;
@@ -332,17 +340,8 @@ export interface SubagentDiagnostic {
 	elapsedMs: number;
 	crashed: boolean;
 	outputPreview: string;
-	metrics: {
-		readCalls: number;
-		grepCalls: number;
-		findCalls: number;
-		bashCalls: number;
-		editCalls: number;
-		writeCalls: number;
-		lsCalls: number;
-		scopeNotes?: ScopeNotes;
-	};
-	kind: 'silent_failure' | 'crash' | 'tool_errors' | 'blocked_calls';
+	metrics: DelegationMetrics;
+	kind: DiagnosticKind;
 	diagnosticId: string;
 	agentDir?: string;
 	model?: string;

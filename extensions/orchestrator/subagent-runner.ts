@@ -26,7 +26,7 @@ import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics } from "./types.ts";
 import { resolveSpecialistModel, DEFAULTS } from "./orchestrator-config.ts";
 import type { Scope } from "./scope-manager.ts";
-import { buildSkillSection } from "./specialists.ts";
+import { buildSkillSection, canUseBash, hasGitTools } from "./specialists.ts";
 import {
 	ActivityFeed,
 	toolCallToSubstep,
@@ -35,6 +35,7 @@ import {
 	appendWebSearchResults,
 	compressOutput,
 	sanitizeOutputForOrchestrator,
+	CLARIFIED_PREFIX,
 } from "./activity-feed.ts";
 import { statusIcon, formatTokens } from "./orchestrator-theme.ts";
 
@@ -104,6 +105,14 @@ export interface OrchestratorUi {
 
 /** @deprecated Use SubagentRunner.SUBAGENT_ENV_KEY internally. Kept for backward-compat. */
 export const SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
+
+/**
+ * Output-prefix markers for subagent terminal states (SSOT: V6).
+ * Produced here in subagent-runner, sniffed in delegate-pipeline — shared
+ * so the protocol can't drift.
+ */
+export const ERROR_MARKER = "[error]";
+export const ABORT_MARKER = "[aborted]";
 
 /**
  * Resolve skill names to existing SKILL.md paths under agentDir.
@@ -241,7 +250,7 @@ export function createAskOrchestratorTool(
 			const answer = await resolve(params.question, params.context);
 			const answerPreview = answer.slice(0, 80);
 
-			feed.completeActiveSubstepWithLabel(`Clarified: ${answerPreview}`, answerPreview, false, true);
+			feed.completeActiveSubstepWithLabel(`${CLARIFIED_PREFIX} ${answerPreview}`, answerPreview, false, true);
 			const text = feed.render(specialistName);
 			onUpdate?.({
 				content: [{ type: "text", text }],
@@ -490,9 +499,7 @@ export class SubagentRunner {
 			} finally {
 			}
 
-			const excludeTools = (specialist.name === "writer" || specialist.name === "researcher" || specialist.name === "scout")
-				? ["bash"]
-				: undefined;
+			const excludeTools = canUseBash(specialist.name) ? undefined : ["bash"];
 
 			let output = "";
 			let turns = 0;
@@ -614,7 +621,7 @@ export class SubagentRunner {
 					reportFindingTool,
 					askOrchestratorTool,
 					createReadSkillTool(),
-					...(["scout", "researcher"].includes(specialist.name) ? [gitReadTool, ghTool] : []),
+					...((hasGitTools(specialist.name) ? [gitReadTool, ghTool] : []) as any[]),
 				],
 				excludeTools,
 				resourceLoader: loader!,

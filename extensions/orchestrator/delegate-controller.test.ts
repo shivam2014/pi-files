@@ -22,10 +22,14 @@ vi.mock("./specialists.ts", () => ({
     writer: 'Writing',
   },
   getSpecialistSkills: (_name: string, override?: string[]) => override !== undefined ? override : [],
+  DELIVERABLE_MARKERS: ["## Completed", "## Findings", "## Files Changed"],
+  isReadOnlySpecialist: (name: string) => (mockSpecialists as any)[name]?.tools?.includes('edit') === false && (mockSpecialists as any)[name]?.tools?.includes('write') === false,
+  canUseBash: (name: string) => (mockSpecialists as any)[name]?.tools?.includes('bash') === true,
+  hasGitTools: (name: string) => false,
 }));
 
 const mockRunSubagent = vi.hoisted(() => vi.fn());
-vi.mock("./subagent-runner.ts", () => ({ runSubagent: mockRunSubagent }));
+vi.mock("./subagent-runner.ts", () => ({ runSubagent: mockRunSubagent, ERROR_MARKER: "[error]", ABORT_MARKER: "[aborted]" }));
 
 const mockHasActivePlan = vi.hoisted(() => vi.fn());
 const mockSetupPlanPanel = vi.hoisted(() => vi.fn());
