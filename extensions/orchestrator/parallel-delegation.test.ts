@@ -15,11 +15,20 @@ vi.mock("./specialists.ts", () => ({
 	SPECIALIST_VERBS: { scout: "Scouting", coder: "Coding", reviewer: "Reviewing", researcher: "Researching", writer: "Writing" },
 	getSpecialistSkills: (_name: string, override?: string[]) => override !== undefined ? override : [],
 	TERSE_INSTRUCTION: "\n\nRespond with completeness but without verbosity.",
+	COMMUNICATION_INSTRUCTION: "\n\nRespond with completeness but without verbosity.",
+	DELIVERABLE_MARKERS: ["## Completed", "## Findings", "## Files Changed"],
+	isReadOnlySpecialist: (name: string) =>
+		(mockSpecialists as any)[name]?.tools?.includes('edit') === false &&
+		(mockSpecialists as any)[name]?.tools?.includes('write') === false,
 }));
 
 // ── Mock subagent runner ──────────────────────────────────────────────
 const mockRunSubagent = vi.hoisted(() => vi.fn());
-vi.mock("./subagent-runner.ts", () => ({ runSubagent: mockRunSubagent }));
+vi.mock("./subagent-runner.ts", () => ({
+	runSubagent: mockRunSubagent,
+	ERROR_MARKER: "[error]",
+	ABORT_MARKER: "[aborted]",
+}));
 
 // ── Mock plan panel ───────────────────────────────────────────────────
 const mockHasActivePlan = vi.hoisted(() => vi.fn(() => true));
@@ -50,14 +59,16 @@ vi.mock("./plan-panel.ts", () => ({
 const mockClearScope = vi.hoisted(() => vi.fn());
 const mockWriteScope = vi.hoisted(() => vi.fn());
 const mockResolveScope = vi.hoisted(() => vi.fn((_params, _specialistDef, _cwd) => null));
+const mockCreateDelegationScope = vi.hoisted(() => vi.fn(() => "delegation-id-1"));
+const mockClearDelegationScope = vi.hoisted(() => vi.fn());
 
 vi.mock("./scope-manager.ts", () => ({
 	ScopeManager: Object.assign(
 		vi.fn(function () { return { writeScope: mockWriteScope, clearScope: mockClearScope }; }),
 		{ resolveScope: mockResolveScope }
 	),
-	createDelegationScope: vi.fn(() => "delegation-id-1"),
-	clearDelegationScope: vi.fn(),
+	createDelegationScope: mockCreateDelegationScope,
+	clearDelegationScope: mockClearDelegationScope,
 	generateScopeDocumentation: vi.fn(() => ''),
 }));
 

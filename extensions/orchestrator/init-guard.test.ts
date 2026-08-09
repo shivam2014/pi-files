@@ -101,9 +101,10 @@ describe("init phase — no action method calls", () => {
 
 		// Simulate session_start — after this, action methods should work.
 		// Replace the throwing stubs with real implementations for the test.
-		const tools: any[] = [];
+		// Note: the enabled session_start handler only calls setActiveTools with
+		// a hardcoded whitelist. getAllTools is NOT consulted here — it is only
+		// called in the disabled path to restore full tool visibility (C2 fix).
 		const activeToolsLog: string[][] = [];
-		pi.getAllTools = vi.fn(() => tools);
 		pi.setActiveTools = vi.fn((list: string[]) => {
 			activeToolsLog.push(list);
 		});
@@ -118,9 +119,10 @@ describe("init phase — no action method calls", () => {
 		expect(sessionCb).toBeDefined();
 		await sessionCb({}, { cwd: "/tmp/test-cwd" });
 
-		// setActiveTools should have been called (the real handler does this)
+		// setActiveTools should have been called — the enabled handler freezes the
+		// hardcoded whitelist without querying the live tool registry (getAllTools
+		// remains the init-restricted throwing stub, guarding against accidental
+		// re-introduction of updateToolDocs in the enabled path).
 		expect(pi.setActiveTools).toHaveBeenCalled();
-		// getAllTools should have been called (updateToolDocs runs here now)
-		expect(pi.getAllTools).toHaveBeenCalled();
 	});
 });
