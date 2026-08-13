@@ -4,7 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { setupPlanPanel, summarizeGoal, addSteps, resolvePlanPanel, modifyStep, removeStep, insertSteps } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { STEP_KIND_SCHEMA } from "./types.ts";
-import type { SessionContext, PlanStepInput, LoopUntilStepInput, LoopUntilConfig } from "./types.ts";
+import type { SessionContext, PlanStepInput, LoopUntilStepInput, LoopUntilConfig, PlanStepSetupEntry } from "./types.ts";
 
 function deriveGoal(goal: string | undefined, steps: string[] | undefined, ctx?: SessionContext): string {
     if (goal?.trim()) return goal.trim();
@@ -111,8 +111,12 @@ export function registerPlanTool(pi: ExtensionAPI) {
                 setupPlanPanel(effectiveGoal, ["Planning..."], ctx);
                 return { content: [{ type: "text", text: `Plan set (no steps provided): ${effectiveGoal}` }], details: {} };
             }
-            const processedSteps: string[] = [];
-            const loopConfigs: Map<number, any> = new Map();
+            // Carry semantic step kinds from plan input into panel state.
+            // Strings stay strings (untyped, unbound → delegation-bindable);
+            // structured steps keep their declared kind + config so plan-panel
+            // can bind delegations to the right slots and never hijack
+            // orchestrator-owned steps.
+            const processedSteps: Array<string | PlanStepSetupEntry> = [];
             for (let i = 0; i < params.steps.length; i++) {
                 const step = params.steps[i];
                 if (typeof step === 'string') {
@@ -123,28 +127,22 @@ export function registerPlanTool(pi: ExtensionAPI) {
                     if (error) {
                         return { content: [{ type: 'text', text: `Loop validation error: ${error}` }], details: { error } };
                     }
-                    processedSteps.push((step as any).label);
-                    loopConfigs.set(i, loopCfg);
+                    processedSteps.push({ label: (step as any).label, kind: 'loop_until', loopUntil: loopCfg });
                 } else {
-                    processedSteps.push((step as any).label ?? String(step));
+                    processedSteps.push({ label: (step as any).label ?? String(step), kind: (step as any).kind });
                 }
             }
+            const stepLabels = extractLabels(processedSteps);
             // Label length validation: warn if any step label > 60 chars
-            for (const label of processedSteps) {
+            for (const label of stepLabels) {
               if (label.length > 60) {
                 debugLog(`⚠ Step label too long (${label.length} chars, max 60): "${label.slice(0, 40)}..." — rewrite as 5-10 word summary`);
               }
             }
             setupPlanPanel(effectiveGoal, processedSteps, ctx);
-            // Store loop configs for later retrieval by delegate/runner
-            const panel = resolvePlanPanel(ctx as SessionContext);
-            if (panel && loopConfigs.size > 0) {
-                // Attach loop configs to panel metadata for downstream access
-                (panel as any)._loopConfigs = Object.fromEntries(loopConfigs);
-            }
             return {
                 content: [{ type: "text", text: `Plan set: ${effectiveGoal} (${processedSteps.length} steps)` }],
-                details: { goal: effectiveGoal, steps: processedSteps, kind: params.kind },
+                details: { goal: effectiveGoal, steps: stepLabels, kind: params.kind },
             };
         },
         renderCall(args, theme, context) {

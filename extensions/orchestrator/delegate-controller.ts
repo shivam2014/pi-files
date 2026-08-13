@@ -8,6 +8,16 @@ import { Scope, ScopeManager } from "./scope-manager.ts";
 import { DelegatePipeline, type ExecuteDelegateResult } from "./delegate-pipeline.ts";
 import { getSessionMode } from "./orchestrator-config";
 
+export {
+	startDelegationWidget,
+	progressDelegationWidget,
+	completeDelegationWidget,
+	removeDelegationWidget,
+	listDelegationWidgets,
+	countDelegationWidgets,
+	clearDelegationWidgets,
+} from "./delegation-widget-controller.ts";
+
 /**
  * Execute a delegation to a specialist subagent.
  *

@@ -196,14 +196,41 @@ export interface PlanStep {
 	startTime?: number;
 	endTime?: number;
 	kind?: StepKind;
+	/** Separate display label for the delegation bound to this step. The planned `label` is always retained. */
+	delegationLabel?: string;
 	/** Present when kind === 'loop_until'. User-provided config. */
 	loopUntil?: LoopUntilConfig;
 	/** Runtime state for loop steps. Transient — not persisted. */
 	loopUntilState?: LoopUntilState;
 }
 
-/** A step in plan() can be a string label or a structured loop input */
-export type PlanStepInput = string | LoopUntilStepInput;
+/** Structured delegation step input for plan() */
+export interface DelegationStepInput {
+	label: string;
+	kind: 'delegation';
+	/** Optional separate label for the delegation that consumes this slot (defaults to `label`) */
+	delegationLabel?: string;
+}
+
+/** Structured orchestrator step input for plan() — self-owned, call advance_plan_step */
+export interface OrchestratorStepInput {
+	label: string;
+	kind: 'orchestrator';
+}
+
+/** A step in plan() can be a string label or a structured step object */
+export type PlanStepInput = string | LoopUntilStepInput | DelegationStepInput | OrchestratorStepInput;
+
+/** Normalized plan step setup entry carried into panel state.
+ *  Untyped entries (kind omitted) are unbound slots: delegation may claim them.
+ *  Orchestrator-owned steps carry kind='orchestrator' and are never hijacked
+ *  by the delegate pipeline. */
+export interface PlanStepSetupEntry {
+	label: string;
+	kind?: StepKind;
+	delegationLabel?: string;
+	loopUntil?: LoopUntilConfig;
+}
 
 /** A tool call blocked by the scope guard */
 export interface BlockedToolCall {

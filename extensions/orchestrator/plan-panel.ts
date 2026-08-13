@@ -2,7 +2,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { truncateLabel } from "../token-saver.ts";
 import { styledSymbol, formatDuration as thFormatDuration, partialStrikethrough, HOLD_FRAMES, REVEAL_FRAMES, TOTAL_STRIKE_FRAMES, formatTokens } from "./orchestrator-theme.ts";
-import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilState, LoopIteration, LoopUntilStepInput } from "./types.ts";
+import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilState, LoopIteration, LoopUntilStepInput, PlanStepSetupEntry } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
 import { SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
@@ -11,6 +11,22 @@ import { debugLog } from "./debug.ts";
 import { getSessionMode } from "./orchestrator-config";
 import { classifyTrajectory, findBestIndex } from "./loop-engine.ts";
 import type { TrajectoryClass } from "./loop-engine.ts";
+import { clearDelegationWidgets } from "./delegation-widget-controller.ts";
+
+const VALID_STEP_KINDS: readonly StepKind[] = ['delegation', 'orchestrator', 'loop_until'];
+
+/**
+ * Safe normalization of a plan step input.
+ * Legacy string steps map to `{ label }` with NO kind inference — label-based
+ * guessing misclassifies ownership (e.g. "Review PR" as orchestrator) and
+ * blocks delegation binding. Untyped steps stay unbound until a delegation
+ * claims them or the orchestrator advances them. Structured entries pass
+ * their declared kind/config through unchanged.
+ */
+export function normalizePlanStepInput(step: string | PlanStepSetupEntry): PlanStepSetupEntry {
+	if (typeof step === 'string') return { label: step };
+	return { ...step };
+}
 
 export interface TimelineEntry {
 	t: number;
@@ -146,21 +162,14 @@ export class PlanPanel {
 			if (!existsSync(statePath)) return null;
 			const saved = JSON.parse(readFileSync(statePath, 'utf8'));
 			if (!saved?.goal || !saved?.steps) return null;
-			const steps = saved.steps.map((s: any) => ({ ...s, active: false }));
-			// Infer kind for steps that lack it (backward compat with pre-#100 plans)
-
-			for (const step of steps) {
-				if (!step.kind) {
-					const label = step.label.toLowerCase();
-					if (label.includes('delegate') || label.includes('specialist')) {
-						step.kind = 'delegation';
-					} else if (label.includes('analyze') || label.includes('review') ||
-						   label.includes('synthesize') || label.includes('decide') ||
-						   label.includes('verify') || label.includes('research')) {
-						step.kind = 'orchestrator';
-					}
-				}
-			}
+			// Safe normalization for legacy untyped steps: keep kind only when it is a
+			// valid StepKind; otherwise leave the step untyped (unbound). Label-based
+			// kind guessing was removed — it misclassifies ownership (e.g. a step
+			// labeled "Review PR" forced to orchestrator) and blocks delegation binding.
+			const steps = saved.steps.map((s: any) => {
+				const kind = VALID_STEP_KINDS.includes(s?.kind) ? s.kind : undefined;
+				return { ...s, kind, active: false };
+			});
 			return { goal: saved.goal, steps, startTime: saved.startTime || Date.now(), sessionId: this._sessionId ?? saved.sessionId ?? "unknown" };
 		} catch { return null; }
 	}
@@ -511,7 +520,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		return this.planState;
 	}
 
-	setupPlanPanel(goal: string, stepLabels: string[], ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
+	setupPlanPanel(goal: string, stepLabels: Array<string | PlanStepSetupEntry>, ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 		this._cleared = false;
 		const mode = getSessionMode(ctx);
 		const modePrefix = mode === "parallel" ? "⚡" : "🔄";
@@ -522,10 +531,17 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		const prevStart = this.planState?.startTime;
 		this.planState = {
 			goal: goalWithMode, sessionId: this._sessionId!,
-			steps: stepLabels.map((label, i) => {
+			// Semantic step mapping: string entries stay untyped (unbound slots a
+			// delegation may claim); structured entries carry their declared kind,
+			// delegationLabel, and loop config through into panel state.
+			steps: stepLabels.map((entry, i) => {
+				const label = typeof entry === 'string' ? entry : entry.label;
+				const kind = typeof entry === 'string' ? undefined : entry.kind;
+				const delegationLabel = typeof entry === 'string' ? undefined : entry.delegationLabel;
+				const loopUntil = typeof entry === 'string' ? undefined : entry.loopUntil;
 				const old = oldSteps.find(s => s.label === label);
 				const wasCompleted = old?.completed === true;
-				return { label, completed: wasCompleted, errored: false, active: !wasCompleted && i === 0, startTime: wasCompleted ? old.startTime : (!wasCompleted && i === 0 ? Date.now() : undefined), endTime: wasCompleted ? old.endTime : undefined };
+				return { label, kind, delegationLabel, loopUntil, completed: wasCompleted, errored: false, active: !wasCompleted && i === 0, startTime: wasCompleted ? old.startTime : (!wasCompleted && i === 0 ? Date.now() : undefined), endTime: wasCompleted ? old.endTime : undefined };
 			}),
 			startTime: sameGoal && prevStart ? prevStart : Date.now(),
 		};
@@ -546,6 +562,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		this.stopPlanTimer();
 		this.planState = null;
 		this._lastWidgetContent = null;
+		clearDelegationWidgets(ctx);
 		if (sessionId) _removeSession(sessionId);
 	}
 
@@ -562,10 +579,20 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		this._renderWidget();
 	}
 
+	/** A delegation may consume untyped slots or declared 'delegation' slots, but
+	 *  never orchestrator- or loop-owned steps. */
+	private _isDelegationBindable(s: PlanStep): boolean {
+		return s.kind !== 'orchestrator' && s.kind !== 'loop_until';
+	}
+
 	startDelegationStep(label: string, options?: { isBatch?: boolean }): number {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return -1;
 		if (options?.isBatch) {
-			// Always create a new step for batch entries — never reuse
+			// Always create a new step for batch entries — never reuse.
+			// If an orchestrator/loop-owned step is active, deactivate it WITHOUT
+			// completing it — batch slots must not hijack orchestrator-owned steps.
+			const active = this.planState.steps.find((s) => s.active);
+			if (active && !this._isDelegationBindable(active)) active.active = false;
 			this.pushPlanStep(label);
 			const newIdx = this.planState.steps.length - 1;
 			this.planState.steps[newIdx].active = true;
@@ -573,27 +600,43 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			return newIdx;
 		}
 		const activeIdx = this.planState.steps.findIndex((s) => s.active);
-		if (activeIdx >= 0 && !this.planState.steps[activeIdx].completed) {
-			this.planState.steps[activeIdx].active = true;
-			this.planState.steps[activeIdx].kind = 'delegation';
-			if (!this.planState.steps[activeIdx].startTime) this.planState.steps[activeIdx].startTime = Date.now();
+		if (activeIdx >= 0 && !this.planState.steps[activeIdx].completed && this._isDelegationBindable(this.planState.steps[activeIdx])) {
+			const step = this.planState.steps[activeIdx];
+			step.active = true;
+			step.kind = 'delegation';
+			step.delegationLabel = step.delegationLabel ?? label;
+			if (!step.startTime) step.startTime = Date.now();
 			resetSpinner();
 			this._renderWidget();
 			this.recordTimelineFrame("delegation_start");
 			return activeIdx;
 		}
-		const pendingIdx = this.planState.steps.findIndex((s) => !s.completed && !s.active && !s.errored);
+		const pendingIdx = this.planState.steps.findIndex((s) => !s.completed && !s.active && !s.errored && this._isDelegationBindable(s));
 		if (pendingIdx >= 0) {
-			this.planState.steps[pendingIdx].active = true;
-			this.planState.steps[pendingIdx].kind = 'delegation';
-			this.planState.steps[pendingIdx].startTime = Date.now();
+			// Claim the first unconsumed delegation slot. Deactivate any
+			// orchestrator-owned active step WITHOUT completing it so the claimed
+			// slot is the only active step (default finalize then targets it).
+			const activeStep = this.planState.steps.find((s) => s.active);
+			if (activeStep) activeStep.active = false;
+			const step = this.planState.steps[pendingIdx];
+			step.active = true;
+			step.kind = 'delegation';
+			step.delegationLabel = step.delegationLabel ?? label;
+			step.startTime = Date.now();
 			resetSpinner();
 			this._renderWidget();
 			this.recordTimelineFrame("delegation_start");
 			return pendingIdx;
 		}
+		// Fallback append: claim a fresh delegation slot. Deactivate any active
+		// step WITHOUT completing it (non-bindable active steps are orchestrator/
+		// loop-owned and must not be hijacked) then append a delegation-kind step.
+		const activeStep = this.planState.steps.find((s) => s.active);
+		if (activeStep) activeStep.active = false;
 		this.pushPlanStep(label);
 		const pushedIdx = this.planState.steps.length - 1;
+		this.planState.steps[pushedIdx].kind = 'delegation';
+		this.planState.steps[pushedIdx].delegationLabel = label;
 		this._renderWidget();
 		this.recordTimelineFrame("delegation_start");
 		return pushedIdx;
@@ -715,16 +758,19 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		this._renderWidget();
 	}
 
-	errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, aborted?: boolean, errorMessage?: string): void {
+	errorPlanStep(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, aborted?: boolean, errorMessage?: string, stepIndex?: number): void {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
-		const idx = this.planState.steps.findIndex((s) => s.active);
-		if (idx >= 0) {
+		const idx = stepIndex !== undefined ? stepIndex : this.planState.steps.findIndex((s) => s.active);
+		if (idx >= 0 && this.planState.steps[idx]) {
 			this.planState.steps[idx].errored = true;
 			this.planState.steps[idx].errorMessage = errorMessage;
 			this.planState.steps[idx].active = false;
 			this.planState.steps[idx].detail = undefined;
 			this.planState.steps[idx].endTime = Date.now();
 		}
+		// Explicit-index errors mirror finalizePlanStep(ctx, stepIndex): advance to the
+		// next pending step so the plan keeps moving even when a step is errored.
+		if (stepIndex !== undefined) this._activateNextPending();
 		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame(aborted ? "step_aborted" : "step_error");
 	}
 
@@ -1426,12 +1472,12 @@ function _resolveOrCreate(ctx: unknown): PlanPanel {
 	return panel;
 }
 
-export const setupPlanPanel = (g: string, s: string[], c: unknown) => _resolveOrCreate(c).setupPlanPanel(g, s, c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
+export const setupPlanPanel = (g: string, s: Array<string | PlanStepSetupEntry>, c: unknown) => _resolveOrCreate(c).setupPlanPanel(g, s, c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
 export const clearPlanPanel = (c: unknown) => resolvePlanPanel(c)?.clearPlanPanel(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
 export const completePlanStep = (c: unknown) => resolvePlanPanel(c)?.completePlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
 export const finalizePlanStep = (c: unknown, stepIndex?: number) => resolvePlanPanel(c)?.finalizePlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, stepIndex);
 export const clearPlanIfComplete = (c: unknown) => resolvePlanPanel(c)?.clearPlanIfComplete(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
-export const errorPlanStep = (c: unknown, a?: boolean, e?: string) => resolvePlanPanel(c)?.errorPlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, a, e);
+export const errorPlanStep = (c: unknown, a?: boolean, e?: string, i?: number) => resolvePlanPanel(c)?.errorPlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, a, e, i);
 export const incrementDelegationCount = (ctx: unknown) => resolvePlanPanel(ctx)?.incrementDelegationCount();
 export const decrementDelegationCount = (ctx: unknown) => resolvePlanPanel(ctx)?.decrementDelegationCount();
 export const summarizeGoal = (g: string, ctx: unknown) => resolvePlanPanel(ctx)?.summarizeGoal(g);

@@ -20,6 +20,7 @@ import { registerFusionCommands } from "./fusion-commands.ts";
 import { registerFusionTool } from "./fusion-tool.ts";
 import { registerListSkillsTool, registerListToolsTool } from "./introspection-tools.ts";
 import { registerModelCommands } from "./model-commands.ts";
+import { registerInteractiveShellTool } from "./interactive-shell-tool.ts";
 
 /**
  * Register a `glob` tool alias that delegates to the built-in `find` tool.
@@ -92,4 +93,5 @@ export function registerAllTools(pi: ExtensionAPI, cwd: string): void {
 	registerCommands(pi);
 	registerFusionCommands(pi);
 	registerModelCommands(pi);
+	registerInteractiveShellTool(pi);
 }
