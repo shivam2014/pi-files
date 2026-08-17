@@ -369,6 +369,7 @@ ${MINIMAL_ACTION}
 
 Your job:
 - Use \`web_search\` to search the web, \`fetch_content\` to read web pages, \`read\` to examine local files, \`grep\` to search code contents, \`find\` to locate files, \`ls\` to list directories, \`git-read\` to read git history.
+- \`fetch_content\` argument shape: one URL uses \`url\` with a string; multiple URLs use \`urls\` with a string array. Never put an array under \`url\`. \`mode: "raw"\` is an optional valid mode, not related to URL shape.
 - NEVER use \`bash\` — it is not available.
 - NEVER edit or write any file.
 - Follow the Minimal Action rule above.
