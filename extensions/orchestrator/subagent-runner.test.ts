@@ -12,7 +12,7 @@ import {
 	createFlightRecorderDump,
 	SubagentRunner,
 } from "./subagent-runner.ts";
-import { DEFAULTS } from "./orchestrator-config.ts";
+import { DEFAULTS, resolveSpecialistModel, getSessionModels, setSessionModels, _sessionModels } from "./orchestrator-config.ts";
 import { shortenLabel, truncateLabel } from "../token-saver.ts";
 import { registerFusionTool } from "./fusion-tool.ts";
 import { createActivityFeed, addStep, completeCurrentStep, markFeedError } from "./activity-feed.ts";
@@ -798,5 +798,95 @@ describe("BUG regression loops — runner returns real metrics, status, planStep
 		// The step was never advanced by the subagent — it was auto-closed by the runner
 		expect(result.planSteps).toHaveLength(1);
 		expect(result.planSteps[0]).toMatchObject({ completed: true, autoCompleted: true });
+	});
+});
+
+describe("subagent-runner session model override wiring", () => {
+	beforeEach(() => {
+		_sessionModels.clear();
+	});
+
+	function makeConfig(models: any) {
+		return {
+			version: 1,
+			delegation: { mode: "sequential" as const, parallel: { maxConcurrent: 1, timeoutMs: 1000 } },
+			models,
+		};
+	}
+
+	it("run()'s model resolution layers the session override for the ctx sessionId", () => {
+		// Mirrors the exact wiring inside SubagentRunner.run()
+		const orchestratorCtx = { sessionId: "s1", config: makeConfig({ delegate: "global/delegate" }) };
+		const specialist = { name: "scout", model: "specialist/model" } as any;
+		setSessionModels({ sessionManager: { sessionId: "s1" } }, { delegate: "session/delegate" });
+
+		const sessionModels = orchestratorCtx.sessionId
+			? getSessionModels({ sessionManager: { sessionId: orchestratorCtx.sessionId } })
+			: undefined;
+		const resolved = resolveSpecialistModel(
+			orchestratorCtx.config ?? DEFAULTS,
+			specialist.name,
+			specialist.model,
+			sessionModels,
+		);
+
+		expect(resolved).toBe("session/delegate");
+	});
+
+	it("sessions without an override fall through to global config", () => {
+		const orchestratorCtx = { sessionId: "s2", config: makeConfig({ delegate: "global/delegate" }) };
+		const specialist = { name: "scout" } as any;
+		// no session override registered for s2
+		const resolved = resolveSpecialistModel(
+			orchestratorCtx.config,
+			specialist.name,
+			specialist.model,
+			getSessionModels({ sessionManager: { sessionId: orchestratorCtx.sessionId } }),
+		);
+		expect(resolved).toBe("global/delegate");
+	});
+
+	it("REGRESSION (C1): run() applies session override when ctx uses REAL ExtensionContext shape (sessionManager.getSessionId, no top-level sessionId)", { timeout: 15_000 }, async () => {
+		const mockModel = { id: "session/delegate", contextWindow: 200_000 };
+		const mockModelRegistry = {
+			find: vi.fn(() => mockModel),
+			getAvailable: vi.fn(() => [mockModel]),
+			getAll: vi.fn(() => [mockModel]),
+		} as any;
+
+		const mockSession = {
+			sessionId: "test-c1",
+			messages: [] as any[],
+			subscribe: vi.fn(() => () => {}),
+			abort: vi.fn(),
+			prompt: vi.fn(async () => {}),
+			dispose: vi.fn(),
+		};
+
+		const runner = new SubagentRunner({
+			cwd: "/tmp",
+			modelRegistry: mockModelRegistry,
+			agentDir: "/Users/shivam94/.pi/agent",
+			agentSessionFactory: async () => ({ session: mockSession }),
+			onUpdate: () => {},
+		} as any);
+
+		setSessionModels({ sessionManager: { sessionId: "s1" } }, { delegate: "session/delegate" });
+
+		// REAL ExtensionContext shape: NO top-level sessionId — id only via sessionManager.getSessionId()
+		const orchestratorCtx = {
+			cwd: "/tmp",
+			sessionManager: { getSessionId: () => "s1" },
+			config: makeConfig({ delegate: "global/delegate" }),
+		};
+		const specialist = { name: "scout" } as any;
+
+		runner.run("task", specialist, undefined, undefined, undefined, orchestratorCtx as any).catch(() => {});
+
+		// Session override must win over the global config delegate model
+		await vi.waitFor(() => {
+			expect(mockModelRegistry.find).toHaveBeenCalledWith("session", "delegate");
+		}, { timeout: 15_000 });
+		expect(mockModelRegistry.find).not.toHaveBeenCalledWith("global", "delegate");
 	});
 });

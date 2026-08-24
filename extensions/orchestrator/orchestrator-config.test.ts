@@ -3,11 +3,17 @@ import {
 	DEFAULTS,
 	_sessionModes,
 	_currentDefaultMode,
+	_sessionModels,
 	_extractSessionId,
 	_parseYaml,
 	getSessionMode,
 	setSessionMode,
 	clearSessionMode,
+	getSessionModels,
+	setSessionModels,
+	clearSessionModels,
+	resolveSpecialistModel,
+	mergeEffectiveModels,
 } from "./orchestrator-config.ts";
 
 // ─── _extractSessionId ─────────────────────────────────────
@@ -213,5 +219,118 @@ describe("maxTurns config", () => {
 		const yaml = `delegation:\n  maxTurns: 50\n`;
 		const parsed = _parseYaml(yaml);
 		expect(parsed.delegation.maxTurns).toBe(50);
+	});
+});
+
+// ─── Session model overrides ──────────────────────────────
+
+describe("session model overrides", () => {
+	beforeEach(() => {
+		_sessionModels.clear();
+	});
+
+	it("setSessionModels then getSessionModels returns override for same session id", () => {
+		const ctx = { sessionManager: { sessionId: "s1" } };
+		setSessionModels(ctx, { delegate: "anthropic/claude-sonnet-4" });
+		expect(getSessionModels(ctx)).toEqual({ delegate: "anthropic/claude-sonnet-4" });
+	});
+
+	it("different session id sees no override", () => {
+		setSessionModels({ sessionManager: { sessionId: "s1" } }, { delegate: "model/x" });
+		expect(getSessionModels({ sessionManager: { sessionId: "s2" } })).toBeUndefined();
+	});
+
+	it("returns undefined when no override set", () => {
+		expect(getSessionModels({ sessionManager: { sessionId: "s1" } })).toBeUndefined();
+	});
+
+	it("setSessionModels with undefined clears the override", () => {
+		const ctx = { sessionManager: { sessionId: "s1" } };
+		setSessionModels(ctx, { delegate: "model/x" });
+		setSessionModels(ctx, undefined);
+		expect(getSessionModels(ctx)).toBeUndefined();
+	});
+
+	it("does nothing for invalid ctx in set/clearSessionModels", () => {
+		setSessionModels(null, { delegate: "model/x" });
+		expect(_sessionModels.size).toBe(0);
+		clearSessionModels(null);
+		expect(_sessionModels.size).toBe(0);
+	});
+
+	it("clearSessionModels removes only the given session's override", () => {
+		setSessionModels({ sessionManager: { sessionId: "s1" } }, { delegate: "model/a" });
+		setSessionModels({ sessionManager: { sessionId: "s2" } }, { delegate: "model/b" });
+		clearSessionModels({ sessionManager: { sessionId: "s1" } });
+		expect(_sessionModels.has("s1")).toBe(false);
+		expect(getSessionModels({ sessionManager: { sessionId: "s2" } })).toEqual({ delegate: "model/b" });
+	});
+});
+
+// ─── resolveSpecialistModel session precedence ────────────
+
+describe("resolveSpecialistModel session precedence", () => {
+	const global = {
+		version: 1,
+		delegation: { mode: "sequential" as const, parallel: { maxConcurrent: 1, timeoutMs: 1000 } },
+		models: {
+			delegate: "global/delegate",
+			specialists: { scout: "global/scout" },
+		},
+	};
+	const noModelsGlobal = {
+		version: 1,
+		delegation: { mode: "sequential" as const, parallel: { maxConcurrent: 1, timeoutMs: 1000 } },
+		models: undefined,
+	};
+
+	it("session specialist wins over session delegate", () => {
+		expect(resolveSpecialistModel(global, "scout", undefined, { delegate: "session/delegate", specialists: { scout: "session/scout" } }))
+			.toBe("session/scout");
+	});
+
+	it("session delegate wins over global specialist", () => {
+		expect(resolveSpecialistModel(global, "scout", undefined, { delegate: "session/delegate" }))
+			.toBe("session/delegate");
+	});
+
+	it("global specialist wins over global delegate", () => {
+		expect(resolveSpecialistModel(global, "scout", undefined, undefined)).toBe("global/scout");
+	});
+
+	it("global delegate used when no specialist override and no session", () => {
+		expect(resolveSpecialistModel(global, "coder", undefined, undefined)).toBe("global/delegate");
+	});
+
+	it("specialist.model used after global delegate", () => {
+		expect(resolveSpecialistModel(noModelsGlobal, "scout", "specialist/model", undefined)).toBe("specialist/model");
+	});
+
+	it("returns undefined (inherit) when nothing matches", () => {
+		expect(resolveSpecialistModel(noModelsGlobal, "scout", undefined, undefined)).toBeUndefined();
+	});
+});
+
+// ─── mergeEffectiveModels ──────────────────────────────────
+
+describe("mergeEffectiveModels", () => {
+	it("returns global unchanged when no session override", () => {
+		const global = { delegate: "g/d", specialists: { scout: "g/scout" } };
+		expect(mergeEffectiveModels(global, undefined)).toBe(global);
+	});
+
+	it("session delegate overrides global delegate", () => {
+		const global = { delegate: "g/d", specialists: { scout: "g/scout" } };
+		expect(mergeEffectiveModels(global, { delegate: "s/d" })?.delegate).toBe("s/d");
+	});
+
+	it("session delegate shadows global specialists", () => {
+		const global = { delegate: "g/d", specialists: { scout: "g/scout" } };
+		expect(mergeEffectiveModels(global, { delegate: "s/d" })?.specialists).toBeUndefined();
+	});
+
+	it("session specialist merged over global specialist", () => {
+		const global = { specialists: { scout: "g/scout", coder: "g/coder" } };
+		expect(mergeEffectiveModels(global, { specialists: { scout: "s/scout" } })?.specialists).toEqual({ scout: "s/scout", coder: "g/coder" });
 	});
 });

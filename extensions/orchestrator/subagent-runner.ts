@@ -24,7 +24,7 @@ import { join } from "path";
 import { subagentSessions } from "./subagent-sessions.ts";
 import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics } from "./types.ts";
-import { resolveSpecialistModel, DEFAULTS } from "./orchestrator-config.ts";
+import { resolveSpecialistModel, DEFAULTS, getSessionModels } from "./orchestrator-config.ts";
 import type { Scope } from "./scope-manager.ts";
 import { buildSkillSection, canUseBash, hasGitTools } from "./specialists.ts";
 import {
@@ -45,6 +45,8 @@ import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 
 import { debugLog } from "./debug.ts";
 import { LoopWatchdog, pushPhase, popPhase, resetPhaseTracker } from "./loop-watchdog.ts";
+import { ProgressDetector, type ProgressState } from "./progress-detector.ts";
+import { classifyProviderFailure, PROVIDER_FAILURE_KIND } from "./outcome.ts";
 import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearViewerState, pushStreamingText, setViewerTokens } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
@@ -185,6 +187,96 @@ export function truncateSubagentOutput(output: string, cap = OUTPUT_CAP): string
  */
 export function shouldNudge(lastStopReason: string, stepsIncomplete: boolean, alreadyNudged: boolean): boolean {
 	return lastStopReason === "stop" && stepsIncomplete && !alreadyNudged;
+}
+
+// ── Graduated intervention (HEALTHY → DEGRADED → STALLED) ──────────────────────
+
+/** Provider failures are retried OUTSIDE the agent loop with backoff — never by burning agent turns. */
+export const PROVIDER_RETRY_MAX_ATTEMPTS = 3;
+
+/** Exponential backoff for provider retries: 500ms, 1s, 2s (capped at 4s). */
+export function providerBackoffDelayMs(attempt: number): number {
+	return Math.min(500 * Math.pow(2, Math.max(0, attempt)), 4000);
+}
+
+/**
+ * True when a stop/error message classifies as a RETRYABLE provider/infra fault
+ * (5xx, rate-limit, transport timeout, other transport). Auth failures are NOT
+ * retried. Provider faults must never be treated as agent stuckness.
+ */
+export function isRetryableProviderError(errorMessage?: string | null): boolean {
+	if (!errorMessage) return false;
+	const kind = classifyProviderFailure(errorMessage);
+	return kind !== null && kind !== PROVIDER_FAILURE_KIND.AUTH;
+}
+
+/** Silence checkpoints are coarse: one per N elapsed-timer ticks (1s each), so a
+ *  full window of silence (~80s at windowSize 4) is required before a
+ *  stall-by-silence can fire. Normal model thinking gaps never read as stalls. */
+export const SILENCE_CHECKPOINT_TICKS = 20;
+
+/** Concrete runtime facts captured during the run, used in the facts-only nudge. */
+export interface StallFacts {
+	failingTool?: string | null;
+	errorExcerpt?: string | null;
+	evidenceUnchangedSinceTurn?: number | null;
+	turns?: number;
+}
+
+/**
+ * Build the ONE facts-only stall nudge. Contains concrete runtime facts
+ * (failing tool, error excerpt, artifact-unchanged-since-turn) and a direct
+ * directive — it NEVER asks the model to self-diagnose.
+ */
+export function buildStallNudgeMessage(facts: StallFacts): string {
+	const parts = [
+		facts.failingTool ? `failing tool: ${facts.failingTool}` : "failing tool: (none observed)",
+		facts.errorExcerpt ? `error excerpt: "${String(facts.errorExcerpt).slice(0, 160)}"` : 'error excerpt: (none)',
+		typeof facts.evidenceUnchangedSinceTurn === "number"
+			? `artifacts unchanged since turn ${facts.evidenceUnchangedSinceTurn}`
+			: "no artifacts produced",
+	];
+	return (
+		`[intervention] No observable progress (${parts.join("; ")}). ` +
+		`Change approach now: use a different tool or inputs, skip the failing step, or report your partial findings and finish. Do not repeat the same call.`
+	);
+}
+
+/** Intervention state machine snapshot (graduated HEALTHY → DEGRADED → STALLED). */
+export interface InterventionSnapshot {
+	/** Lifetime cap: at most ONE stall nudge per delegation. */
+	everNudged: boolean;
+	/** Turn count when the nudge was emitted (grace guard before terminate). */
+	nudgedAtTurns: number | null;
+}
+
+export const INITIAL_INTERVENTION: InterventionSnapshot = { everNudged: false, nudgedAtTurns: null };
+
+export type InterventionAction = "continue" | "nudge" | "terminate";
+
+/**
+ * Pure graduated-intervention transition.
+ *
+ *  HEALTHY / DEGRADED → continue (DEGRADED raises watch upstream, no action here).
+ *  STALLED (never nudged) → ONE facts-only nudge.
+ *  STALLED (already nudged, past the grace turn) → terminate.
+ *  STALLED (already nudged, within grace) → continue (give the model its turn).
+ */
+export function nextIntervention(
+	prev: InterventionSnapshot,
+	state: ProgressState,
+	turns: number,
+): { action: InterventionAction; next: InterventionSnapshot } {
+	if (state !== "STALLED") {
+		return { action: "continue", next: prev };
+	}
+	if (!prev.everNudged) {
+		return { action: "nudge", next: { everNudged: true, nudgedAtTurns: turns } };
+	}
+	if (prev.nudgedAtTurns !== null && turns > prev.nudgedAtTurns) {
+		return { action: "terminate", next: prev };
+	}
+	return { action: "continue", next: prev };
 }
 
 /**
@@ -341,6 +433,14 @@ export type SubagentResult = {
 	scopeNotes?: import('./types.ts').ScopeNotes;
 	tokenUsage?: { input: number; output: number; cached: number };
 	hasLintFailures?: boolean;
+	/** Progress/stall classification from observable signals (see progress-detector.ts). */
+	progressState?: ProgressState;
+	/** Count of provider/infra failures in the final detector window (separate taxonomy). */
+	providerFailures?: number;
+	/** True when the runner terminated the session after an unanswered stall nudge. */
+	stallTerminated?: boolean;
+	/** Number of provider-failure retries performed OUTSIDE the agent loop. */
+	providerRetries?: number;
 };
 
 /** Parameters for createFlightRecorderDump */
@@ -413,12 +513,22 @@ export class SubagentRunner {
 		try {
 			const modelRegistry = config.modelRegistry;
 
-			// Resolve model: config override > specialist.model > parent's model > registry fallback
+			// Resolve model: session override > config override > specialist.model > parent's model > registry fallback
 			let model;
+			// C1 fix: real ExtensionContext has NO top-level sessionId — derive it from
+			// sessionManager.getSessionId() (SDK ReadonlySessionManager), falling back to a
+			// plain sm.sessionId property (legacy/test mocks).
+			const sm = (orchestratorCtx as any)?.sessionManager;
+			const orchestratorSessionId: string | undefined =
+				(typeof sm?.getSessionId === "function" ? sm.getSessionId() : undefined) ?? sm?.sessionId;
+			const sessionModels = orchestratorSessionId
+				? getSessionModels({ sessionManager: { sessionId: orchestratorSessionId } })
+				: undefined;
 			const configModel = resolveSpecialistModel(
 				orchestratorCtx?.config ?? DEFAULTS,
 				specialist.name,
 				specialist.model,
+				sessionModels,
 			);
 
 			if (configModel) {
@@ -669,6 +779,26 @@ export class SubagentRunner {
 			});
 			resetPhaseTracker();
 
+			// ── Runtime progress/stall detector (observe-only; NOT wired to terminate) ──
+			// Uses observable signals only (artifact delta, repeated identical calls,
+			// repeated errors, liveness) in a sliding checkpoint window — never raw turn
+			// count or elapsed time alone. Provider/infra failures are tracked in a
+			// separate taxonomy and never read as agent stuckness. See progress-detector.ts.
+			//
+			// maxTurns / maxBudget risk guard: orchestrator-config DEFAULTS.delegation.maxTurns
+			// (and any parallel timeout) are BACKSTOP limits only. They must NOT be used as a
+			// progress target or as a progress estimator here — the detector classifies from
+			// observable signals, independent of turn/budget counters.
+			const detector = new ProgressDetector();
+
+			// ── Runtime facts for the graduated intervention's single nudge ──
+			let lastEvidenceTurn: number | null = null;
+			let lastFailingTool: string | null = null;
+			let lastAgentErrorExcerpt: string | null = null;
+			let intervention: InterventionSnapshot = INITIAL_INTERVENTION;
+			let stallTerminated = false;
+			let providerRetries = 0;
+
 			const unsubscribe = session.subscribe((event: any) => {
 				if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 					pushPhase("message_update");
@@ -823,6 +953,33 @@ export class SubagentRunner {
 							outputPreview = JSON.stringify(rawResult);
 						}
 					}
+					// ── Progress/stall detection feed (observable signals only) ──
+					// A non-empty successful tool result counts as an artifact/evidence delta;
+					// provider/infra faults are routed to the separate provider taxonomy so
+					// they never register as agent stuckness.
+					try {
+						const resultText = stripped ?? (outputPreview ?? null);
+						const providerKind = isError ? classifyProviderFailure(resultText) : null;
+						detector.record({
+							tool: event.toolName,
+							args: (event as any).arguments ?? (event as any).args ?? {},
+							result: resultText && resultText.length > 0 ? resultText : null,
+							isError,
+							isProviderError: providerKind !== null,
+							hasEvidence: !isError && !!stripped && stripped.length > 0,
+						});
+						// Runtime facts for the graduated intervention's single facts-only nudge.
+						// Provider faults are excluded — they are infrastructure, not agent stuckness.
+						if (!isError && providerKind === null && !!stripped && stripped.length > 0) {
+							lastEvidenceTurn = turns;
+						}
+						if (isError && providerKind === null) {
+							lastFailingTool = event.toolName;
+							lastAgentErrorExcerpt = (resultText ?? "").slice(0, 160);
+						}
+					} catch (e) {
+						debugLog("[progress-detector] record failed:", e);
+					}
 					feed.clearToolDetail();
 					let completedWithLabel = false;
 					if (event.toolName === "web_search" && !isError) {
@@ -890,8 +1047,16 @@ export class SubagentRunner {
 
 			// Periodic elapsed-time timer (1s) — uses flush for forced immediate emission
 			let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+			let elapsedTicks = 0;
 			elapsedTimer = setInterval(() => {
 				progressScheduler.flush();
+				// Record elapsed time with no tool activity as an empty checkpoint so
+				// sustained silence collapses toward the flat-delta-without-liveness stall.
+				// Checkpoints are intentionally coarse (every SILENCE_CHECKPOINT_TICKS seconds):
+				// a full window of near-total silence is required, so normal model thinking
+				// gaps between tool calls never read as stalls (healthy long task protection).
+				elapsedTicks++;
+				if (elapsedTicks % SILENCE_CHECKPOINT_TICKS === 0) detector.rollSilence();
 			}, 1000);
 
 			// Abort handler
@@ -904,10 +1069,36 @@ export class SubagentRunner {
 			let finalStatus = "completed";
 
 			let nudged = false;
+			const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 			watchdog.start();
 			try {
-				await session.prompt(task);
+				// ── Run prompt; transport-level provider faults retry OUTSIDE the agent loop ──
+				// Thrown provider errors are retried after exponential backoff without
+				// consuming agent turns or touching the progress detector. Stop-reason
+				// level provider failures are retried at the pipeline layer (fresh session).
+				for (;;) {
+					let thrownError: string | null = null;
+					try {
+						await session.prompt(task);
+					} catch (e) {
+						if (signal?.aborted || (e instanceof Error && e.name === "AbortError")) throw e;
+						thrownError = e instanceof Error ? e.message : String(e);
+					}
+					if (thrownError === null) break; // clean return — stop reason handled below
+					if (isRetryableProviderError(thrownError) && providerRetries < PROVIDER_RETRY_MAX_ATTEMPTS) {
+						providerRetries++;
+						const kind = classifyProviderFailure(thrownError);
+						debugLog("[provider-retry] backoff retry", { kind, attempt: providerRetries });
+						config.onUpdate?.({
+							content: [{ type: "text", text: `↻ provider failure (${kind ?? "unknown"}) — retry ${providerRetries}/${PROVIDER_RETRY_MAX_ATTEMPTS} after backoff (outside agent loop)` }],
+							details: { specialist: specialist.name, status: "provider_retry", kind, attempt: providerRetries },
+						});
+						await sleep(providerBackoffDelayMs(providerRetries - 1));
+						continue;
+					}
+					throw new Error(thrownError);
+				}
 
 				if (lastStopReason === "error") {
 					const errorMsg = lastErrorMessage || "Unknown model error";
@@ -924,6 +1115,39 @@ export class SubagentRunner {
 					if (shouldNudge(lastStopReason ?? "", stepsIncomplete, nudged)) {
 						nudged = true;
 						await session.prompt("You stopped before completing the task. Continue: finish all remaining steps, then report the final result.");
+					}
+
+					// ── Graduated stall intervention: HEALTHY → DEGRADED → STALLED ──
+					// ONE facts-only nudge cap; terminate if STALLED persists past the nudge.
+					try {
+						const decision = nextIntervention(intervention, detector.state(), turns);
+						intervention = decision.next;
+						if (decision.action === "nudge") {
+							const nudgeMsg = buildStallNudgeMessage({
+								failingTool: lastFailingTool,
+								errorExcerpt: lastAgentErrorExcerpt,
+								evidenceUnchangedSinceTurn: lastEvidenceTurn,
+								turns,
+							});
+							recordTimelineFrame("intervention_stall_nudge", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
+							debugLog("[intervention] stall nudge emitted", { specialist: specialist.name, turns });
+							config.onUpdate?.({
+								content: [{ type: "text", text: feed.render(specialist.name) }],
+								details: { specialist: specialist.name, status: "stall_nudge", turns },
+							});
+							await session.prompt(nudgeMsg);
+							// Re-evaluate after the model had its chance to recover.
+							const d2 = nextIntervention(intervention, detector.state(), turns);
+							intervention = d2.next;
+							if (d2.action === "terminate") {
+								stallTerminated = true;
+								try { session.abort(); } catch {}
+								output += "\n\n[intervention] Terminated: no observable progress after stall nudge.";
+								debugLog("[intervention] terminated after unanswered stall nudge", { specialist: specialist.name, turns });
+							}
+						}
+					} catch (e) {
+						debugLog("[intervention] failed:", e);
 					}
 					finalStatus = "completed";
 				}
@@ -1150,6 +1374,13 @@ export class SubagentRunner {
 				scopeNotes,
 				tokenUsage: { input: accInput, output: accOutput, cached: accCached },
 				hasLintFailures,
+				// ── Progress/stall + provider-failure summary from the observe-only detector ──
+				// Provider failures are reported separately from agent stuckness and are
+				// retried outside the loop — they are NEVER mapped to stalled_no_progress.
+				progressState: detector.state() as ProgressState,
+				providerFailures: detector.providerFailures(),
+				stallTerminated,
+				providerRetries,
 			};
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);

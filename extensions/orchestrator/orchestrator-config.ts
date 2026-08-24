@@ -42,6 +42,9 @@ export const DEFAULTS: OrchestratorConfig = {
 export const _sessionModes = new Map<string, string>();
 export let _currentDefaultMode: string = DEFAULTS.delegation.mode;
 
+/** Per-session model overrides keyed by sessionId. In-memory only — dies with the process. */
+export const _sessionModels = new Map<string, OrchestratorConfig["models"]>();
+
 // ─── Helpers ───────────────────────────────────────────────
 
 export function _configPath(): string {
@@ -241,14 +244,26 @@ export function saveOrchestratorConfig(config: OrchestratorConfig): void {
 }
 
 /**
- * Resolve model ID for a specialist, checking config overrides first.
- * Priority: config.specialists[name] > config.delegate > specialist.model > undefined (inherits parent)
+ * Resolve model ID for a specialist from global config, session override, and specialist field.
+ * Priority:
+ *   session.specialists[name] > session.delegate
+ *   > config.specialists[name] > config.delegate
+ *   > specialist.model > undefined (inherits parent)
  */
 export function resolveSpecialistModel(
 	config: OrchestratorConfig,
 	specialistName: string,
 	specialistModel?: string,
+	sessionModels?: OrchestratorConfig["models"],
 ): string | undefined {
+	// 0a. Session per-specialist override
+	if (sessionModels?.specialists?.[specialistName]) {
+		return sessionModels.specialists[specialistName];
+	}
+	// 0b. Session default delegate model
+	if (sessionModels?.delegate) {
+		return sessionModels.delegate;
+	}
 	// 1. Per-specialist config override
 	if (config.models?.specialists?.[specialistName]) {
 		return config.models.specialists[specialistName];
@@ -284,4 +299,66 @@ export function setSessionMode(ctx: any, mode: string): void {
 
 export function clearSessionMode(sessionId: string): void {
 	_sessionModes.delete(sessionId);
+}
+
+// ─── Session model helpers ────────────────────────────────
+
+/**
+ * Merge a per-session model override over the global models to produce the
+ * effective models for display. Session wins over global at every level:
+ *   delegate: session.delegate ?? global.delegate
+ *   specialists: if session.delegate set, global specialists are shadowed by it
+ *               (per resolveSpecialistModel precedence), so only session
+ *               specialists survive; otherwise global+session merge.
+ */
+export function mergeEffectiveModels(
+	global: OrchestratorConfig["models"] | undefined,
+	session: OrchestratorConfig["models"] | undefined,
+): OrchestratorConfig["models"] | undefined {
+	if (!session) return global;
+	let delegate = session.delegate ?? global?.delegate;
+	let specialists: Record<string, string> | undefined;
+	if (session.delegate) {
+		// session delegate shadows every global specialist override
+		specialists = session.specialists ? { ...session.specialists } : undefined;
+	} else {
+		specialists = { ...(global?.specialists ?? {}), ...(session.specialists ?? {}) };
+	}
+	if (specialists && Object.keys(specialists).length === 0) specialists = undefined;
+	if (!delegate && !specialists) return undefined;
+	return { delegate, specialists };
+}
+
+/**
+ * Return the per-session model override for ctx, or undefined when none exists.
+ */
+export function getSessionModels(ctx: any): OrchestratorConfig["models"] | undefined {
+	const sessionId = _extractSessionId(ctx);
+	if (sessionId && _sessionModels.has(sessionId)) {
+		return _sessionModels.get(sessionId);
+	}
+	return undefined;
+}
+
+/**
+ * Store a per-session model override for ctx. Passing undefined clears the override.
+ */
+export function setSessionModels(ctx: any, models: OrchestratorConfig["models"] | undefined): void {
+	const sessionId = _extractSessionId(ctx);
+	if (!sessionId) return;
+	if (models === undefined) {
+		_sessionModels.delete(sessionId);
+	} else {
+		_sessionModels.set(sessionId, models);
+	}
+}
+
+/**
+ * Clear the per-session model override for ctx (no-op for invalid ctx or unknown session).
+ */
+export function clearSessionModels(ctx: any): void {
+	const sessionId = _extractSessionId(ctx);
+	if (sessionId) {
+		_sessionModels.delete(sessionId);
+	}
 }

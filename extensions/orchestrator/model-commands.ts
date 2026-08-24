@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { loadOrchestratorConfig, saveOrchestratorConfig } from "./orchestrator-config.ts";
+import { loadOrchestratorConfig, getSessionModels, setSessionModels, clearSessionModels, mergeEffectiveModels } from "./orchestrator-config.ts";
+import type { OrchestratorConfig } from "./orchestrator-config.ts";
 import { showModelTUI } from "./model-tui.ts";
 
 export function registerModelCommands(pi: ExtensionAPI): void {
@@ -42,7 +43,8 @@ export function registerModelCommands(pi: ExtensionAPI): void {
 }
 
 async function showModelStatus(ctx: ExtensionCommandContext): Promise<void> {
-	const config = loadOrchestratorConfig();
+	const globalConfig = loadOrchestratorConfig();
+	const config = { ...globalConfig, models: mergeEffectiveModels(globalConfig.models, getSessionModels(ctx)) };
 	const lines = ["═══ Model Configuration ═══", ""];
 
 	if (!config.models) {
@@ -65,14 +67,16 @@ async function showModelStatus(ctx: ExtensionCommandContext): Promise<void> {
 }
 
 async function resetModelConfig(ctx: ExtensionCommandContext): Promise<void> {
-	const config = loadOrchestratorConfig();
-	config.models = undefined;
-	saveOrchestratorConfig(config);
+	clearSessionModels(ctx);
 	ctx.ui.notify("Model overrides cleared. All delegates now inherit the orchestrator's model.", "info");
 }
 
 async function handleModelSet(args: string, ctx: ExtensionCommandContext): Promise<void> {
-	const config = loadOrchestratorConfig();
+	const existing = getSessionModels(ctx) ?? {};
+	const config: OrchestratorConfig["models"] = {
+		delegate: existing?.delegate,
+		specialists: existing?.specialists ? { ...existing.specialists } : undefined,
+	};
 
 	// Parse: "default anthropic/claude-sonnet-4" or "scout anthropic/claude-haiku-3"
 	const parts = args.split(/\s+/);
@@ -90,21 +94,17 @@ async function handleModelSet(args: string, ctx: ExtensionCommandContext): Promi
 		return;
 	}
 
-	if (!config.models) {
-		config.models = {};
-	}
-
 	if (target === "default") {
-		config.models.delegate = modelId;
+		config.delegate = modelId;
 		ctx.ui.notify(`Default delegate model set to: ${modelId}`, "info");
 	} else {
 		// Per-specialist override
-		if (!config.models.specialists) {
-			config.models.specialists = {};
+		if (!config.specialists) {
+			config.specialists = {};
 		}
-		config.models.specialists[target] = modelId;
+		config.specialists[target] = modelId;
 		ctx.ui.notify(`Model for ${target} set to: ${modelId}`, "info");
 	}
 
-	saveOrchestratorConfig(config);
+	setSessionModels(ctx, config);
 }

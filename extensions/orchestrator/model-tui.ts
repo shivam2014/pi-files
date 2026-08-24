@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key } from "@earendil-works/pi-tui";
 import { styledSymbol, getTheme } from "./orchestrator-theme.ts";
-import { loadOrchestratorConfig, saveOrchestratorConfig, resolveSpecialistModel } from "./orchestrator-config.ts";
+import { loadOrchestratorConfig, resolveSpecialistModel, getSessionModels, setSessionModels, clearSessionModels, mergeEffectiveModels, setSessionMode, clearSessionMode, _extractSessionId } from "./orchestrator-config.ts";
 import type { OrchestratorConfig } from "./orchestrator-config.ts";
 import { SPECIALISTS } from "./specialists.ts";
 
@@ -47,9 +47,13 @@ const BOX = {
 // ── Component ──────────────────────────────────────────────
 
 export async function showModelTUI(ctx: ExtensionCommandContext): Promise<void> {
+	const globalConfig = loadOrchestratorConfig();
+	const sessionModels = getSessionModels(ctx);
+	const effectiveConfig = { ...globalConfig, models: mergeEffectiveModels(globalConfig.models, sessionModels) };
+
 	if (ctx.mode !== "tui" || !ctx.hasUI) {
 		// Fallback for non-TUI modes — show status as notification
-		const config = loadOrchestratorConfig();
+		const config = effectiveConfig;
 		const defaultModel = config.models?.delegate ?? "(inherited)";
 		const specialistCount = Object.keys(config.models?.specialists ?? {}).length;
 		ctx.ui.notify([
@@ -60,7 +64,7 @@ export async function showModelTUI(ctx: ExtensionCommandContext): Promise<void> 
 		return;
 	}
 
-	const rawConfig = loadOrchestratorConfig();
+	const rawConfig = structuredClone(effectiveConfig);
 
 	// Filter out stale specialist overrides not in registry
 	let removedCount = 0;
@@ -217,7 +221,21 @@ export async function showModelTUI(ctx: ExtensionCommandContext): Promise<void> 
 	);
 
 	if (result) {
-		saveOrchestratorConfig(result.config);
+		// W1 fix: persist delegation mode changes — previously only models were saved,
+		// silently dropping mode toggles made in the TUI.
+		const resultMode = result.config.delegation?.mode ?? "sequential";
+		const globalMode = globalConfig.delegation?.mode ?? "sequential";
+		if (resultMode !== globalMode) {
+			setSessionMode(ctx, resultMode);
+		} else {
+			const sid = _extractSessionId(ctx);
+			if (sid) clearSessionMode(sid);
+		}
+		if (result.config.models) {
+			setSessionModels(ctx, result.config.models);
+		} else {
+			clearSessionModels(ctx);
+		}
 		ctx.ui.notify("Model settings saved.", "info");
 	}
 }
