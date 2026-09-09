@@ -25,8 +25,9 @@ import { subagentSessions } from "./subagent-sessions.ts";
 import { shortenLabel } from "../token-saver.ts";
 import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics } from "./types.ts";
 import { resolveSpecialistModel, DEFAULTS, getSessionModels } from "./orchestrator-config.ts";
+import { getLastOrchestratorModel } from "./orchestrator-model-state.ts";
 import type { Scope } from "./scope-manager.ts";
-import { buildSkillSection, canUseBash, hasGitTools } from "./specialists.ts";
+import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS } from "./specialists.ts";
 import {
 	ActivityFeed,
 	toolCallToSubstep,
@@ -116,6 +117,70 @@ export const SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
 export const ERROR_MARKER = "[error]";
 export const ABORT_MARKER = "[aborted]";
 
+// ─── Delegate-model resolution (C2: no silent fallback to an expensive model) ───
+
+/**
+ * Resolve a "provider/model" string against the registry, or undefined.
+ */
+function resolveModelId(modelRegistry: any, modelId: string): any {
+	const slashIdx = modelId.indexOf("/");
+	if (slashIdx <= 0) return undefined;
+	const provider = modelId.slice(0, slashIdx);
+	const id = modelId.slice(slashIdx + 1);
+	return modelRegistry.find(provider, id);
+}
+
+/**
+ * Resolve the persisted last-orchestrator model string into a registry model.
+ */
+function resolvePersistedModel(modelRegistry: any): any {
+	const lastModel = getLastOrchestratorModel();
+	if (!lastModel) return undefined;
+	return resolveModelId(modelRegistry, lastModel);
+}
+
+/**
+ * Resolve the delegate model with a safe fallback chain.
+ *
+ *   1. Explicit config/session model, if it resolves in the registry.
+ *   2. If a config model was set but did NOT resolve: parent session model,
+ *      then the persisted last-orchestrator model.
+ *      If no config model was set: persisted last-orchestrator model, then
+ *      the parent session model.
+ *   3. Last resort: cheapest tool-call-capable available model (never a
+ *      random expensive one).
+ */
+function resolveDelegateModel(modelRegistry: any, configModel: string | undefined, parentModel: any): any {
+	if (configModel) {
+		const resolved = resolveModelId(modelRegistry, configModel);
+		if (resolved) return resolved;
+		// Config model set but did not resolve → parent, then persisted.
+		return parentModel ?? resolvePersistedModel(modelRegistry);
+	}
+	// No explicit config/session model → persisted, then parent.
+	return resolvePersistedModel(modelRegistry) ?? parentModel;
+}
+
+/** Sum of input+output cost; undefined/absent cost treated as infinite (least preferred). */
+function modelCost(m: any): number {
+	if (!m?.cost) return Number.POSITIVE_INFINITY;
+	return (m.cost.input ?? 0) + (m.cost.output ?? 0);
+}
+
+/**
+ * Pick the cheapest available model that can handle text (and thus tool calls).
+ * Excludes models explicitly marked tool_call === false. Never picks an
+ * expensive model when a cheaper one is available.
+ */
+function pickCheapAvailableModel(modelRegistry: any): any {
+	const available = modelRegistry.getAvailable?.() ?? [];
+	const candidates = available
+		.filter((m: any) => !m?.input || m.input.includes("text"))
+		.filter((m: any) => (m as any)?.tool_call !== false);
+	candidates.sort((a: any, b: any) => modelCost(a) - modelCost(b));
+	return candidates[0] ?? available[0];
+}
+
 /**
  * Resolve skill names to existing SKILL.md paths under agentDir.
  * Filters out skills whose SKILL.md doesn't exist on disk.
@@ -187,6 +252,30 @@ export function truncateSubagentOutput(output: string, cap = OUTPUT_CAP): string
  */
 export function shouldNudge(lastStopReason: string, stepsIncomplete: boolean, alreadyNudged: boolean): boolean {
 	return lastStopReason === "stop" && stepsIncomplete && !alreadyNudged;
+}
+
+/**
+ * True when subagent output carries at least one deliverable section marker
+ * (SSOT list: DELIVERABLE_MARKERS in specialists.ts, co-located with the
+ * FINDINGS_AUDIT_TEMPLATE so the two cannot drift).
+ */
+export function hasDeliverableMarkers(output: string): boolean {
+	return DELIVERABLE_MARKERS.some(m => output.includes(m));
+}
+
+/**
+ * C1 guard: true when a delegation ended as a CLEAN, COMPLETE stop —
+ * stopReason 'stop', all parsed plan steps finished, and the final report
+ * carries deliverable markers. Such a run must never be stall-evaluated,
+ * nudged, or terminated: its tool-free tail was report synthesis, not
+ * stuckness.
+ */
+export function isCleanCompleteStop(
+	lastStopReason: string | null | undefined,
+	stepsIncomplete: boolean,
+	output: string,
+): boolean {
+	return lastStopReason === "stop" && !stepsIncomplete && hasDeliverableMarkers(output);
 }
 
 // ── Graduated intervention (HEALTHY → DEGRADED → STALLED) ──────────────────────
@@ -531,22 +620,15 @@ export class SubagentRunner {
 				sessionModels,
 			);
 
-			if (configModel) {
-				const slashIdx = configModel.indexOf("/");
-				if (slashIdx > 0) {
-					const provider = configModel.slice(0, slashIdx);
-					const modelId = configModel.slice(slashIdx + 1);
-					model = modelRegistry.find(provider, modelId);
-				}
-			} else if (parentCtx?.model) {
-				model = parentCtx.model;
-			}
+			// Resolve the delegate model with a safe fallback chain.
+			// C2 fix: a configured model that fails to resolve now falls back to the
+			// parent session model, then the persisted last-orchestrator model, and
+			// only as a last resort to the cheapest tool-call-capable model — never
+			// silently picking an expensive model (e.g. gpt-5.6-luna-2).
+			model = resolveDelegateModel(modelRegistry, configModel, parentCtx?.model);
 
 			if (!model) {
-				const available = modelRegistry.getAvailable();
-				if (available.length > 0) {
-					model = available[0];
-				}
+				model = pickCheapAvailableModel(modelRegistry);
 			}
 
 			if (!model) {
@@ -1112,14 +1194,22 @@ export class SubagentRunner {
 					});
 				} else {
 					const stepsIncomplete = feed.planParsed && feed.currentStep < feed.steps.length;
-					if (shouldNudge(lastStopReason ?? "", stepsIncomplete, nudged)) {
+					// ── C1 guard: never stall-evaluate a clean, complete stop. ──
+					// A delegation that finished all plan steps and stopped cleanly but spent
+					// its final stretch writing the report (40-80s tool-free tail) drives the
+					// detector's silence window to all-silence → STALLED. That silence is the
+					// model SYNTHESIZING its deliverable, not agent stuckness — nudging and
+					// then terminating it would mislabel a successful run as stalled_no_progress.
+					const cleanCompleteStop = isCleanCompleteStop(lastStopReason, stepsIncomplete, output);
+					if (!cleanCompleteStop && shouldNudge(lastStopReason ?? "", stepsIncomplete, nudged)) {
 						nudged = true;
 						await session.prompt("You stopped before completing the task. Continue: finish all remaining steps, then report the final result.");
 					}
 
 					// ── Graduated stall intervention: HEALTHY → DEGRADED → STALLED ──
 					// ONE facts-only nudge cap; terminate if STALLED persists past the nudge.
-					try {
+					// Skipped for cleanCompleteStop (see C1 guard above).
+					if (!cleanCompleteStop) try {
 						const decision = nextIntervention(intervention, detector.state(), turns);
 						intervention = decision.next;
 						if (decision.action === "nudge") {

@@ -74,13 +74,12 @@ const DELEGATION_INSTRUCTIONS_TEMPLATE = `
 ## Session-Start Protocol
 
 When this session starts, BEFORE responding to the user:
-1. Read docs/MASTER-PLAN.md (use the read tool)
-2. Find the first unchecked ticket (\`- [ ]\`) that has no blocked dependencies
-3. Declare a plan using plan() with that ticket's goal and steps
-4. Begin delegating the first step
+1. Follow this project's AGENTS.md instructions.
+2. If the project defines a planning or ticket artifact (e.g. in its AGENTS.md), follow it.
+3. Otherwise treat the user's request as the task.
+4. Declare a plan using plan() for that task and begin delegating.
 
-If no unchecked tickets remain, inform the user all tickets are complete.
-If the user provides a specific task, follow their instruction instead of the master plan.
+If the user provides a specific task, follow their instruction.
 
 ## Capabilities
 | Tool | Purpose |
@@ -123,14 +122,29 @@ Adding steps mid-workflow:
 - Use this instead of creating a new plan when the current plan is still relevant.
 
 Examples:
-  plan("Fix auth bug", ["Diagnose root cause", "Analyze findings", "Implement fix", "Review fix"])
-    \u2192 step 1: delegate("scout", ...), step 2: orchestrator analyzes, step 3: delegate("coder", ...), step 4: delegate("reviewer", ...)
+  plan("Fix auth bug", ["Implement fix", "Assess difficulty", "Escalate if needed"])
+    \u2192 step 1: delegate("coder", "fix auth bug", scope), step 2: orchestrator reads [Difficulty], step 3: escalate ONLY on signals (scout/fusion/reviewer)
   plan("Sync and commit", ["Sync files to repo"])
     \u2192 1 step: delegate("coder", "copy, stage, commit, push") \u2014 all work to one specialist
 
 3. THIRD: Synthesize results.
 
 delegate() auto-creates a minimal plan if none exists, but calling plan() first gives better structure and multi-step visibility.
+
+### Adaptive Routing — scale orchestration to task difficulty
+Do NOT run a fixed scout\u2192coder\u2192reviewer ceremony on every task. Start cheap and escalate only on reported difficulty.
+
+1. START CHEAP: For most tasks, begin with a single delegate(coder). Use delegate(scout) only if the task clearly requires investigating unfamiliar code. Skip the scout/coder/reviewer pipeline by default.
+
+2. READ THE DIFFICULTY SIGNAL: After each delegation, read the subagent's [Difficulty: ...] block (exploration, uncertainty, verification, iteration, recommend).
+
+3. ESCALATE ONLY ON SIGNALS (the ladder):
+   - recommend: investigate OR exploration: high \u2192 delegate(scout) to map/investigate, then re-delegate the coder with better context.
+   - recommend: plan OR uncertainty: high \u2192 call fusion() for multi-model plan critique.
+   - recommend: review OR verification: fail OR iteration: high \u2192 delegate(reviewer) to verify/fix.
+   - If difficulty is low everywhere (exploration/uncertainty/iteration low, verification pass, recommend none) \u2192 ACCEPT the result. Skip scout/reviewer/fusion.
+
+4. Do NOT blindly run all three stages every time. Scale the orchestration to the task's actual difficulty as reported.
 
 ### Step Advancement (dual path):
 Plan steps advance differently depending on their kind:

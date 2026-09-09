@@ -31,7 +31,8 @@ import { PLAN_TOOLS } from "./plan-tool.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
 import { SPECIALISTS } from "./specialists.ts";
 import { join } from "node:path";
-import { getSessionMode } from "./orchestrator-config";
+import { getSessionMode, loadOrchestratorConfig } from "./orchestrator-config";
+import { recordOrchestratorModel } from "./orchestrator-model-state.ts";
 
 function resolveCwd(ctx?: { cwd?: string }): string {
 	return ctx?.cwd ?? process.cwd();
@@ -80,6 +81,11 @@ export default function (pi: ExtensionAPI) {
 	//    Without this, setActiveTools never fires and getActiveToolsHistory() returns undefined.
 	pi.on("session_start", async (_event, ctx) => {
 		if (isSubagentLoad) return;  // Skip orchestrator tool freezing in subagent context
+		// Load orchestrator.yml at session start so `_currentDefaultMode` reflects
+		// `delegation.mode` (e.g. "parallel") BEFORE the first delegate/batch call.
+		// Otherwise the first batch in a fresh headless session is rejected because
+		// `_currentDefaultMode` is only synced later inside DelegatePipeline.run().
+		loadOrchestratorConfig();
 		const cwd = ctx?.cwd ?? process.cwd();
 		const fusionConfig = loadFusionConfig(cwd);
 		const activeTools: string[] = [...PLAN_TOOLS, "delegate"];
@@ -176,12 +182,27 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	// ── Session shutdown: clear plan panel instances for this session ──
+	// ── Session shutdown: clear plan panel + persist the orchestrator model ──
+	// The persisted last-orchestrator model lets a new orchestration session
+	// default to the model used by the most-recently-*ended* orchestration
+	// session. Skipped for subagent loads (their model is a delegate model, not
+	// the orchestrator's own model).
 	pi.on("session_shutdown", async (_event, ctx) => {
 		try {
 			clearPlanPanel(ctx);
 		} catch (err) {
 			debugLog("session_shutdown: failed to clear plan panel", err);
+		}
+		if (!isSubagentLoad) {
+			try {
+				const m = (ctx as any)?.model;
+				const modelId = typeof m === "string" ? m : (m?.id ?? m?.model ?? "");
+				if (modelId) {
+					recordOrchestratorModel(modelId, Date.now());
+				}
+			} catch (err) {
+				debugLog("session_shutdown: failed to record orchestrator model", err);
+			}
 		}
 	});
 

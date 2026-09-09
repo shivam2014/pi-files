@@ -10,7 +10,22 @@ import { type Specialist } from "./types.ts";
 export const CLARIFICATION_PROTOCOL = `follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info"`;
 
 /**
- * Shared ## Findings + ## Audit template — used by ALL specialist output formats.
+ * Difficulty signal template — the subagent's self-reported escalation signal.
+ * Emitted at the end of every \`## Findings\` report so the orchestrator can
+ * scale its routing (start cheap, escalate only on difficulty).
+ *
+ * Contract (PART A): exploration/uncertainty/iteration in {low,medium,high},
+ * verification in {pass,fail}, recommend in {none,review,investigate,plan}.
+ */
+export const DIFFICULTY_TEMPLATE = `## Difficulty
+- exploration: low|medium|high    # how many files/modules had to be read to understand the task
+- uncertainty: low|medium|high     # ambiguity, unresolved questions, "need more context"
+- verification: pass|fail          # did the edit/result pass lint/test/self-check
+- iteration: low|medium|high       # how many turns/revisions were needed
+- recommend: none|review|investigate|plan   # the subagent's own escalation recommendation`;
+
+/**
+ * Shared ## Findings + ## Audit + ## Difficulty template — used by ALL specialist output formats.
  * Single source of truth for the post-work structured reporting sections.
  */
 export const FINDINGS_AUDIT_TEMPLATE = `## Findings
@@ -25,7 +40,9 @@ Before finishing, note any problems encountered and how you handled them:
 - problems: [list issues hit during execution, e.g. "file not found", "permission denied", "tool error"]
 - resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
 - scope_stayed: [yes/no — did you stay within the assigned task?]
-- scope_notes: [if no, what you deviated from and why]`;
+- scope_notes: [if no, what you deviated from and why]
+
+${DIFFICULTY_TEMPLATE}`;
 
 /**
  * Headings that count as a deliverable for the no-work heuristic.
@@ -299,6 +316,17 @@ Before finishing, note any problems encountered and how you handled them:
 - resolution: [how each problem was handled, e.g. "used alternative path", "retried with different approach", "skipped — not critical"]
 - scope_stayed: [yes/no — did you stay within the assigned task?]
 - scope_notes: [if no, what you deviated from and why]
+
+${DIFFICULTY_TEMPLATE}
+
+## Fill the Difficulty block honestly
+Assess the real work you did, not the ideal — the orchestrator uses this to decide whether to escalate, so an honest report keeps trivial tasks cheap:
+- exploration: low if you read 1-2 files; medium if 3-5; high if you mapped many modules or the structure was unfamiliar.
+- uncertainty: low if the task was clear end-to-end; medium if you had real ambiguity; high if you were guessing, had unresolved questions, or needed more context mid-way.
+- verification: pass if lint/test/self-check confirmed your edit; fail if verification broke and you could not confirm the result.
+- iteration: low if done in one pass; medium if you needed a few revisions; high if you looped many turns or rewrote substantial sections.
+- recommend: none if complete and clean; review if a second set of eyes is warranted; investigate if you are unsure of the right approach or need more exploration; plan if the task needs multi-step design before coding.
+Do NOT inflate the numbers. Low difficulty is a valid, honest outcome.
 
 You do NOT have: git-read, gh, web_search, fetch_content.
 

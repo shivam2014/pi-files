@@ -60,11 +60,15 @@ const mockResolveScope = vi.hoisted(() => vi.fn((params, specialistDef, cwd) => 
   if (isReadOnly) return { filesToModify: [], filesToCreate: [], directories: [], maxFiles: 10, requiresApprovalBeyondScope: false, changeType: 'multi-file', maxLinesPerFile: 400, gateMode: 'relaxed' };
   return null;
 }));
+const mockCreateDelegationScope = vi.hoisted(() => vi.fn(() => "delegation-id"));
+const mockClearDelegationScope = vi.hoisted(() => vi.fn());
 vi.mock("./scope-manager.ts", () => ({
   ScopeManager: Object.assign(
     vi.fn(function() { return { writeScope: vi.fn(), clearScope: mockClearScope }; }),
     { resolveScope: mockResolveScope }
   ),
+  createDelegationScope: mockCreateDelegationScope,
+  clearDelegationScope: mockClearDelegationScope,
 }));
 
 vi.mock("./ask-resolver.ts", () => ({
@@ -81,6 +85,22 @@ vi.mock("./spinner-state.ts", () => ({
   SPINNER_FRAMES: ["⠋", "⠙", "⠹"],
   currentFrame: vi.fn(() => "⠋"),
 }));
+
+// Mock orchestrator-config so getSessionMode/loadOrchestratorConfig are deterministic and
+// the test does NOT depend on the real ~/.pi/agent/orchestrator.yml. Its delegation.mode may
+// be "parallel", which would flip the pipeline into parallel mode and invoke createDelegationScope
+// (previously the mode was always "sequential" because config was never loaded).
+const mockGetSessionMode = vi.hoisted(() => vi.fn(() => "sequential"));
+vi.mock("./orchestrator-config", async () => {
+  const actual = await vi.importActual<typeof import("./orchestrator-config")>("./orchestrator-config");
+  return {
+    ...actual,
+    getSessionMode: (...args: any[]) => mockGetSessionMode(...args as []),
+    loadOrchestratorConfig: vi.fn(() => ({
+      delegation: { parallel: { maxConcurrent: 4, timeoutMs: 600000 } },
+    })),
+  };
+});
 
 function createMockCtx(overrides: Record<string, unknown> = {}) {
   return { cwd: "/test/project", modelRegistry: {}, model: "test-model", ...overrides };

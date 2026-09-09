@@ -140,14 +140,14 @@ export function loadOrchestratorConfig(): OrchestratorConfig {
 	const configPath = _configPath();
 
 	if (!existsSync(configPath)) {
-		return structuredClone(DEFAULTS);
+		return syncDefaultMode(structuredClone(DEFAULTS));
 	}
 
 	let raw: string;
 	try {
 		raw = readFileSync(configPath, "utf-8");
 	} catch {
-		return structuredClone(DEFAULTS);
+		return syncDefaultMode(structuredClone(DEFAULTS));
 	}
 
 	let parsed: Record<string, any>;
@@ -155,10 +155,22 @@ export function loadOrchestratorConfig(): OrchestratorConfig {
 		parsed = _parseYaml(raw);
 	} catch (err: any) {
 		console.warn("orchestrator-config: malformed YAML, using defaults", err?.message ?? err);
-		return structuredClone(DEFAULTS);
+		return syncDefaultMode(structuredClone(DEFAULTS));
 	}
 
-	return fillDefaults(parsed);
+	return syncDefaultMode(fillDefaults(parsed));
+}
+
+/**
+ * Sync the module-level effective default delegation mode (`_currentDefaultMode`) with
+ * the resolved config, then return the config. This is what makes `delegation.mode` in
+ * orchestrator.yml the effective default for headless/orchestrated runs. Previously
+ * `_currentDefaultMode` was frozen at DEFAULTS.delegation.mode and never loaded from config,
+ * so `delegation.mode: parallel` was dead code outside the TUI /delegate-mode command.
+ */
+function syncDefaultMode(config: OrchestratorConfig): OrchestratorConfig {
+	_currentDefaultMode = config.delegation.mode;
+	return config;
 }
 
 function fillDefaults(parsed: Record<string, any>): OrchestratorConfig {
@@ -241,6 +253,10 @@ export function saveOrchestratorConfig(config: OrchestratorConfig): void {
 
 	lines.push("");
 	writeFileSync(configPath, lines.join("\n"), "utf-8");
+
+	// Keep the module-level effective default in sync with the persisted config so
+	// headless/orchestrated runs pick up a change made via /delegate-mode without a reload.
+	_currentDefaultMode = config.delegation.mode;
 }
 
 /**

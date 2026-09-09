@@ -5,7 +5,7 @@
 import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext, BatchDelegationEntry } from "./types.ts";
 import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills, DELIVERABLE_MARKERS, isReadOnlySpecialist } from "./specialists.ts";
 import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
-import { runSubagent, ERROR_MARKER, ABORT_MARKER, type OrchestratorUi } from "./subagent-runner.ts";
+import { runSubagent, ERROR_MARKER, ABORT_MARKER, PROVIDER_RETRY_MAX_ATTEMPTS, providerBackoffDelayMs, type OrchestratorUi } from "./subagent-runner.ts";
 import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
 import { debugLog } from "./debug.ts";
 import { hidePeek, clearViewerState } from "./peek-overlay.ts";
@@ -18,6 +18,82 @@ import os from "os";
 import { statusIcon, styledSymbol, getTheme } from "./orchestrator-theme.ts";
 import { getSessionMode, loadOrchestratorConfig } from "./orchestrator-config";
 import { sanitizeOutputForOrchestrator as sanitizeOutputShared } from "./activity-feed.ts";
+import { DELEGATION_OUTCOME, classifyProviderFailure, type DelegationOutcome } from "./outcome.ts";
+
+// ── Delegation outcome mapping (canonical taxonomy from outcome.ts) ───────────
+
+/** Observable signals the pipeline maps onto a DELEGATION_OUTCOME. */
+export interface DelegationOutcomeInputs {
+	status?: 'completed' | 'error' | 'aborted';
+	stopReason?: string;
+	errorMessage?: string;
+	/** ProgressState from ProgressDetector (HEALTHY | DEGRADED | STALLED). */
+	progressState?: string;
+	/** Provider/infra failures observed in the final detector window. */
+	providerFailures?: number;
+	/** Unresolved ask_orchestrator questions — delegation blocked on orchestrator input. */
+	blocked?: boolean;
+	/** Delegation timeout ceiling hit (AbortSignal.timeout fired). */
+	timedOut?: boolean;
+	/** Coder/writer finished with zero work (no tool calls, no deliverable). */
+	noWork?: boolean;
+	/** True when the runner terminated after an unanswered stall nudge. */
+	stallTerminated?: boolean;
+}
+
+/**
+ * Map observable SubagentResult signals to the canonical DELEGATION_OUTCOME.
+ *
+ * Priority order:
+ *  1. PROVIDER_FAILURE — provider/infra faults are classified FIRST so they can
+ *     NEVER be mapped to agent stuckness (stalled_no_progress).
+ *  2. RESOURCE_LIMIT  — timeout/ceiling hit.
+ *  3. BLOCKED         — subagent asked the orchestrator and got no resolution.
+ *  4. STALLED_NO_PROGRESS — detector says STALLED with zero provider failures
+ *     (agent-level stuckness only; guarded against provider faults).
+ *  5. INCOMPLETE      — aborted / errored / stopped early / no-work.
+ *  6. DONE            — clean completion with a deliverable.
+ */
+export function classifyDelegationOutcome(i: DelegationOutcomeInputs): DelegationOutcome {
+	const O = DELEGATION_OUTCOME;
+
+	// 1. Provider/infra faults first — never read as agent stuckness.
+	if (i.status === 'error' && classifyProviderFailure(i.errorMessage)) {
+		return O.PROVIDER_FAILURE;
+	}
+
+	// 2. Resource ceilings (delegation timeout backstop fired).
+	if (i.timedOut) {
+		return O.RESOURCE_LIMIT;
+	}
+
+	// 3. Blocked on orchestrator input.
+	if (i.blocked) {
+		return O.BLOCKED;
+	}
+
+	// 4. Agent-level stall — requires a STALLED detector state AND no provider
+	//    failures in the window (a provider-only window is DEGRADED upstream and
+	//    must route to provider_failure, not stalled_no_progress).
+	if (i.progressState === 'STALLED' && (i.providerFailures ?? 0) === 0 && i.status !== 'completed') {
+		return O.STALLED_NO_PROGRESS;
+	}
+	if (i.progressState === 'STALLED' && (i.providerFailures ?? 0) === 0 && i.status === 'completed' && i.stallTerminated === true) {
+		// Completed but terminated after an unanswered stall nudge — still an
+		// agent-level stall outcome. A completed run WITHOUT termination is a
+		// success even if the detector window went silent during report writing
+		// (C1 guard): it falls through to DONE below.
+		return O.STALLED_NO_PROGRESS;
+	}
+
+	// 5. Aborted / stopped early / no-work.
+	if (i.status === 'aborted') return O.INCOMPLETE;
+	if (i.status === 'error') return O.INCOMPLETE;
+	if (i.noWork) return O.INCOMPLETE;
+
+	// 6. Clean completion.
+	return O.DONE;
+}
 
 
 /**
@@ -33,6 +109,35 @@ function extractFindingsText(output: string | undefined): string | undefined {
 	const nextHeading = output.indexOf('\n## ', afterHeading + 1);
 	if (nextHeading === -1) return output.slice(idx).trim();
 	return output.slice(idx, nextHeading).trim();
+}
+
+/**
+ * Difficulty signal contract (PART A) — the subagent's self-reported escalation signal.
+ * Emitted at the end of the \`## Findings\` report (see \`## Difficulty\` block).
+ * Each field is the literal string the subagent emitted; empty string when absent.
+ */
+export interface DifficultySignal {
+	exploration: 'low' | 'medium' | 'high' | '';
+	uncertainty: 'low' | 'medium' | 'high' | '';
+	verification: 'pass' | 'fail' | '';
+	iteration: 'low' | 'medium' | 'high' | '';
+	recommend: 'none' | 'review' | 'investigate' | 'plan' | '';
+}
+
+/**
+ * Format a DifficultySignal for the delegate output the orchestrator sees.
+ * Falls back to a neutral value (\`[Difficulty: not reported]\`) when the block is absent
+ * or empty — the orchestrator treats this as "no escalation signal".
+ */
+export function formatDifficultySignal(d: DifficultySignal | null): string {
+	if (!d) return '[Difficulty: not reported]';
+	const parts: string[] = [];
+	if (d.exploration) parts.push(`exploration=${d.exploration}`);
+	if (d.uncertainty) parts.push(`uncertainty=${d.uncertainty}`);
+	if (d.verification) parts.push(`verification=${d.verification}`);
+	if (d.iteration) parts.push(`iteration=${d.iteration}`);
+	if (d.recommend) parts.push(`recommend=${d.recommend}`);
+	return parts.length > 0 ? `[Difficulty: ${parts.join(', ')}]` : '[Difficulty: not reported]';
 }
 
 /** Result type returned by executeDelegate */
@@ -140,8 +245,13 @@ export class DelegatePipeline {
 
 		// ── Timeout signal: combine user signal with config timeout ──
 		const timeoutMs = ctx.config?.delegation?.parallel?.timeoutMs;
+		// Hold the timeout signal so we can attribute aborts: a timeout-ceiling abort
+		// maps to RESOURCE_LIMIT, a user abort maps to INCOMPLETE.
+		let timedOut = false;
+		const timeoutSignal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+		timeoutSignal?.addEventListener("abort", () => { timedOut = true; }, { once: true });
 		const effectiveSignal = timeoutMs
-			? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)].filter(Boolean) as AbortSignal[])
+			? AbortSignal.any([signal, timeoutSignal].filter(Boolean) as AbortSignal[])
 			: signal;
 
 		// ── Resolve scope (pure) ──
@@ -249,12 +359,35 @@ export class DelegatePipeline {
 		    ? params.task + "\n\n## Acceptance Tests\nAfter implementing, describe acceptance tests (vitest assertions, plain text) that verify your work:\n- Happy path — confirm feature works as expected\n- Edge cases — boundary conditions are handled\n- Regression (if fixing a bug) — fix stays effective\n\nInclude these as plain-text assertions under a ## Acceptance Tests section in your output. Do NOT use the plan() tool.\n"
 		    : params.task;
 
-		const result = await runSubagent(
-			specialist, effectiveTask, ctx.cwd,
-			parentCtx,
-			effectiveSignal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
-			ctx, // orchestratorCtx: thread session context to plan-panel calls
-		);
+		// ── Run subagent with provider-failure retry OUTSIDE the agent loop ──
+		// A stop-reason-level provider fault (5xx, rate-limit, timeout) is retried by
+		// re-running the delegation after exponential backoff — a fresh session per
+		// attempt. These retries NEVER consume agent turns and are NEVER mapped to
+		// agent stuckness (stalled_no_progress). Auth failures are not retried.
+		let providerRetryAttempts = 0;
+		let result;
+		for (;;) {
+			result = await runSubagent(
+				specialist, effectiveTask, ctx.cwd,
+				parentCtx,
+				effectiveSignal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
+				ctx, // orchestratorCtx: thread session context to plan-panel calls
+			);
+			const providerKind = result?.status === "error"
+				? classifyProviderFailure(result?.errorMessage)
+				: null;
+			if (providerKind && providerRetryAttempts < PROVIDER_RETRY_MAX_ATTEMPTS) {
+				providerRetryAttempts++;
+				debugLog("[provider-retry] pipeline backoff retry", { kind: providerKind, attempt: providerRetryAttempts });
+				onUpdate?.({
+					content: [{ type: "text", text: `${currentFrame()} ↻ ${specialist.name} provider failure (${providerKind}) — retry ${providerRetryAttempts}/${PROVIDER_RETRY_MAX_ATTEMPTS} after backoff` }],
+					details: { status: "running", specialist: specialist.name, providerRetry: providerRetryAttempts },
+				});
+				await new Promise<void>(r => setTimeout(r, providerBackoffDelayMs(providerRetryAttempts - 1)));
+				continue;
+			}
+			break;
+		}
 		const elapsedMs = Date.now() - startTime;
 
 		// Surface any questions the subagent couldn't resolve
@@ -288,7 +421,10 @@ export class DelegatePipeline {
 		// BUG-4: single source of truth — the runner's finalStatus, not output sniffing
 		const isAborted = (effectiveSignal?.aborted || false) || result?.status === "aborted" || (result?.output?.startsWith(ABORT_MARKER) ?? false);
 		let isError = !result || !result.output || result.output.startsWith(ERROR_MARKER) || result.output.startsWith(ABORT_MARKER)
-			|| result?.status === "error" || result?.stopReason === "error";
+			|| result?.status === "error" || result?.stopReason === "error"
+			// A stall-terminated delegation is NOT a successful completion — the plan
+			// step must NOT auto-advance (same semantics as other failures).
+			|| result?.stallTerminated === true;
 		let hasError = isAborted || isError;
 
 		// ── No-work detection for coder/writer ──
@@ -312,6 +448,19 @@ export class DelegatePipeline {
 			result.stopReason = result.stopReason ?? "no-work";
 			result.output = `⚠ ${result.errorMessage} Plan step NOT advanced.`;
 		}
+
+		// ── Canonical outcome mapping (see classifyDelegationOutcome) ──
+		const outcome = classifyDelegationOutcome({
+			status: result?.status,
+			stopReason: result?.stopReason,
+			errorMessage: result?.errorMessage,
+			progressState: result?.progressState,
+			providerFailures: result?.providerFailures,
+			blocked: pendingQuestions.length > 0,
+			timedOut,
+			noWork: isNoWork,
+			stallTerminated: result?.stallTerminated === true,
+		});
 
 		// ── Handle diagnostics (capture + persist, no UI) ──
 		const diagnostic = this.handleDiagnostics(result, specialist.name, params.task, ctx, metrics, startTime);
@@ -391,6 +540,8 @@ export class DelegatePipeline {
 					result.output, metrics, elapsedMs,
 					result.toolCallTrail || [], result.turns || 0,
 					false, false,
+					undefined, undefined,
+					outcome,
 				);
 			} else if (result?.output) {
 				// Error/abort path
@@ -400,6 +551,7 @@ export class DelegatePipeline {
 					isAborted, isError,
 					result?.errorMessage,
 					result?.stopReason,
+					outcome,
 				);
 			}
 
@@ -452,6 +604,11 @@ export class DelegatePipeline {
 			elapsedMs,
 			stopReason: result?.stopReason,
 			errorMessage: result?.errorMessage,
+			outcome,
+			progressState: result?.progressState,
+			providerFailures: result?.providerFailures,
+			stallTerminated: result?.stallTerminated === true ? true : undefined,
+			providerRetries: result?.providerRetries,
 			toolCalls: result?.toolCallTrail?.length ?? 0,
 			lastAssistantMessage: result?.lastAssistantMessage ? result.lastAssistantMessage.slice(0, 500) : undefined,
 			planSteps: result?.planSteps,
@@ -697,13 +854,14 @@ export class DelegatePipeline {
 		isError: boolean,
 		errorMessage?: string,
 		stopReason?: string,
+		outcome?: DelegationOutcome,
 	): string {
 		if (isAborted || isError) {
-			return DelegatePipeline.formatErrorAbort(output, toolCallTrail, turns, isAborted, errorMessage, stopReason);
+			return DelegatePipeline.formatErrorAbort(output, toolCallTrail, turns, isAborted, errorMessage, stopReason, outcome);
 		}
 		// Output hygiene: strip raw JSON tool-result blocks when report exists
 		const cleaned = DelegatePipeline.sanitizeOutputForOrchestrator(output);
-		return DelegatePipeline.formatSuccess(cleaned, metrics, elapsedMs, toolCallTrail, turns);
+		return DelegatePipeline.formatSuccess(cleaned, metrics, elapsedMs, toolCallTrail, turns, outcome);
 	}
 
 	/**
@@ -715,6 +873,7 @@ export class DelegatePipeline {
 		elapsedMs: number,
 		toolCallTrail: any[],
 		turns: number,
+		outcome?: DelegationOutcome,
 	): string {
 		let result = output;
 
@@ -728,11 +887,18 @@ export class DelegatePipeline {
 			result = summaryParts.join('\n') + '\n\n' + result;
 		}
 
+		// Prepend difficulty signal (adaptive escalation) — default to neutral when absent
+		const difficulty = DelegatePipeline.extractDifficultyFromOutput(result);
+		result = formatDifficultySignal(difficulty) + '\n\n' + result;
+
 		// Prepend execution metadata
 		const execStatus = result?.startsWith(ERROR_MARKER) ? "error" : "ok";
 		const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${turns}, status=${execStatus}]`];
 		if (execStatus === "error") {
 			execMeta.push(`[Error: ${result.slice(0, 200)}]`);
+		}
+		if (outcome) {
+			execMeta.push(`[Outcome: ${outcome}]`);
 		}
 		result = execMeta.join('\n') + '\n\n' + result;
 
@@ -775,6 +941,7 @@ export class DelegatePipeline {
 		isAborted: boolean,
 		errorMessage?: string,
 		stopReason?: string,
+		outcome?: DelegationOutcome,
 	): string {
 		const toolCalls = toolCallTrail?.length ?? 0;
 		const turnWord = turns === 1 ? "turn" : "turns";
@@ -785,14 +952,15 @@ export class DelegatePipeline {
 			trailStr = "\nCompleted tool calls:\n" + toolCallTrail.map(t => `${t.completed ? statusIcon('completed') : getTheme().fg('warning', styledSymbol('status.warning'))} ${t.tool}`).join("\n");
 		}
 
+		const outcomeTag = outcome ? ` [outcome: ${outcome}]` : "";
 		const statusNote = isAborted
-			? `${statusIcon('aborted')} Aborted — interrupted by user (${turns} ${turnWord}, ${toolCalls} ${toolWord})`
-			: `${statusIcon('error')} Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
+			? `${statusIcon('aborted')} Aborted — ${outcome === DELEGATION_OUTCOME.RESOURCE_LIMIT ? 'resource limit (timeout ceiling)' : 'interrupted by user'} (${turns} ${turnWord}, ${toolCalls} ${toolWord})`
+			: `${statusIcon('error')} Error (${turns} ${turnWord}, ${toolCalls} ${toolWord})${outcomeTag}`;
 
 		// Error banner that the orchestrator cannot ignore
 		const errorBanner = isAborted
-			? `\n⚠ DELEGATION ABORTED — partial results below. Do not trust partial data without verifying.\n`
-			: `\n⚠ DELEGATION FAILED — status:${stopReason || 'unknown'} — ${errorMessage || 'no error message'}\nPartial results exist but may be incomplete or corrupted. Retry or escalate.\n`;
+			? `\n⚠ DELEGATION ABORTED — partial results below. Do not trust partial data without verifying.${outcomeTag}\n`
+			: `\n⚠ DELEGATION FAILED — status:${stopReason || 'unknown'} — ${errorMessage || 'no error message'}${outcomeTag}\nPartial results exist but may be incomplete or corrupted. Retry or escalate.\n`;
 
 		return `${statusNote}${trailStr}\n${errorBanner}\n${output}`;
 	}
@@ -824,6 +992,29 @@ export class DelegatePipeline {
 	}
 
 	/**
+	 * Extract the `## Difficulty` block into a structured DifficultySignal.
+	 * Returns null when no `## Difficulty` block is present — callers surface the
+	 * neutral `[Difficulty: not reported]` fallback via formatDifficultySignal.
+	 */
+	static extractDifficultyFromOutput(output: string): DifficultySignal | null {
+		const diffMatch = output.match(/##\s+Difficulty\s*\n([\s\S]*?)(?:\n##\s+|\n---|\n*$)/);
+		if (!diffMatch) return null;
+		const block = diffMatch[1];
+		// Capture the value up to end-of-line or a trailing `#` comment.
+		const extract = (key: string): string => {
+			const m = block.match(new RegExp(`-?\\s*${key}:\\s*([^\\n#]+)`, 'i'));
+			return m ? m[1].trim() : '';
+		};
+		return {
+			exploration: extract('exploration') as DifficultySignal['exploration'],
+			uncertainty: extract('uncertainty') as DifficultySignal['uncertainty'],
+			verification: extract('verification') as DifficultySignal['verification'],
+			iteration: extract('iteration') as DifficultySignal['iteration'],
+			recommend: extract('recommend') as DifficultySignal['recommend'],
+		};
+	}
+
+	/**
 	 * Output hygiene: when a structured report exists in the output, strip raw
 	 * JSON tool-result blocks and `[tool result]` markers that burn context tokens.
 	 * When no report exists, leave output as-is (already diagnostic/salvaged).
@@ -842,6 +1033,10 @@ export function extractFindingsFromOutput(output: string) {
 	return DelegatePipeline.extractFindingsFromOutput(output);
 }
 
+export function extractDifficultyFromOutput(output: string): DifficultySignal | null {
+	return DelegatePipeline.extractDifficultyFromOutput(output);
+}
+
 
 
 export interface FormatResultParams {
@@ -857,6 +1052,7 @@ export interface FormatResultParams {
 export function formatResult(params: FormatResultParams): {
 	formatted: string;
 	findings: ReturnType<typeof extractFindingsFromOutput>;
+	difficulty: DifficultySignal | null;
 	audit: { problems: string[]; resolution: string[] } | null;
 } {
 	const { output, metrics, elapsed, turns, toolCalls, status, toolCallTrail } = params;
@@ -893,6 +1089,10 @@ export function formatResult(params: FormatResultParams): {
 		findingsStr = `\n\n[Findings: ${findings.summary}]`;
 	}
 
+	// Adaptive escalation: surface the subagent's difficulty signal (neutral when absent).
+	const difficulty = extractDifficultyFromOutput(output);
+	const difficultyStr = `\n\n${formatDifficultySignal(difficulty)}`;
+
 	const audit = null;
 
 	let outputSection = output;
@@ -901,9 +1101,9 @@ export function formatResult(params: FormatResultParams): {
 		outputSection = `[Error: ${truncated}]`;
 	}
 
-	const formatted = `${statusLine}\n${metricsLine}${trailStr}${execStr}${findingsStr}\n\n${outputSection}`;
+	const formatted = `${statusLine}\n${metricsLine}${trailStr}${execStr}${findingsStr}${difficultyStr}\n\n${outputSection}`;
 
-	return { formatted, findings, audit };
+	return { formatted, findings, difficulty, audit };
 }
 
 export function sanitizeOutputForOrchestrator(output: string) {
