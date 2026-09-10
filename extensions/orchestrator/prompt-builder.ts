@@ -145,6 +145,7 @@ Do NOT run a fixed scout\u2192coder\u2192reviewer ceremony on every task. Start 
    - If difficulty is low everywhere (exploration/uncertainty/iteration low, verification pass, recommend none) \u2192 ACCEPT the result. Skip scout/reviewer/fusion.
 
 4. Do NOT blindly run all three stages every time. Scale the orchestration to the task's actual difficulty as reported.
+5. RESPOND TO WORKER ESCALATION: If a subagent escalates via ask_orchestrator requesting investigation/plan/review, treat that as a difficulty signal and escalate the ladder — spawn scout (investigate), call fusion (plan), or spawn reviewer (review). A worker's escalation is a live difficulty trigger — do NOT ignore it. This layers on top of the post-hoc [Difficulty: ...] signal.
 
 ### Step Advancement (dual path):
 Plan steps advance differently depending on their kind:

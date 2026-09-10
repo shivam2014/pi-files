@@ -76,6 +76,31 @@ Before each tool call, ask: what is the single smallest action that answers THIS
 Prefer ONE targeted command over reading many files. "Read issue #3" means run \`gh issue view 3\`, not read 8 source files to "understand context".
 If you have read more than 3 files without narrowing the question, STOP and call ask_orchestrator. Broad exploration is drift, not diligence.`;
 
+// ── Worker-initiated escalation — counted, objective budget thresholds ──
+// The worker cannot bias these: they are counted by the framework/tool-call log,
+// not self-reported (AG2 Escalation Pattern; avoids unreliable self-reported difficulty).
+export const ESCALATION_MAX_EXPLORATION_CALLS = 6;
+export const ESCALATION_MAX_FILES_TOUCHED = 5;
+export const ESCALATION_MAX_TURNS = 12;
+
+/**
+ * Hard budget escalation rule — injected into coder/scout prompts.
+ * A worker crossing the counted budget escalates UP via ask_orchestrator with a
+ * structured \`recommend: investigate\` request so the orchestrator knows to
+ * escalate the ladder (spawn a scout) rather than just answer.
+ */
+export const WORKER_ESCALATION_RULE = `## Hard Exploration Budget
+You have an exploration budget that is COUNTED and ENFORCED by the framework — crossing it forces escalation in code, regardless of what you report. If you cross MORE THAN ${ESCALATION_MAX_EXPLORATION_CALLS} exploration calls (read/grep/find/ls), or MORE THAN ${ESCALATION_MAX_FILES_TOUCHED} distinct files, or MORE THAN ${ESCALATION_MAX_TURNS} turns, STOP now and call ask_orchestrator to request a scout/investigation. This is a hard rule — do not silently keep exploring past the budget.
+
+Start by escalating: when you cross the budget, do NOT just answer in prose. Call ask_orchestrator directly with a structured escalation request carrying \`recommend: investigate\` so the orchestrator knows to escalate:
+\`\`\`
+ask_orchestrator({
+  question: "I've hit my exploration budget (${ESCALATION_MAX_EXPLORATION_CALLS} calls, ${ESCALATION_MAX_FILES_TOUCHED} files, ${ESCALATION_MAX_TURNS} turns) without converging. Requesting investigation.",
+  context: "<what you've explored and where you're stuck>"
+})
+\`\`\`
+The \`recommend: investigate\` signal tells the orchestrator to escalate the ladder (spawn a scout) rather than just answer you.`;
+
 /**
  * Activity feed instruction template.
  * Instructs subagents to use planSteps()/advanceStep() tools instead of text parsing.
@@ -205,6 +230,8 @@ You are a read-only investigator (inspects code, docs, data, configs - whatever 
 
 ${MINIMAL_ACTION}
 
+${WORKER_ESCALATION_RULE}
+
 Your job:
 - Be fast. Use \`grep\` tool to search code contents, \`find\` tool to locate files by name/pattern, \`ls\` tool to list directories, \`git-read\` to read git history, \`gh\` for GitHub CLI, then \`read\` key sections.
 - NEVER use \`cat\` — use the \`read\` tool instead.
@@ -292,6 +319,8 @@ Rules:
 - If the task is ambiguous, scope is unclear, or requirements are missing, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info". Self-serve from CONTEXT.md/docs/adr/code before asking.
 
 ${SCOPE_VIOLATION_GUIDANCE}
+
+${WORKER_ESCALATION_RULE}
 
 Output format:
 ## Completed

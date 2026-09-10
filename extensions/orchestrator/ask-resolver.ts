@@ -20,7 +20,6 @@ import type { Scope } from "./scope-manager.ts";
 type ScopeForResolve = Pick<Scope, "filesToModify" | "filesToCreate" | "boundaries"> & { directories?: string[] };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-
 export const CODE_EXTENSIONS = new Set([
 	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
 	".py", ".rb", ".go", ".rs", ".java", ".kt",
@@ -245,6 +244,35 @@ export function tryAnswerFromContext(question: string, recentContext: string | u
 }
 
 /**
+ * Worker escalation recommendation carried by an ask_orchestrator request.
+ * Mirrors the `recommend` field of the difficulty signal (PART A contract).
+ */
+export type EscalationRecommend = "investigate" | "plan" | "review";
+
+/**
+ * Detect a worker-initiated escalation signal in an ask_orchestrator
+ * question/context. Matches an explicit `recommend: investigate|plan|review`
+ * marker (the PART A contract) or the imperative "Requesting investigation"
+ * phrasing the WORKER_ESCALATION_RULE template emits.
+ *
+ * Returns null when the message is an ordinary clarification question — the
+ * caller then falls back to the plain "recorded" behaviour (no false positives).
+ */
+export function detectEscalationSignal(text: string): EscalationRecommend | null {
+	if (!text) return null;
+	const explicit = text.match(/\brecommend\s*[:=]\s*(investigate|plan|review)\b/i);
+	if (explicit) return explicit[1].toLowerCase() as EscalationRecommend;
+	const req = text.match(/\brequest(?:ing)?\s+(?:an?\s+)?(investigation|scout|plan|planning|review|reviewer)\b/i);
+	if (req) {
+		const w = req[1].toLowerCase();
+		if (w === "investigation" || w === "scout") return "investigate";
+		if (w === "plan" || w === "planning") return "plan";
+		if (w === "review" || w === "reviewer") return "review";
+	}
+	return null;
+}
+
+/**
  * Build the resolver that the subagent calls via ask_orchestrator.
  *
  * Resolution order:
@@ -278,7 +306,19 @@ export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[
 		const contextAnswer = tryAnswerFromContext(question, contextToSearch);
 		if (contextAnswer) return contextAnswer;
 
-		// 4. Escalate — record question in buffer so orchestrator can handle it
+		// 4. Escalate — surface a worker-initiated escalation as a difficulty signal,
+		//    so the orchestrator escalates the ladder instead of silently buffering it.
+		const escalation = detectEscalationSignal(combined);
+		if (escalation) {
+			if (questionBuffer) {
+				// Tag the buffered entry so the delegate output's `## Pending Questions`
+				// section carries the escalation signal to the orchestrator.
+				questionBuffer.push(`[escalation: recommend=${escalation}] ${question}`);
+			}
+			return `⚠ WORKER ESCALATION (recommend: ${escalation}). The subagent has hit its exploration budget or requested escalation. Orchestrator: escalate the ladder — investigate → spawn scout, plan → call fusion, review → spawn reviewer — do NOT just answer. Original question: ${question}`;
+		}
+
+		// 5. Ordinary question — record it for the orchestrator to handle next delegation.
 		if (questionBuffer) {
 			questionBuffer.push(question);
 		}

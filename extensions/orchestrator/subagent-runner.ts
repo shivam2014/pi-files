@@ -27,7 +27,8 @@ import type { Specialist, SubagentContext, Substep, DelegateControllerContext, D
 import { resolveSpecialistModel, DEFAULTS, getSessionModels } from "./orchestrator-config.ts";
 import { getLastOrchestratorModel } from "./orchestrator-model-state.ts";
 import type { Scope } from "./scope-manager.ts";
-import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS } from "./specialists.ts";
+import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS, ESCALATION_MAX_EXPLORATION_CALLS, ESCALATION_MAX_FILES_TOUCHED, ESCALATION_MAX_TURNS } from "./specialists.ts";
+import { extractDifficultyFromOutput } from "./delegate-pipeline.ts";
 import {
 	ActivityFeed,
 	toolCallToSubstep,
@@ -116,6 +117,160 @@ export const SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
  */
 export const ERROR_MARKER = "[error]";
 export const ABORT_MARKER = "[aborted]";
+
+// ─── Programmatic exploration-budget gate (PART A) ───────────────────────────
+// The budget is ENFORCED IN CODE from counted tool calls/turns — never from the
+// model's self-report. A subagent that crosses ESCALATION_MAX_* has its delegate
+// difficulty signal's `recommend` forced to `investigate`, so the model cannot
+// mask a budget breach by reporting `recommend=none`. Budget constants live in
+// specialists.ts (SSOT) and are only interpolated into prompt text there.
+
+/** Exploration tool names counted against the exploration budget. */
+export const EXPLORATION_TOOLS = ["read", "grep", "find", "ls"] as const;
+
+/**
+ * Kind of budget breach, classified by which threshold(s) were crossed (strict `>`):
+ *  - "substantive": exploration calls OR distinct files over budget — the worker
+ *    genuinely had to investigate widely / unfamiliar code → always escalates.
+ *  - "turns-only": ONLY the turns threshold crossed (exploration + files under
+ *    budget) — turns alone are weak evidence, so forcing is conditional on the
+ *    worker's own final difficulty.
+ *  - "none": under budget.
+ */
+export type BreachKind = "substantive" | "turns-only" | "none";
+
+/** Programmatic budget status computed from counted signals (not self-report). */
+export interface BudgetStatus {
+	/** True when ANY counted threshold is crossed. */
+	exceeded: boolean;
+	/** Which threshold(s) were crossed — drives the forcing rule. */
+	breachKind: BreachKind;
+	/** Human-readable reason(s) for the breach (empty when under budget). */
+	reason: string;
+	/** Sum of read+grep+find+ls tool calls. */
+	explorationCalls: number;
+	/** Number of distinct file paths touched (best-effort from tool args). */
+	distinctFiles: number;
+	/** Assistant turns taken. */
+	turns: number;
+}
+
+/**
+ * Best-effort extraction of a file path from a tool call's args.
+ * Returns undefined when the args carry no reliably-identifiable path — callers
+ * then fall back to the total tool-call count as the primary trigger.
+ */
+export function extractToolFilePath(_toolName: string, args: any): string | undefined {
+	if (!args || typeof args !== "object") return undefined;
+	const candidates = [
+		args.path, args.file, args.filePath, args.file_path, args.filename,
+		args.dir, args.directory,
+	];
+	for (const c of candidates) {
+		if (typeof c === "string" && c.trim().length > 0) return c.trim();
+	}
+	if (Array.isArray(args.paths)) {
+		const first = args.paths.find((p: unknown) => typeof p === "string" && p.trim().length > 0);
+		if (typeof first === "string") return first.trim();
+	}
+	return undefined;
+}
+
+/**
+ * Pure budget check: does the counted run cross ANY ESCALATION_MAX_* threshold?
+ * Uses strict `>` (matches the prompt contract "MORE THAN") so an exactly-at-budget
+ * run is NOT flagged. Also classifies the breach KIND so the forcing rule can treat
+ * a wide-exploration breach (always escalates) differently from a turns-only breach
+ * (escalates only when the final difficulty admits difficulty). Never mutates;
+ * fully testable.
+ */
+export function computeBudgetStatus(
+	counts: Record<string, number>,
+	distinctFiles: number,
+	turns: number,
+): BudgetStatus {
+	const explorationCalls = EXPLORATION_TOOLS.reduce((sum, t) => sum + (counts[t] ?? 0), 0);
+	const reasons: string[] = [];
+	const explorationBreach = explorationCalls > ESCALATION_MAX_EXPLORATION_CALLS;
+	const filesBreach = distinctFiles > ESCALATION_MAX_FILES_TOUCHED;
+	const turnsBreach = turns > ESCALATION_MAX_TURNS;
+	if (explorationBreach) {
+		reasons.push(`exploration calls ${explorationCalls} > ${ESCALATION_MAX_EXPLORATION_CALLS}`);
+	}
+	if (filesBreach) {
+		reasons.push(`distinct files ${distinctFiles} > ${ESCALATION_MAX_FILES_TOUCHED}`);
+	}
+	if (turnsBreach) {
+		reasons.push(`turns ${turns} > ${ESCALATION_MAX_TURNS}`);
+	}
+	// SUBSTANTIVE = the worker explored widely (calls) or touched many files.
+	// TURNS-ONLY = it merely took many turns, with exploration/files under budget.
+	const substantive = explorationBreach || filesBreach;
+	const breachKind: BreachKind = substantive ? "substantive" : turnsBreach ? "turns-only" : "none";
+	return {
+		exceeded: reasons.length > 0,
+		breachKind,
+		reason: reasons.join("; "),
+		explorationCalls,
+		distinctFiles,
+		turns,
+	};
+}
+
+/**
+ * Force the `recommend` value of the output's `## Difficulty` block, preserving
+ * all other fields. Appends a fresh block when the model omitted one, so the
+ * programmatic override always reaches the orchestrator's `[Difficulty: ...]` line.
+ */
+export function forceDifficultyRecommend(output: string, recommend: string): string {
+	const blockRe = /(##\s+Difficulty\s*\n)([\s\S]*?)(?=\n##\s+|\n---|$)/;
+	const m = output.match(blockRe);
+	if (m && m.index !== undefined) {
+		const header = m[1];
+		const body = m[2];
+		let newBody: string;
+		if (/^\s*-?\s*recommend\s*:/im.test(body)) {
+			newBody = body.replace(/^(\s*-?\s*recommend\s*:)\s*[^\n#]*/im, `$1 ${recommend}`);
+		} else {
+			newBody = body.replace(/\s*$/, "\n") + `- recommend: ${recommend}\n`;
+		}
+		const full = m[0];
+		return output.slice(0, m.index) + header + newBody + output.slice(m.index + full.length);
+	}
+	return `${output.replace(/\s*$/, "")}\n\n## Difficulty\n- recommend: ${recommend}\n`;
+}
+
+/**
+ * Decide whether a counted budget breach should FORCE `recommend=investigate`.
+ *
+ *   - SUBSTANTIVE breach (exploration calls OR distinct files over budget) →
+ *     ALWAYS force: wide investigation / unfamiliar code is the real signal.
+ *   - TURNS-ONLY breach (only the turn threshold crossed) → force ONLY when the
+ *     worker's FINAL difficulty admits difficulty: `verification: fail` OR
+ *     `uncertainty: high`. A turns-only breach with a clean report
+ *     (verification=pass, uncertainty=low/medium) is NOT forced — turns alone are
+ *     not evidence of difficulty and forcing on them over-escalated live runs.
+ *   - "none" → never force.
+ *
+ * Missing/absent difficulty on a turns-only breach is treated as "no admission"
+ * (do NOT force); there is nothing to corroborate the breach.
+ */
+export function shouldForceRecommend(
+	breachKind: BreachKind,
+	difficulty: { verification?: string; uncertainty?: string } | null | undefined,
+): boolean {
+	if (breachKind === "none") return false;
+	if (breachKind === "substantive") return true;
+	// turns-only: force only on a self-admitted hard signal.
+	const verification = (difficulty?.verification ?? "").toLowerCase();
+	const uncertainty = (difficulty?.uncertainty ?? "").toLowerCase();
+	return verification === "fail" || uncertainty === "high";
+}
+
+/** One-time wrap-up message injected when the counted budget is crossed. */
+export const BUDGET_WRAPUP_MESSAGE =
+	"You have exceeded your exploration budget. Stop exploring immediately \u2014 do NOT make further read/grep/find/ls calls. " +
+	"Summarise what you already have, write your ## Completed / ## Findings report now, and set `## Difficulty` recommend: investigate.";
 
 // ─── Delegate-model resolution (C2: no silent fallback to an expensive model) ───
 
@@ -530,6 +685,12 @@ export type SubagentResult = {
 	stallTerminated?: boolean;
 	/** Number of provider-failure retries performed OUTSIDE the agent loop. */
 	providerRetries?: number;
+	/** True when the counted exploration budget was crossed (programmatic gate). */
+	budgetExceeded?: boolean;
+	/** Kind of counted breach when one occurred (substantive | turns-only). */
+	budgetBreachKind?: BreachKind;
+	/** Reason(s) the budget was crossed (empty/undefined when under budget). */
+	budgetReason?: string;
 };
 
 /** Parameters for createFlightRecorderDump */
@@ -839,6 +1000,29 @@ export class SubagentRunner {
 			let lastAssistantMessage: string | undefined;
 			// Real per-tool call counts fed by tool_execution_start events (BUG-1)
 			const toolCallCounts: Record<string, number> = {};
+			// ── Programmatic budget watcher (PART A) — counted, NOT self-reported ──
+			const touchedFiles = new Set<string>();
+			let budgetExceeded = false;
+			let budgetBreachKind: BreachKind = "none";
+			let budgetReason = "";
+			let budgetNudgePending = false;
+			let budgetNudged = false;
+			// Recompute the counted budget from live counters; latches on first breach.
+			const checkBudget = () => {
+				if (budgetExceeded) return;
+				const status = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns);
+				if (status.exceeded) {
+					budgetExceeded = true;
+					budgetBreachKind = status.breachKind;
+					budgetReason = status.reason;
+					budgetNudgePending = true;
+					debugLog("[budget] exploration budget exceeded (programmatic)", status);
+					config.onUpdate?.({
+						content: [{ type: "text", text: `\u26a0 Budget exceeded: ${status.reason}` }],
+						details: { specialist: specialist.name, status: "budget_exceeded", budgetReason: status.reason },
+					});
+				}
+			};
 			let accInput = 0, accOutput = 0, accCached = 0, accCacheWrite = 0;
 			let ctxTokens = 0;
 			let ctxWindow: number | undefined;
@@ -905,6 +1089,7 @@ export class SubagentRunner {
 					try {
 					if (event.message?.role === "assistant") {
 						turns++;
+						checkBudget();
 						const assistantMsg = event.message as any;
 						lastStopReason = assistantMsg.stopReason;
 						lastErrorMessage = assistantMsg.errorMessage;
@@ -954,6 +1139,9 @@ export class SubagentRunner {
 					try {
 						if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") return;
 					toolCallCounts[event.toolName] = (toolCallCounts[event.toolName] ?? 0) + 1;
+					const touchedPath = extractToolFilePath(event.toolName, event.args);
+					if (touchedPath) touchedFiles.add(touchedPath);
+					checkBudget();
 					const substepLabel = toolCallToSubstep(event.toolName, event.args);
 					feed.addSubstep(substepLabel, event.toolCallId);
 					const extraDetail = substepToolDetail(event.toolName, event.args);
@@ -1206,6 +1394,23 @@ export class SubagentRunner {
 						await session.prompt("You stopped before completing the task. Continue: finish all remaining steps, then report the final result.");
 					}
 
+					// ── Programmatic budget wrap-up nudge (PART A.3b) ──
+					// When the counted budget was crossed mid-run, inject ONE wrap-up message
+					// so the subagent stops floundering and reports (it cannot bias this).
+					if (!cleanCompleteStop && budgetNudgePending && !budgetNudged) {
+						budgetNudged = true;
+						try {
+							recordTimelineFrame("intervention_budget_nudge", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
+							config.onUpdate?.({
+								content: [{ type: "text", text: feed.render(specialist.name) }],
+								details: { specialist: specialist.name, status: "budget_nudge", budgetReason },
+							});
+							await session.prompt(BUDGET_WRAPUP_MESSAGE);
+						} catch (e) {
+							debugLog("[budget] wrap-up nudge failed:", e);
+						}
+					}
+
 					// ── Graduated stall intervention: HEALTHY → DEGRADED → STALLED ──
 					// ONE facts-only nudge cap; terminate if STALLED persists past the nudge.
 					// Skipped for cleanCompleteStop (see C1 guard above).
@@ -1403,7 +1608,25 @@ export class SubagentRunner {
 			recordTimelineFrame("step_finalized", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
 
 			const cleaned = sanitizeOutputForOrchestrator(compressOutput(output || "(no output)"));
-			const finalOutput = truncateSubagentOutput(cleaned, OUTPUT_CAP);
+			let finalOutput = truncateSubagentOutput(cleaned, OUTPUT_CAP);
+			// ── Programmatic budget gate (PART A.3a): conditionally FORCE the signal ──
+			// A SUBSTANTIVE breach (exploration calls OR distinct files over budget)
+			// always overrides the model's self-reported `recommend`. A TURNS-ONLY
+			// breach forces only when the FINAL `## Difficulty` admits difficulty
+			// (verification=fail OR uncertainty=high) — a clean turns-only run keeps
+			// the model's own recommend (turns alone over-escalated live runs).
+			if (budgetExceeded) {
+				// Recompute from the FINAL counters so the kind reflects the whole run,
+				// not just the breach that first latched the wrap-up nudge.
+				const finalBudget = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns);
+				budgetBreachKind = finalBudget.breachKind;
+				// Parse the worker's own final difficulty (from the untruncated output).
+				const finalDifficulty = extractDifficultyFromOutput(output);
+				if (shouldForceRecommend(budgetBreachKind, finalDifficulty)) {
+					finalOutput = `\u26a0 [Budget Gate] ${budgetBreachKind} budget breach (${budgetReason}) \u2014 forcing recommend=investigate.\n\n` + finalOutput;
+					finalOutput = forceDifficultyRecommend(finalOutput, "investigate");
+				}
+			}
 
 			setViewerOutput(output);
 
@@ -1462,6 +1685,9 @@ export class SubagentRunner {
 				toolCalls: (session as any).getSessionStats?.().toolCalls ?? toolCallTrail.length,
 				model: (model as any)?.id ?? (model as any)?.model ?? undefined,
 				scopeNotes,
+				budgetExceeded: budgetExceeded || undefined,
+				budgetBreachKind: budgetExceeded ? budgetBreachKind : undefined,
+				budgetReason: budgetReason || undefined,
 				tokenUsage: { input: accInput, output: accOutput, cached: accCached },
 				hasLintFailures,
 				// ── Progress/stall + provider-failure summary from the observe-only detector ──
