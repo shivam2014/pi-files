@@ -6,6 +6,14 @@
  * 
  * Pattern: Async extension factory — pi awaits this before continuing startup.
  * See: docs/custom-provider.md
+ *
+ * DISABLED (2026): This extension is OFF by default. The user now uses
+ * opencode-go models directly, so nyro-sync no longer runs on startup and no
+ * longer fetches http://localhost:19530/v1/models (which logged
+ * "[nyro-sync] Sync failed: fetch failed" when the gateway was down).
+ *
+ * The extension is guarded behind an env flag and no-ops unless explicitly
+ * enabled. Re-enable with:  PI_NYRO_SYNC=1 pi ...
  */
 
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
@@ -147,6 +155,13 @@ function normalizeSchemaForMoonshot(schema: any): any {
 }
 
 export default async function (pi: ExtensionAPI): Promise<void> {
+  // DISABLED by default — see header. Only syncs when PI_NYRO_SYNC=1 is set.
+  // This prevents the startup fetch to localhost:19530 and the
+  // "[nyro-sync] Sync failed: fetch failed" error when the gateway is down.
+  if (process.env.PI_NYRO_SYNC !== "1") {
+    return;
+  }
+
   try {
     const res = await fetch(`${NYRO_BASE_URL}/models`);
     if (!res.ok) {

@@ -5,7 +5,7 @@
 ![Plan panel](docs/assets/plan-panel.png)
 ![Activity feed](docs/assets/activity-feed.png)
 
-> Real terminal renders, captured from the automated TUI smoke test.
+> Real terminal screenshots of pi running the orchestrator.
 
 ## What it does
 
@@ -49,7 +49,7 @@ pi gives you one agent and a context window. `pi-files` makes it work like a tea
 
 ## Evidence
 
-- **1144 tests passing** across 72 files, plus a clean typecheck.
+- **1170 tests passing** across 74 files, plus a clean typecheck.
 - **TUI smoke test: 9/9 checks** (plan panel, activity feed, specialist blocks, no crashes).
 - **8 extensions**, each with its own focused README.
 
