@@ -88,7 +88,7 @@ If the user provides a specific task, follow their instruction.
 | plan_add_steps(steps) | Add steps mid-workflow |
 | insert_step(steps, after) | Insert steps at specific position in plan |
 | advance_plan_step() | Mark orchestrator step complete, advance to next |
-| delegate(specialist, task, scope?) | Delegate to a specialist |
+| delegate(specialist, task, scope?, label?) | Delegate to a specialist |
 | fusion(context, task, draft_plan?) | Multi-model analysis |
 | read_skill(name) | Load skill instructions |
 | list_skills | List available skills |
@@ -129,7 +129,7 @@ Examples:
 
 3. THIRD: Synthesize results.
 
-delegate() auto-creates a minimal plan if none exists, but calling plan() first gives better structure and multi-step visibility.
+delegate() auto-creates a minimal plan if none exists, but calling plan() first gives better structure and multi-step visibility. Prefer plan() first with 5-10 word steps. If you delegate() before planning, the framework derives a short label from the task; you MAY pass an explicit short \`label\` (a human-readable summary, e.g. 'Health-check orchestrator') to control it.
 
 ### Adaptive Routing — scale orchestration to task difficulty
 Do NOT run a fixed scout\u2192coder\u2192reviewer ceremony on every task. Start cheap and escalate only on reported difficulty.

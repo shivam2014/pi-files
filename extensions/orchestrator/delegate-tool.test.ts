@@ -286,8 +286,8 @@ describe("delegate scope resolution", () => {
 
 			expect(mockSetupPlanPanel).toHaveBeenCalledOnce();
 			const [goal, steps] = mockSetupPlanPanel.mock.calls[0];
-			expect(goal).toBe("delegate to writer: write docs");
-			expect(steps).toEqual(["Writer: write docs"]);
+			expect(goal).toBe("delegate to writer: Write docs");
+			expect(steps).toEqual(["Writer: Write docs"]);
 		});
 
 		it("does NOT auto-create when hasActivePlan returns true", async () => {
@@ -307,7 +307,18 @@ describe("delegate scope resolution", () => {
 
 			expect(mockSetupPlanPanel).toHaveBeenCalledOnce();
 			const [goal] = mockSetupPlanPanel.mock.calls[0];
-			expect(goal).toBe("delegate to scout: find files");
+			expect(goal).toBe("delegate to scout: Find files");
+		});
+
+		it("uses an explicit label verbatim for the auto-created plan", async () => {
+			mockHasActivePlan.mockReturnValue(false);
+			vi.mocked(runSubagent).mockResolvedValueOnce({ output: "done", turns: 1 });
+
+			await execute({ specialist: "writer", task: "write extensive docs about the entire thing", label: "Docs pass" });
+
+			const [goal, steps] = mockSetupPlanPanel.mock.calls[0];
+			expect(goal).toBe("delegate to writer: Docs pass");
+			expect(steps).toEqual(["Writer: Docs pass"]);
 		});
 
 		it("delegation proceeds after auto-create", async () => {

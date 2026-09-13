@@ -23,6 +23,7 @@ import { join } from "path";
 
 import { subagentSessions } from "./subagent-sessions.ts";
 import { shortenLabel } from "../token-saver.ts";
+import { isLintableExtension } from "../lint-guard/lib/lint-guard-core.ts";
 import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics } from "./types.ts";
 import { resolveSpecialistModel, DEFAULTS, getSessionModels } from "./orchestrator-config.ts";
 import { getLastOrchestratorModel } from "./orchestrator-model-state.ts";
@@ -1000,6 +1001,9 @@ export class SubagentRunner {
 			let lastAssistantMessage: string | undefined;
 			// Real per-tool call counts fed by tool_execution_start events (BUG-1)
 			const toolCallCounts: Record<string, number> = {};
+			// FIX 4: remember edit/write target paths from the START event so the END
+			// event (which may omit args) can gate the lint substep correctly.
+			const editWritePaths = new Map<string, string>();
 			// ── Programmatic budget watcher (PART A) — counted, NOT self-reported ──
 			const touchedFiles = new Set<string>();
 			let budgetExceeded = false;
@@ -1144,6 +1148,10 @@ export class SubagentRunner {
 					checkBudget();
 					const substepLabel = toolCallToSubstep(event.toolName, event.args);
 					feed.addSubstep(substepLabel, event.toolCallId);
+					if ((event.toolName === "edit" || event.toolName === "write") && event.toolCallId) {
+						const startPath = (event as any).args?.filePath ?? (event as any).args?.path;
+						if (typeof startPath === "string" && startPath.length > 0) editWritePaths.set(event.toolCallId, startPath);
+					}
 					const extraDetail = substepToolDetail(event.toolName, event.args);
 					feed.setToolDetail(extraDetail ?? substepLabel);
 					recordTimelineFrame("tool_start", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
@@ -1267,7 +1275,18 @@ export class SubagentRunner {
 						feed.completeSubstepByToolCallId((event as any).toolCallId, outputPreview, isError);
 					}
 					if (!isError && (event.toolName === "edit" || event.toolName === "write")) {
-						feed.addSubstep(`lint: checking ${(event as any).arguments?.filePath ?? (event as any).arguments?.path ?? "files"}...`);
+						// FIX 4: only announce a lint substep when a linter can actually run on
+						// this file. SDK tool events carry the args in `.args`; accept
+						// `.arguments` too for safety. Skip entirely when the path is absent
+						// (never print "files").
+						const editArgs = (event as any).args ?? (event as any).arguments;
+						const editedPath =
+							editArgs?.filePath ??
+							editArgs?.path ??
+							(event.toolCallId ? editWritePaths.get(event.toolCallId) : undefined);
+						if (typeof editedPath === "string" && editedPath.length > 0 && isLintableExtension(editedPath)) {
+							feed.addSubstep(`lint: checking ${editedPath}...`);
+						}
 					}
 					recordTimelineFrame("tool_end", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
 					_lastFeedSnapshot = null;

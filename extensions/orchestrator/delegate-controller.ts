@@ -32,6 +32,7 @@ export async function executeDelegate(
 		task?: string;
 		skills?: string[];
 		scope?: Scope;
+		label?: string;
 		signal?: AbortSignal;
 		batch?: BatchDelegationEntry[];
 	},

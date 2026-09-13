@@ -700,8 +700,45 @@ describe("BUG regression loops — runner returns real metrics, status, planStep
 			readCalls: 1, grepCalls: 0, findCalls: 0,
 			editCalls: 1, writeCalls: 0, bashCalls: 2, lsCalls: 0,
 		});
-		// 4 tool calls + 1 auto-added `lint:` substep after the edit call
+		// 4 tool calls + 1 auto-added `lint:` substep (edit target a.ts is lintable)
 		expect(result.toolCallTrail).toHaveLength(5);
+		expect(result.toolCallTrail.some((t: { tool?: unknown }) => String(t.tool).startsWith("lint: checking a.ts"))).toBe(true);
+	});
+
+	it("FIX-4: lint substep only added for lintable files", { timeout: 15_000 }, async () => {
+		// .ts → lint substep present
+		{
+			const { ref, resolvePrompt, resultPromise } = createControllableRunner();
+			await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+			ref.subscribeCb!(toolStart("edit", "e1", { path: "src/a.ts", edits: [{ oldText: "x", newText: "y" }] }));
+			ref.subscribeCb!(toolEnd("edit", "e1"));
+			ref.subscribeCb!(assistantEnd("end_turn", "done"));
+			resolvePrompt();
+			const result = await resultPromise;
+			expect(result.toolCallTrail.some((t: { tool?: unknown }) => String(t.tool).startsWith("lint: checking"))).toBe(true);
+		}
+		// .md → no lint substep
+		{
+			const { ref, resolvePrompt, resultPromise } = createControllableRunner();
+			await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+			ref.subscribeCb!(toolStart("edit", "e1", { path: "docs/README.md", edits: [{ oldText: "x", newText: "y" }] }));
+			ref.subscribeCb!(toolEnd("edit", "e1"));
+			ref.subscribeCb!(assistantEnd("end_turn", "done"));
+			resolvePrompt();
+			const result = await resultPromise;
+			expect(result.toolCallTrail.some((t: { tool?: unknown }) => String(t.tool).startsWith("lint: checking"))).toBe(false);
+		}
+		// missing path → no lint substep, never prints "files"
+		{
+			const { ref, resolvePrompt, resultPromise } = createControllableRunner();
+			await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+			ref.subscribeCb!(toolStart("edit", "e1", { edits: [{ oldText: "x", newText: "y" }] }));
+			ref.subscribeCb!(toolEnd("edit", "e1"));
+			ref.subscribeCb!(assistantEnd("end_turn", "done"));
+			resolvePrompt();
+			const result = await resultPromise;
+			expect(result.toolCallTrail.some((t: { tool?: unknown }) => String(t.tool).includes("files"))).toBe(false);
+		}
 	});
 
 	it("BUG-3: flight-recorder dump snapshots plan steps AFTER auto-completion", { timeout: 15_000 }, async () => {

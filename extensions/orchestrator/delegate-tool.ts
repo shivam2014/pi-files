@@ -34,6 +34,9 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			task: Type.Optional(Type.String({
 				description: "Task description for the specialist to execute. Required when batch is not provided.",
 			})),
+			label: Type.Optional(Type.String({
+				description: "Optional short human-readable summary for the plan step label (e.g. 'Health-check orchestrator'). Omit and the framework derives a semantic label from the task.",
+			})),
 			skills: Type.Optional(Type.Array(Type.String(), {
 				description: "Override the specialist's default skill pack(s) for this delegation (e.g. ['tdd', 'review']). Replaces defaults, does not append.",
 			})),
@@ -68,6 +71,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			batch: Type.Optional(Type.Array(Type.Object({
 				specialist: Type.String({ description: "Specialist name for this batch entry" }),
 				task: Type.String({ description: "Task description for this batch entry" }),
+				label: Type.Optional(Type.String({ description: "Optional short human-readable summary for this entry's plan step label" })),
 				skills: Type.Optional(Type.Array(Type.String())),
 				scope: Type.Optional(Type.Object({
 					filesToModify: Type.Array(Type.String()),
@@ -91,6 +95,8 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			"Spawns a subagent specialist to do the work",
 			"Scope required for coder, writer — optional for scout, researcher, reviewer",
 			"Optional skills: delegate({ specialist: 'coder', task: '...', skills: ['tdd'] })",
+			"Optional label: delegate({ specialist: 'coder', task: '...', label: 'Health-check orchestrator' })",
+			"Prefer calling plan() first with 5-10 word steps; label only controls the auto-created step when no plan exists",
 			"Batch runs concurrent delegations — independent tasks only",
             "Output: Returns specialist output with findings, audit trail, and completion status; may include partial streaming updates during execution",
 		],
@@ -185,7 +191,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			}
 			// Single delegation mode
 			return executeDelegate(
-				{ specialist: params.specialist, task: params.task, skills: params.skills, scope: params.scope, signal },
+				{ specialist: params.specialist, task: params.task, skills: params.skills, scope: params.scope, label: params.label, signal },
 				ctx,
 				onUpdate,
 			);

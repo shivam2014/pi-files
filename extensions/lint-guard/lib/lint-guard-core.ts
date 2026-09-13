@@ -120,29 +120,40 @@ export function gradleTool(configDir: string): string {
 
 // ── detectFileType ────────────────────────────────────────────────────
 
+/**
+ * Single source of truth: extension → FileType mapping.
+ * The lintable-extension set and detectFileType() both derive from this, so a
+ * new supported language only has to be declared once.
+ */
+export const FILE_TYPE_BY_EXTENSION: Record<string, FileType> = {
+	ts: "typescript",
+	tsx: "typescript",
+	js: "javascript",
+	jsx: "javascript",
+	mjs: "javascript",
+	py: "python",
+	go: "go",
+	rs: "rust",
+	java: "java",
+	rb: "ruby",
+};
+
+/**
+ * Extensions lint-guard can lint. Derived from FILE_TYPE_BY_EXTENSION — import
+ * this (or isLintableExtension) instead of duplicating the list anywhere.
+ */
+export const LINTABLE_EXTENSIONS: string[] = Object.keys(FILE_TYPE_BY_EXTENSION);
+
+/** True when the file's extension is one lint-guard supports. */
+export function isLintableExtension(filePath: string | null | undefined): boolean {
+	if (!filePath) return false;
+	const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+	return Object.prototype.hasOwnProperty.call(FILE_TYPE_BY_EXTENSION, ext);
+}
+
 export function detectFileType(filePath: string): FileType | null {
-	const ext = filePath.split(".").pop()?.toLowerCase();
-	switch (ext) {
-		case "ts":
-		case "tsx":
-			return "typescript";
-		case "js":
-		case "jsx":
-		case "mjs":
-			return "javascript";
-		case "py":
-			return "python";
-		case "go":
-			return "go";
-		case "rs":
-			return "rust";
-		case "java":
-			return "java";
-		case "rb":
-			return "ruby";
-		default:
-			return null;
-	}
+	const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+	return FILE_TYPE_BY_EXTENSION[ext] ?? null;
 }
 
 // ── buildLintCommand ──────────────────────────────────────────────────

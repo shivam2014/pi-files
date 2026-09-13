@@ -315,6 +315,8 @@ export interface BatchDelegationEntry {
 	task: string;
 	skills?: string[];
 	scope?: Scope;
+	/** Optional short human-readable summary for this entry's plan step label. */
+	label?: string;
 }
 
 /** Aggregated result from a batch delegation */

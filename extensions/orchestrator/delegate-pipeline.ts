@@ -150,6 +150,100 @@ export interface ExecuteDelegateResult {
  * Full delegation pipeline — scope resolution, subagent execution, diagnostics,
  * result formatting, plan-panel lifecycle.
  */
+/**
+ * Hard cap for auto-created plan labels (matches the batch path's substring(0, 60)).
+ */
+export const AUTO_PLAN_LABEL_MAX = 60;
+
+/**
+ * Cap a label to `max` chars at a WORD boundary (never mid-word), appending an
+ * ellipsis. This is the LAST resort for the semantic compressor — it only runs
+ * when a clean clause still overflows the widget cap.
+ */
+export function capAtWordBoundary(s: string, max = AUTO_PLAN_LABEL_MAX): string {
+	const trimmed = s.replace(/\s+/g, " ").trim();
+	if (trimmed.length <= max) return trimmed;
+	const hard = trimmed.slice(0, max - 1); // leave room for the ellipsis
+	const lastSpace = hard.lastIndexOf(" ");
+	const wordSafe = lastSpace > 0 ? hard.slice(0, lastSpace) : hard;
+	return wordSafe.replace(/[\s\-–—:;,]+$/, "") + "…";
+}
+
+/**
+ * Semantic compression for auto-created plan labels.
+ *
+ * Unlike character truncation, this extracts the FIRST meaningful clause at a
+ * natural boundary — sentence end (`. `), em/en-dash, hyphen, colon, or
+ * newline — so the label reads as a real summary rather than a cut-off string.
+ * A word-boundary cut with an ellipsis is applied ONLY when the extracted
+ * clause still exceeds `max`.
+ */
+export function compressTaskToLabel(task: string, max = AUTO_PLAN_LABEL_MAX): string {
+	const normalized = task.replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").trim();
+	if (!normalized) return "task";
+
+	// Natural boundaries, earliest position wins.
+	const boundaries = ["\n", ". ", " — ", " – ", " - ", ": "];
+	let cut = -1;
+	for (const b of boundaries) {
+		const idx = normalized.indexOf(b);
+		if (idx !== -1 && (cut === -1 || idx < cut)) cut = idx;
+	}
+
+	let clause = cut === -1 ? normalized : normalized.slice(0, cut);
+
+	// A single-sentence task ends with a terminal period and no `. ` boundary.
+	clause = clause.replace(/[.]+$/, "");
+
+	// Strip wrapping punctuation/filler and collapse whitespace.
+	clause = clause
+		.replace(/^[\s\-–—:;,.]+/, "")
+		.replace(/[\s\-–—:;,]+$/, "")
+		.replace(/\s+/g, " ")
+		.trim();
+
+	if (!clause) return "task";
+
+	// Capitalize sensibly: upper-case the first character, leave the rest.
+	clause = clause.charAt(0).toUpperCase() + clause.slice(1);
+
+	// Last resort only: word-boundary cut + ellipsis.
+	return capAtWordBoundary(clause, max);
+}
+
+/**
+ * Build the auto-created plan goal + step label for an implicit delegation.
+ *
+ * Prefers an explicit `label` (the orchestrator's short summary) when supplied;
+ * otherwise derives a semantic summary from the raw task via
+ * compressTaskToLabel(). Never leaks the raw, unbounded task string.
+ */
+export function buildAutoPlanLabels(
+	specialistName: string,
+	specName: string,
+	task: string,
+	label?: string,
+): { stepLabel: string; autoGoal: string } {
+	const explicit = label?.trim();
+	const summary = explicit
+		? capAtWordBoundary(explicit.replace(/\s+/g, " "), AUTO_PLAN_LABEL_MAX)
+		: compressTaskToLabel(task, AUTO_PLAN_LABEL_MAX);
+	return {
+		stepLabel: capAtWordBoundary(`${specName}: ${summary}`, AUTO_PLAN_LABEL_MAX),
+		autoGoal: capAtWordBoundary(`delegate to ${specialistName}: ${summary}`, AUTO_PLAN_LABEL_MAX),
+	};
+}
+
+/**
+ * Single source of truth for a batch entry's plan step label. Mirrors the
+ * single-delegation path: semantic summary from the task, or the entry's
+ * explicit `label` when provided.
+ */
+export function buildBatchStepLabel(specialist: string, task: string, label?: string): string {
+	const specName = specialist.charAt(0).toUpperCase() + specialist.slice(1);
+	return buildAutoPlanLabels(specialist, specName, task, label).stepLabel;
+}
+
 export class DelegatePipeline {
 	constructor(private deps: { scopeManager: ScopeManager }) {}
 
@@ -162,7 +256,7 @@ export class DelegatePipeline {
 	 * @returns Result with content and details
 	 */
 	async run(
-		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal; parallel?: boolean; skipStepTracking?: boolean },
+		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal; parallel?: boolean; skipStepTracking?: boolean; label?: string },
 		ctx: DelegateControllerContext,
 		onUpdate: (update: any) => void,
 	): Promise<ExecuteDelegateResult> {
@@ -289,11 +383,11 @@ export class DelegatePipeline {
 
 		// ── Plan panel check ──
 		const specName = specialist.name.charAt(0).toUpperCase() + specialist.name.slice(1);
-		const stepLabel = `${specName}: ${params.task}`;
+		// FIX 1: shorten the raw task for both the step label and the auto goal.
+		const { stepLabel, autoGoal } = buildAutoPlanLabels(specialist.name, specName, params.task, params.label);
 
 		// Auto-create minimal plan if none exists
 		if (!hasActivePlan(ctx)) {
-			const autoGoal = `delegate to ${specialist.name}: ${params.task}`;
 			const autoSteps = [stepLabel];
 			setupPlanPanel(autoGoal, autoSteps, ctx);
 			debugLog('[delegate-pipeline] auto-created plan:', autoGoal);
@@ -669,7 +763,7 @@ export class DelegatePipeline {
 			// PRE-CREATE steps for each batch entry (sequential, not concurrent)
 			const stepIndices: number[] = [];
 			for (const entry of chunk) {
-				const stepLabel = `${entry.specialist}: ${entry.task.substring(0, 60)}`;
+				const stepLabel = buildBatchStepLabel(entry.specialist, entry.task, entry.label);
 				const idx = startDelegationStep(stepLabel, ctx, { isBatch: true });
 				stepIndices.push(idx);
 			}
@@ -685,6 +779,7 @@ export class DelegatePipeline {
 								task: entry.task,
 								skills: entry.skills,
 								scope: entry.scope,
+								label: entry.label,
 								signal,
 								parallel: true,
 								skipStepTracking: true,

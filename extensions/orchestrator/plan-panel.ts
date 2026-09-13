@@ -411,7 +411,11 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		result.push(`  … ${hiddenCount} more`);
 	}
 
-	return result;
+	// FIX 3: enforce the rendered-line budget. This function bounds the number of
+	// step GROUPS, but a single group can carry many substep lines, so the total
+	// rendered line count could still exceed the framework's widget cap. Hard-cap
+	// the returned lines; the goal line (index 0) is always retained.
+	return result.length > budget ? result.slice(0, budget) : result;
 }
 
 	private renderPlanLines(): string[] {

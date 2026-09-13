@@ -54,7 +54,7 @@ describe('buildOrchestratorPrompt', () => {
 		const result = buildOrchestratorPrompt({ basePrompt: '' });
 		expect(result.systemPrompt).toContain('## Capabilities');
 		expect(result.systemPrompt).toContain('Delegate only');
-		expect(result.systemPrompt).toContain('delegate(specialist, task, scope?)');
+		expect(result.systemPrompt).toContain('delegate(specialist, task, scope?, label?)');
 	});
 
 	it('includes specialist roster built from mock data', () => {
@@ -149,7 +149,7 @@ describe("appendix slimming (#39)", () => {
 		const basePrompt = "Some base instructions";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
 		// Must still contain delegation workflow
-		expect(systemPrompt).toContain("delegate(specialist, task, scope?)");
+		expect(systemPrompt).toContain("delegate(specialist, task, scope?, label?)");
 		expect(systemPrompt).toContain("Specialist roster");
 		expect(systemPrompt).toContain("Scope requirement");
 		expect(systemPrompt).toContain("Execution Monitoring");

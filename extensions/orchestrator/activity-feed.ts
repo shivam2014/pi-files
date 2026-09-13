@@ -12,6 +12,13 @@
 
 import type { ActivityFeedState, Step, Substep, PlanStep } from "./types.ts";
 import { styledSymbol, statusIcon, formatDuration as thFormatDuration, formatTokens, getTheme, partialStrikethrough, SYMBOLS } from "./orchestrator-theme.ts";
+import { capAtWordBoundary } from "./delegate-pipeline.ts";
+
+/**
+ * Max chars for the rendered goal line. Kept >= AUTO_PLAN_LABEL_MAX (60) so the
+ * semantically-compressed auto-goal passes through whole instead of being re-clipped.
+ */
+const MAX_GOAL_LABEL = 60;
 
 
 // ============================================================================
@@ -417,9 +424,9 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 			}
 			return `bash: ${cmd.slice(0, 100)}`;
 		case "grep":
-			return `Searching: ${input?.pattern || "..."}`;
+			return input?.pattern ? `Searching: ${input.pattern}` : "Searching";
 		case "find":
-			return `Finding: ${input?.pattern || "..."}`;
+			return input?.pattern ? `Finding: ${input.pattern}` : "Finding";
 		case "edit":
 			const edits = input?.edits;
 			return `Editing ${normalizePath(input?.path)}${Array.isArray(edits) ? ` (${edits.length} changes)` : ""}`;
@@ -433,7 +440,7 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 			return `Clarify: ${q ? q.slice(0, 80) + (q.length > 80 ? "..." : "") : "question"}`;
 		}
 		case "lint":
-			return `Linting ${normalizePath(input?.path || "files")}`;
+			return input?.path ? `Linting ${normalizePath(input.path)}` : "Linting";
 		case "typecheck":
 			return `Type checking...`;
 		case "web_search": {
@@ -563,7 +570,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 		// Goal line — use goalOverride if provided
 		const displayGoal = goalOverride ?? state.goal;
 		if (displayGoal) {
-			errorLines.push(`${styledSymbol("icon.goal")} ${displayGoal}`);
+			errorLines.push(`${styledSymbol("icon.goal")} ${capAtWordBoundary(displayGoal, MAX_GOAL_LABEL)}`);
 		}
 
 		if (total > 0) {
@@ -658,7 +665,7 @@ export function renderActivityFeed(_name: string, state: ActivityFeedState, goal
 	// Goal line — use goalOverride if provided
 	const displayGoal = goalOverride ?? state.goal;
 	if (displayGoal) {
-		lines.push(`${styledSymbol("icon.goal")} ${displayGoal}`);
+		lines.push(`${styledSymbol("icon.goal")} ${capAtWordBoundary(displayGoal, MAX_GOAL_LABEL)}`);
 	}
 
 	// No steps yet — show working indicator
