@@ -150,6 +150,9 @@ export default function (pi: ExtensionAPI) {
     );
 
     if (response.stopReason === "aborted") return "[Aborted]";
+    if (response.stopReason === "error") {
+      return `[vision error] ${response.errorMessage ?? "unknown"}`;
+    }
     return response.content
       .filter((c: any) => c.type === "text")
       .map((c: any) => c.text)
