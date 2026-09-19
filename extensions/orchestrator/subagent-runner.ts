@@ -1083,7 +1083,11 @@ export class SubagentRunner {
 			// this session's SubagentState so the guard resolves THIS delegation's own
 			// ~/.pi/agent/scopes/<id>.json instead of the shared <cwd>/.pi/scope.json
 			// (which a concurrent sibling can overwrite → cross-delegation permit).
-			subagentSessions.set(sessionId, { specialistName: specialist.name, planParsed: false, blockedCalls: [], delegationId });
+			// The session's cwd (config.cwd, passed to createSession above) is the
+			// delegation's authoritative working directory. Record it so the scope
+			// guard resolves relative tool paths against the DELEGATION cwd rather
+			// than the process/orchestrator cwd (Defect A — false-positive blocks).
+			subagentSessions.set(sessionId, { specialistName: specialist.name, planParsed: false, blockedCalls: [], delegationId, cwd: config.cwd });
 
 			const { signal } = config;
 

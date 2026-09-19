@@ -91,7 +91,17 @@ const UNIVERSAL_ALLOWED = computeUniversalAllowedPrefixes();
  * Reads are always allowed (scope only enforces mutations).
  */
 export class ScopeGuard {
-  constructor(private cwd: string, private delegationId?: string) {}
+  constructor(
+    private cwd: string,
+    private delegationId?: string,
+    /**
+     * Permit reading the shared `<cwd>/.pi/scope.json` when no delegation id is
+     * supplied. Retained ONLY for non-subagent (orchestrator-side / legacy)
+     * callers — subagent enforcement passes `false` so a stale, unrelated
+     * shared file can never influence a subagent's writes (Defect B).
+     */
+    private opts: { allowSharedFallback?: boolean } = {},
+  ) {}
 
   /**
    * Read and validate this guard's scope. Returns null if missing, malformed,
@@ -103,14 +113,18 @@ export class ScopeGuard {
    * cross-delegation permit where one delegation validated against a sibling's
    * shared <cwd>/.pi/scope.json. Missing per-delegation file → null (blocked).
    *
-   * Without a delegation id, fall back to the shared file for backward
-   * compatibility (orchestrator-side consumers and callers not yet wired).
+   * Defect B: when `allowSharedFallback` is false (all subagent enforcement),
+   * an absent delegation id is fail-CLOSED (null) — the shared
+   * `<cwd>/.pi/scope.json` is NEVER consulted, so a stale file left by an
+   * unrelated delegation cannot permit or block this session's writes. The
+   * fallback is retained only for legacy/direct callers that opt in.
    */
   private _readScope(): ResolvedScope | null {
     if (this.delegationId) {
       const scope = readDelegationScope(this.delegationId);
       return scope ? (scope as ResolvedScope) : null;
     }
+    if (this.opts.allowSharedFallback === false) return null;
     const path = join(this.cwd, '.pi', 'scope.json');
     return parseScopeFile(path);
   }

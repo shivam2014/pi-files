@@ -423,12 +423,13 @@ export class DelegatePipeline {
 					`Provide a clearer task description or explicit scope (filesToModify, filesToCreate), then retry.`
 				);
 			}
-			// Parallel mode: ALSO create a per-delegation scope file (stable id retained
-			// for the session-keyed resolution path: the id travels to the subagent's
-			// SubagentState.delegationId so the guard reads THIS delegation's file).
-			if (mode === "parallel") {
-				delegationId = createDelegationScope(scopeToUse);
-			}
+			// Defect B fix: ALWAYS create a per-delegation scope file (sequential AND
+			// parallel). Subagent enforcement resolves scope ONLY from this file and
+			// no longer falls back to the shared <cwd>/.pi/scope.json — so the id MUST
+			// be present for every delegation, otherwise enforcement would be
+			// fail-closed and block legitimate work. The id travels to the subagent's
+			// SubagentState.delegationId so the guard reads THIS delegation's file.
+			delegationId = createDelegationScope(scopeToUse);
 			// FIX 3 (parallel-mode enforcement): ALWAYS write the shared <cwd>/.pi/scope.json.
 			// The deterministic guard reads ONLY this path (ScopeGuard._readScope →
 			// <cwd>/.pi/scope.json). Parallel mode previously wrote only the per-delegation

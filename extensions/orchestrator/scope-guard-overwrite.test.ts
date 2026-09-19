@@ -1,9 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ScopeGuard } from './scope-guard';
 import { handleSubagentToolCall } from './subagent-tool-guard';
+import { createDelegationScope } from './scope-manager';
+
+// Per-delegation scope files live under getAgentDir()/scopes — redirect to a temp dir.
+const mockAgentDir = vi.hoisted(() => ({ value: '' }));
+vi.mock('@earendil-works/pi-coding-agent', () => ({
+  getAgentDir: () => mockAgentDir.value,
+}));
 
 describe('Scope guard — create-then-modify diagnosis', () => {
   let tmpDir: string;
@@ -11,6 +18,7 @@ describe('Scope guard — create-then-modify diagnosis', () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'scope-overwrite-test-'));
+    mockAgentDir.value = mkdtempSync(join(tmpdir(), 'scope-overwrite-agent-'));
     guard = new ScopeGuard(tmpDir);
     mkdirSync(join(tmpDir, '.pi'), { recursive: true });
     writeFileSync(
@@ -34,6 +42,7 @@ describe('Scope guard — create-then-modify diagnosis', () => {
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    rmSync(mockAgentDir.value, { recursive: true, force: true });
   });
 
   describe('Group 1: isPathAllowed — create-then-modify', () => {
@@ -81,12 +90,28 @@ describe('Scope guard — create-then-modify diagnosis', () => {
   });
 
   describe('Group 3: handleSubagentToolCall — full integration', () => {
+    // Defect B contract: subagent enforcement resolves scope ONLY from the
+    // delegation's own per-delegation file (no shared fallback), so these seams
+    // carry a delegation id like the production runner does.
+    function delegationId(): string {
+      return createDelegationScope({
+        filesToModify: [],
+        filesToCreate: ['new-file.ts'],
+        directories: [],
+        maxFiles: 10,
+        requiresApprovalBeyondScope: true,
+        changeType: 'single-file',
+        maxLinesPerFile: 400,
+        gateMode: 'strict',
+      });
+    }
+
     it('does NOT block write tool call for file in filesToCreate', () => {
       const result = handleSubagentToolCall(
         { toolName: 'write', input: { path: 'new-file.ts', content: 'hello' } },
         true,
         { cwd: tmpDir },
-        { planParsed: true, specialistName: 'coder', blockedCalls: [] }
+        { planParsed: true, specialistName: 'coder', blockedCalls: [], delegationId: delegationId(), cwd: tmpDir }
       );
       expect(result?.block).toBeFalsy();
     });
@@ -98,7 +123,7 @@ describe('Scope guard — create-then-modify diagnosis', () => {
         { toolName: 'edit', input: { path: 'new-file.ts', edits: [{ oldText: 'hello', newText: 'world' }] } },
         true,
         { cwd: tmpDir },
-        { planParsed: true, specialistName: 'coder', blockedCalls: [] }
+        { planParsed: true, specialistName: 'coder', blockedCalls: [], delegationId: delegationId(), cwd: tmpDir }
       );
       expect(result?.block).toBeFalsy();
     });

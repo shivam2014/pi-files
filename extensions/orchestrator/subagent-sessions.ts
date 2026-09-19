@@ -38,6 +38,16 @@ export interface SubagentState {
    * Optional so unwired/test states fall back to the shared-file contract.
    */
   delegationId?: string;
+  /**
+   * The delegation's authoritative working directory — the cwd the subagent's
+   * AgentSession was created with (SubagentRunner.run → createSession({ cwd })).
+   * The scope guard resolves relative tool paths against THIS, not the
+   * process/orchestrator cwd: the tool_call `ctx.cwd` can be the orchestrator
+   * (or the bare process) cwd, which would resolve a subagent's relative path
+   * into the wrong tree and produce false-positive scope blocks (Defect A).
+   * Set by the runner at session creation; absent only for unwired/test states.
+   */
+  cwd?: string;
 }
 
 /**

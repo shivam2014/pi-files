@@ -51,8 +51,17 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 		}
 	}
 	if (subagentState) {
-		const cwd = ctx?.cwd ?? process.cwd();
-		const guard = new ScopeGuard(cwd, subagentState.delegationId);
+		// Defect A fix: resolve relative tool paths against the DELEGATION's own
+		// working directory, recorded on the session at creation time, not against
+		// the tool_call ctx.cwd (orchestrator/process cwd). Using the process cwd
+		// resolved a subagent's relative path into the wrong tree and produced
+		// spurious "File not in approved scope" blocks for legitimate in-scope work.
+		const cwd = subagentState.cwd ?? ctx?.cwd ?? process.cwd();
+		// Defect B fix: subagent enforcement resolves scope ONLY from this
+		// delegation's per-delegation file. Opting out of the shared-file fallback
+		// guarantees a stale/unrelated <cwd>/.pi/scope.json can never influence a
+		// subagent's writes. A missing delegation id is therefore fail-closed.
+		const guard = new ScopeGuard(cwd, subagentState.delegationId, { allowSharedFallback: false });
 		// gh write command enforcement — runs for ALL subagents, even without scope
 		if (event.toolName === 'bash') {
 			const input = event.input || {};

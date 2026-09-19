@@ -66,6 +66,10 @@ How each project documents the capabilities below, as of this reading. "—" mea
 
 No head-to-head benchmark has been run, so this table is about documented capabilities, not measured performance.
 
+![scope-guard refusing an out-of-scope subagent write](docs/assets/scope-guard-block.gif)
+
+*A real run, uncut except for dead air: the plan is set, a Coder is delegated, it tries to edit a file outside its approved scope, and the deterministic gate refuses — no LLM involved. `lib/calc.js` was unchanged afterwards.*
+
 ## Evidence
 
 - **1243 tests passing** across 81 files, plus a clean typecheck.

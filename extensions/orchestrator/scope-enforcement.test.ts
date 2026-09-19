@@ -100,7 +100,7 @@ vi.mock("./orchestrator-theme.ts", async (importOriginal) => {
 // ── Imports AFTER mocks ───────────────────────────────────────────────────────
 import orchestrator from "./index.ts";
 import { handleSubagentToolCall } from "./subagent-tool-guard.ts";
-import { ScopeManager } from "./scope-manager.ts";
+import { ScopeManager, createDelegationScope } from "./scope-manager.ts";
 import { ScopeGuard } from "./scope-guard.ts";
 import { DelegatePipeline } from "./delegate-pipeline.ts";
 import { subagentSessions } from "./subagent-sessions.ts";
@@ -110,9 +110,12 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 let cwd: string;
 let agentDir: string;
 
-function coderState(): SubagentState {
-	return { specialistName: "coder", planParsed: true, blockedCalls: [] };
+function coderState(delegationId?: string): SubagentState {
+	return { specialistName: "coder", planParsed: true, blockedCalls: [], delegationId, cwd };
 }
+
+/** Per-delegation scope id created by grantCoderScope() (Defect B contract). */
+let grantedDelegationId: string | undefined;
 
 function scopePath(): string {
 	return join(cwd, ".pi", "scope.json");
@@ -123,11 +126,22 @@ function grantCoderScope(): void {
 	// (asserted by scope-manager.test.ts), but the guard resolves against the
 	// delegation cwd. These are equal in production; in this harness cwd is a
 	// temp dir, so pass absolute paths under `cwd` to mirror the production contract.
-	new ScopeManager(cwd).writeScope({
+	const manifest = {
 		filesToModify: [join(cwd, "src/index.js")],
 		filesToCreate: [],
 		directories: [join(cwd, "src")],
 		maxFiles: 10,
+	};
+	new ScopeManager(cwd).writeScope(manifest);
+	// Defect B contract: subagent enforcement resolves scope ONLY from the
+	// delegation's own per-delegation file (the shared fallback is no longer
+	// consulted). Mirror the production bridge by creating that file too.
+	grantedDelegationId = createDelegationScope({
+		...manifest,
+		requiresApprovalBeyondScope: true,
+		changeType: "multi-file",
+		maxLinesPerFile: 400,
+		gateMode: "strict",
 	});
 }
 
@@ -138,6 +152,7 @@ beforeEach(() => {
 	vi.mocked(getAgentDir).mockReturnValue(agentDir);
 	delete process.env["PI_ORCHESTRATOR_SUBAGENT"];
 	subagentSessions.clear();
+	grantedDelegationId = undefined;
 });
 
 afterEach(() => {
@@ -193,7 +208,7 @@ describe("FIX 1 — fail-closed scope enforcement (real ScopeGuard)", () => {
 			{ toolName: "edit", input: { path: "src/index.js", edits: [{ oldText: "a", newText: "b" }] } },
 			true,
 			{ cwd },
-			coderState(),
+			coderState(grantedDelegationId),
 		);
 		expect(res).toBeUndefined();
 	});
@@ -224,7 +239,9 @@ describe("FIX 3/FIX 2 — parallel delegation writes a scope the guard reads; sc
 			| { scopePresent: boolean; outOfScopeBlocked: boolean; inScopeAllowed: boolean }
 			| null = null;
 
-		mockRunSubagent.mockImplementation(async () => {
+		mockRunSubagent.mockImplementation(async (...callArgs: any[]) => {
+			// args[10] is the per-delegation id the pipeline threads to the runner.
+			const runnerDelegationId = callArgs[10];
 			observed = {
 				// FIX 3: parallel mode must have written the shared <cwd>/.pi/scope.json
 				scopePresent: existsSync(scopePath()),
@@ -233,14 +250,14 @@ describe("FIX 3/FIX 2 — parallel delegation writes a scope the guard reads; sc
 					{ toolName: "edit", input: { path: "lib/calc.js" } },
 					true,
 					{ cwd },
-					coderState(),
+					coderState(runnerDelegationId),
 				)?.block === true,
 				inScopeAllowed:
 					handleSubagentToolCall(
 						{ toolName: "edit", input: { path: "src/index.js" } },
 						true,
 						{ cwd },
-						coderState(),
+						coderState(runnerDelegationId),
 					) === undefined,
 			};
 			return { output: "done", turns: 1, toolCallTrail: [] };
