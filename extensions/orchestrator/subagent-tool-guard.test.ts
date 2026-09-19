@@ -87,16 +87,26 @@ describe("handleSubagentToolCall", () => {
 	describe("scope enforcement (subagent context)", () => {
 		const state = () => subagentCtx(true);
 
-		it("passes through when scope is invalid (no scope file)", () => {
+		it("BLOCKS an edit when scope is invalid (fail-closed)", () => {
+			// Regression guard for the fail-open bug: previously isScopeValid() === false
+			// skipped the whole scope block, so the edit passed through unchecked. The
+			// guard must now deny write-class operations when no scope is established.
 			ScopeGuardMock.mockImplementationOnce(function (this: any, _cwd: string) {
 				this.isScopeValid = () => false;
+				this.isPathAllowed = () => ({ allowed: false, reason: "No scope file" });
+				this.checkFileSize = () => ({ allowed: true });
+				this.requestExpansion = () => null;
 			});
 
 			const result = handleSubagentToolCall({
 				toolName: "edit",
 				input: { filePath: "src/file.ts" },
 			}, true, undefined, state());
-			expect(result).toBeUndefined();
+			expect(result).toEqual({
+				block: true,
+				reason: "Scope violation: src/file.ts is outside the allowed scope",
+				expansionRequest: null,
+			});
 		});
 
 		it("blocks when file path is outside scope", () => {

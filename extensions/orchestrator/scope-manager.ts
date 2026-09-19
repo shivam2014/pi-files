@@ -1,8 +1,9 @@
-import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync, readdirSync, statSync } from 'fs';
-import { join, dirname, isAbsolute, resolve } from 'path';
+import { writeFileSync, existsSync, readFileSync, unlinkSync, mkdirSync, readdirSync, statSync, renameSync } from 'fs';
+import { join, dirname, basename, isAbsolute, resolve } from 'path';
 import { randomUUID } from 'node:crypto';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { getDefaultWriterScope, getReadOnlyDefaultScope } from './scope-policy.ts';
+import { debugLog } from './debug.ts';
 
 /**
  * Normalize a scope path to an absolute path.
@@ -17,6 +18,20 @@ export function normalizeScopePath(p: string): string {
     return resolve(home, p.slice(1));
   }
   return resolve(p);
+}
+
+/**
+ * Atomically write JSON to `filePath`: write to a temp file in the SAME
+ * directory, then rename over the target. POSIX rename is atomic, so a
+ * concurrent reader never observes a partially-written (torn) file — it sees
+ * either the previous file or the complete new one.
+ */
+function writeJsonAtomic(filePath: string, data: unknown): void {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = join(dir, `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+  renameSync(tmpPath, filePath);
 }
 
 /** ScopeGateMode type */
@@ -48,6 +63,9 @@ export interface ScopeFileContract {
   version: number;
   schema: string;
   scope: ResolvedScope;
+  /** Optional marker: which delegation wrote this shared scope file. Used by
+   * clearScope() so a finishing delegation never unlinks a sibling's file. */
+  delegationId?: string;
 }
 
 /** Input/authoring view of a Scope, before normalization.
@@ -123,20 +141,21 @@ export class ScopeManager {
     return changeType === 'single-file' ? 'relaxed' : 'strict';
   }
 
-  writeScope(manifest: ScopeManifest): void {
+  writeScope(manifest: ScopeManifest, delegationId?: string): void {
     const scope = this.normalize(manifest);
     // Normalize file paths to absolute
     scope.filesToModify = scope.filesToModify.map(normalizeScopePath);
     scope.filesToCreate = scope.filesToCreate.map(normalizeScopePath);
     scope.directories = scope.directories.map(d => normalizeScopePath(d));
-    const dir = join(this.cwd, '.pi');
-    mkdirSync(dir, { recursive: true });
     const contract: ScopeFileContract = {
       version: 1,
       schema: 'scope-file-contract-v1',
       scope,
+      // Marker consumed by clearScope() (see ScopeFileContract.delegationId).
+      ...(delegationId ? { delegationId } : {}),
     };
-    writeFileSync(join(dir, 'scope.json'), JSON.stringify(contract, null, 2));
+    // Atomic: a concurrent subagent's guard must never read a torn file.
+    writeJsonAtomic(join(this.cwd, '.pi', 'scope.json'), contract);
   }
 
   readScope(): ResolvedScope | null {
@@ -144,12 +163,23 @@ export class ScopeManager {
     return parseScopeFile(path);
   }
 
-  clearScope(): void {
+  clearScope(expectedDelegationId?: string): void {
     const path = join(this.cwd, '.pi', 'scope.json');
     try {
-      if (existsSync(path)) unlinkSync(path);
-    } catch {
-      // noop
+      if (!existsSync(path)) return;
+      // Concurrency guard: only remove the shared scope file if it still belongs
+      // to the caller. If a sibling delegation has overwritten it meanwhile,
+      // deleting it would invalidate that sibling's legitimate in-scope writes
+      // (a false-positive over-block). See delegationId marker in writeScope().
+      if (expectedDelegationId) {
+        const raw = JSON.parse(readFileSync(path, 'utf-8'));
+        if (raw?.delegationId !== expectedDelegationId) return;
+      }
+      unlinkSync(path);
+    } catch (err) {
+      // FIX 4: never swallow silently. A failed unlink leaves a stale scope file
+      // that could keep a subagent believing it still has scope it should not have.
+      debugLog('scope-manager: clearScope failed to unlink scope file', path, err);
     }
   }
 
@@ -219,9 +249,14 @@ function _delegationScopePath(delegationId: string): string {
 export function createDelegationScope(scope: Scope): string {
   const delegationId = randomUUID();
   const scopePath = _delegationScopePath(delegationId);
-  mkdirSync(dirname(scopePath), { recursive: true });
-  writeFileSync(scopePath, JSON.stringify(scope, null, 2));
+  // Atomic write: a sibling delegation's guard may read this concurrently.
+  writeJsonAtomic(scopePath, scope);
   return delegationId;
+}
+
+/** Absolute path of a delegation's per-delegation scope file (test/debug aid). */
+export function delegationScopePath(delegationId: string): string {
+  return _delegationScopePath(delegationId);
 }
 
 /** Read a delegation scope */

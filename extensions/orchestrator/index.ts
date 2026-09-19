@@ -103,6 +103,13 @@ export default function (pi: ExtensionAPI) {
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (isSubagentLoad) return;  // Skip orchestrator prompt injection in subagent context
+		// FIX 2 (scope lifetime): in-process subagents reuse THIS module's handlers, so
+		// `isSubagentLoad` (captured once when the factory ran) stays false for them and
+		// this handler fires for the CHILD's agent start. That cleared the parent's
+		// freshly-written <cwd>/.pi/scope.json before the child's tools could use it.
+		// Detect an in-process subagent session by its session id and leave the scope alone.
+		const sessionId = (ctx as any)?.sessionManager?.getSessionId?.() ?? (ctx as any)?.sessionManager?.sessionId;
+		if (sessionId && subagentSessions.has(sessionId)) return;
 		new ScopeManager(resolveCwd(ctx)).clearScope();
 
 		// Don't clear plan panel if a loop is active

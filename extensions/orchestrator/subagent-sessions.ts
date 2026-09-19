@@ -28,6 +28,16 @@ export interface SubagentState {
   planParsed: boolean;
   /** Tool calls blocked by the scope guard during this session */
   blockedCalls: BlockedToolCall[];
+  /**
+   * Per-delegation scope id for THIS subagent session. Set by the runner when it
+   * creates the session (threaded from the delegate pipeline's
+   * createDelegationScope()). The scope guard resolves this session's own
+   * ~/.pi/agent/scopes/<delegationId>.json instead of the shared
+   * <cwd>/.pi/scope.json, which prevents a concurrent sibling delegation from
+   * being validated against the wrong scope (cross-delegation permit).
+   * Optional so unwired/test states fall back to the shared-file contract.
+   */
+  delegationId?: string;
 }
 
 /**

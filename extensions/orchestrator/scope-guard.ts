@@ -1,7 +1,8 @@
 import * as os from 'os';
+import * as fs from 'fs';
 import { join, relative, isAbsolute, resolve, posix } from 'path';
 import picomatch from 'picomatch';
-import { parseScopeFile, type ResolvedScope } from './scope-manager';
+import { parseScopeFile, readDelegationScope, type ResolvedScope } from './scope-manager';
 
 /**
  * Scope expansion request emitted when a subagent tries to write/edit outside scope.
@@ -32,6 +33,38 @@ function hasGlobChars(s: string): boolean {
 }
 
 /**
+ * Temp-scratch prefixes that are always writable regardless of scope.
+ * Derived (not hardcoded) so the macOS symlink form is covered:
+ *  - '/tmp/'           (Linux + macOS canonical scratch)
+ *  - realpath('/tmp')  -> '/private/tmp/'  (macOS resolves /tmp here)
+ * The bug this fixes: a resolved macOS scratch path is '/private/tmp/...',
+ * which the old hardcoded ['/tmp/'] list did NOT match, so it was falsely blocked.
+ *
+ * os.tmpdir() is consulted but granted ONLY when it resolves into the same
+ * canonical scratch family. On macOS os.tmpdir() is '/var/folders/<...>/T'
+ * (realpath '/private/var/folders/.../T'); granting that whole root would permit
+ * escaped '../' traversal from any cwd living under it, which the existing
+ * scope-guard.test.ts 'blocks directory traversal escape' test correctly forbids.
+ */
+function computeUniversalAllowedPrefixes(): string[] {
+  const prefixes = new Set<string>(['/tmp/']);
+  const candidates: string[] = ['/tmp'];
+  try { candidates.push(os.tmpdir()); } catch { /* os.tmpdir unavailable */ }
+  for (const c of candidates) {
+    if (!c) continue;
+    try {
+      const real = fs.realpathSync(c);
+      if (real === '/tmp' || real === '/private/tmp') {
+        prefixes.add(real.endsWith('/') ? real : real + '/');
+      }
+    } catch { /* path may not exist — keep the literal form */ }
+  }
+  return [...prefixes];
+}
+
+const UNIVERSAL_ALLOWED = computeUniversalAllowedPrefixes();
+
+/**
  * Thin enforcement adapter for scope boundaries.
  *
  * Reads `.pi/scope.json` directly (raw JSON). Zero coupling to orchestrator modules —
@@ -58,13 +91,26 @@ function hasGlobChars(s: string): boolean {
  * Reads are always allowed (scope only enforces mutations).
  */
 export class ScopeGuard {
-  constructor(private cwd: string) {}
+  constructor(private cwd: string, private delegationId?: string) {}
 
   /**
-   * Read and validate `.pi/scope.json`. Returns null if missing, malformed,
+   * Read and validate this guard's scope. Returns null if missing, malformed,
    * or wrong version/schema (fail-closed: null → all writes blocked).
+   *
+   * Per-session resolution: when the caller supplies a delegation id (threaded
+   * from the subagent's SubagentState), resolve THAT subagent's own
+   * per-delegation file (~/.pi/agent/scopes/<id>.json). This removes the
+   * cross-delegation permit where one delegation validated against a sibling's
+   * shared <cwd>/.pi/scope.json. Missing per-delegation file → null (blocked).
+   *
+   * Without a delegation id, fall back to the shared file for backward
+   * compatibility (orchestrator-side consumers and callers not yet wired).
    */
   private _readScope(): ResolvedScope | null {
+    if (this.delegationId) {
+      const scope = readDelegationScope(this.delegationId);
+      return scope ? (scope as ResolvedScope) : null;
+    }
     const path = join(this.cwd, '.pi', 'scope.json');
     return parseScopeFile(path);
   }
@@ -109,12 +155,11 @@ export class ScopeGuard {
     if (!scope) return { allowed: false, reason: 'No scope file' };
 
     const normalized = normalizePath(filePath, this.cwd);
-    if (!normalized) {
-      return { allowed: false, reason: `Path escapes working directory: ${filePath}` };
-    }
 
-    // Universal allowed paths — always permitted regardless of scope
-    const UNIVERSAL_ALLOWED = ['/tmp/'];
+    // Universal scratch paths — always permitted regardless of scope.
+    // normalizePath() always returns a non-empty string (absolute when the path
+    // escapes cwd and posix.normalize('.') for the cwd itself), so there is no
+    // reachable empty-path branch here.
     if (UNIVERSAL_ALLOWED.some(prefix => normalized.startsWith(prefix))) {
       return { allowed: true };
     }

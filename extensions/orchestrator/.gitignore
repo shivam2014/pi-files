@@ -4,3 +4,4 @@ diagnostics/
 node_modules/
 .DS_Store
 *.log
+*.tsbuildinfo

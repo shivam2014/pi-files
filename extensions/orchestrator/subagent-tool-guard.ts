@@ -52,7 +52,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 	}
 	if (subagentState) {
 		const cwd = ctx?.cwd ?? process.cwd();
-		const guard = new ScopeGuard(cwd);
+		const guard = new ScopeGuard(cwd, subagentState.delegationId);
 		// gh write command enforcement — runs for ALL subagents, even without scope
 		if (event.toolName === 'bash') {
 			const input = event.input || {};
@@ -61,7 +61,13 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				return { block: true, reason: `\u26D4 gh write command blocked. Use the dedicated gh tool instead.\nCommand: ${command}\nHint: gh write operations (create, merge, delete, push) are not permitted via bash.` };
 			}
 		}
-		if (guard.isScopeValid()) {
+		// FIX 1 (fail-closed): the scope block ALWAYS runs for subagent tool calls.
+		// The previous `if (guard.isScopeValid())` gate skipped enforcement entirely when
+		// no scope file existed, turning a documented fail-closed guard into a no-op.
+		// Scope applies to write-class tools only: ScopeGuard.isPathAllowed() returns
+		// { allowed: true } for operation === 'read', so read/grep/find/ls are never
+		// blocked by this — no over-blocking of read-only tools.
+		{
 			const input = event.input || {};
 			const filePaths: string[] = [];
 
@@ -186,6 +192,24 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					: readOnlyTools.has(event.toolName) ? 'read'
 					: event.toolName === 'bash' && !isWriteCommand(input.command) ? 'read'
 					: 'write'; // fail-closed: unknown tools treated as mutations
+
+			// FIX 1 (fail-closed, defense in depth): a write-class operation with no
+			// established scope is denied even when no concrete path could be extracted.
+			// When a path IS extracted the per-path loop below emits the canonical
+			// "Scope violation: <path> is outside the allowed scope" message instead.
+			if (operation !== 'read' && !guard.isScopeValid() && filePaths.length === 0) {
+				if (subagentState) {
+					subagentState.blockedCalls.push({
+						tool: event.toolName || 'unknown',
+						target: '(unresolved)',
+						reason: 'No scope file',
+						timestamp: Date.now(),
+					});
+				}
+				const noScope = { block: true as const, reason: 'Scope violation: no approved scope is established for this subagent' };
+				traceDecision('handleSubagentToolCall/subagent', event, noScope);
+				return noScope;
+			}
 
 			for (const rawPath of filePaths) {
 				const expandedPath = rawPath.startsWith('~/') ? rawPath.replace(/^~/, os.homedir()) : rawPath;

@@ -838,6 +838,7 @@ export class SubagentRunner {
 		parentCtx?: SubagentContext,
 		orchestratorCtx?: DelegateControllerContext,
 		orchestratorUi?: OrchestratorUi,
+		delegationId?: string,
 	): Promise<SubagentResult> {
 		const startTime = Date.now();
 		let envSnapshot: NodeJS.ProcessEnv;
@@ -1078,7 +1079,11 @@ export class SubagentRunner {
 
 			// Register session in per-session Map for concurrent-safe routing
 			sessionId = session.sessionId as string;
-			subagentSessions.set(sessionId, { specialistName: specialist.name, planParsed: false, blockedCalls: [] });
+			// BRIDGE (Defect 1): carry the delegate pipeline's per-delegation scope id into
+			// this session's SubagentState so the guard resolves THIS delegation's own
+			// ~/.pi/agent/scopes/<id>.json instead of the shared <cwd>/.pi/scope.json
+			// (which a concurrent sibling can overwrite → cross-delegation permit).
+			subagentSessions.set(sessionId, { specialistName: specialist.name, planParsed: false, blockedCalls: [], delegationId });
 
 			const { signal } = config;
 
@@ -1875,6 +1880,8 @@ export class SubagentRunner {
  * @param signal - Optional abort signal for cancellation
  * @param onUpdate - Callback for real-time activity feed updates
  * @param scope - Optional scope manifest for scope-guard enforcement
+ * @param delegationId - Per-delegation scope id (from the pipeline's createDelegationScope());
+ *   stored on the session's SubagentState so the guard enforces THIS delegation's scope.
  */
 export async function runSubagent(
 	specialist: Specialist,
@@ -1887,6 +1894,7 @@ export async function runSubagent(
 	orchestratorUi?: OrchestratorUi,
 	suggestedSkills?: string[],
 	orchestratorCtx?: DelegateControllerContext,
+	delegationId?: string,
 ): Promise<SubagentResult> {
 	const agentDir = getAgentDir();
 	const runner = new SubagentRunner({
@@ -1896,5 +1904,5 @@ export async function runSubagent(
 		signal,
 		onUpdate,
 	});
-	return runner.run(task, specialist, scope ?? undefined, suggestedSkills, parentCtx, orchestratorCtx, orchestratorUi);
+	return runner.run(task, specialist, scope ?? undefined, suggestedSkills, parentCtx, orchestratorCtx, orchestratorUi, delegationId);
 }

@@ -292,6 +292,11 @@ export function buildBatchStepLabel(specialist: string, task: string, label?: st
 }
 
 export class DelegatePipeline {
+	/** Live count of concurrent run() invocations on this pipeline (a batch is >1).
+	 * The shared <cwd>/.pi/scope.json is cleared only when the LAST delegation
+	 * finishes, so one delegation's finally cannot invalidate a sibling's scope. */
+	private activeDelegations = 0;
+
 	constructor(private deps: { scopeManager: ScopeManager }) {}
 
 	/**
@@ -418,14 +423,31 @@ export class DelegatePipeline {
 					`Provide a clearer task description or explicit scope (filesToModify, filesToCreate), then retry.`
 				);
 			}
-			// Parallel mode: create per-delegation scope for isolation
+			// Parallel mode: ALSO create a per-delegation scope file (stable id retained
+			// for the session-keyed resolution path: the id travels to the subagent's
+			// SubagentState.delegationId so the guard reads THIS delegation's file).
 			if (mode === "parallel") {
 				delegationId = createDelegationScope(scopeToUse);
 			}
-			// Skip shared file write in parallel mode — scope already isolated in per-delegation Map
-			if (!delegationId) {
-				this.deps.scopeManager.writeScope(scopeToUse);
-			}
+			// FIX 3 (parallel-mode enforcement): ALWAYS write the shared <cwd>/.pi/scope.json.
+			// The deterministic guard reads ONLY this path (ScopeGuard._readScope →
+			// <cwd>/.pi/scope.json). Parallel mode previously wrote only the per-delegation
+			// file, which the guard never reads, so the guard was scopeless — and, with the
+			// old fail-open gate, silently inert.
+			//
+			// Concurrency note: the shared file can represent at most ONE delegation's scope,
+			// so under several truly-concurrent parallel delegations it is last-writer-wins.
+			// Every guard path is fail-closed on a missing/mismatched scope, so the failure
+			// mode of a race is a BLOCKED (not permitted) write. A fully concurrency-safe
+			// design resolves scope per session from the per-delegation file via readDelegationScope(),
+			// which requires threading the subagent session id out of subagent-runner.ts
+			// (owned by another change) — out of scope for this fix.
+			// Transitional shared-file write. Per-subagent enforcement now prefers the
+			// per-delegation file (SubagentState.delegationId); this shared file is the
+			// fallback for callers without a delegation id. Written ATOMICALLY so a
+			// concurrent reader cannot observe a torn file. The marker lets a finishing
+			// delegation avoid deleting a sibling's overwrite (see clearScope below).
+			this.deps.scopeManager.writeScope(scopeToUse, delegationId ?? undefined);
 		}
 
 		// ── Plan panel check ──
@@ -459,6 +481,7 @@ export class DelegatePipeline {
 		} catch {}
 
 		incrementDelegationCount(ctx);
+		this.activeDelegations++;
 
 		// ── Metrics tracking ──
 		// BUG-1: counters were previously fed from update.details.tool, which the
@@ -513,6 +536,7 @@ export class DelegatePipeline {
 				parentCtx,
 				effectiveSignal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
 				ctx, // orchestratorCtx: thread session context to plan-panel calls
+				delegationId ?? undefined, // BRIDGE: thread the per-delegation scope id into the subagent session
 			);
 			const providerKind = result?.status === "error"
 				? classifyProviderFailure(result?.errorMessage)
@@ -697,12 +721,20 @@ export class DelegatePipeline {
 			}
 		} finally {
 			decrementDelegationCount(ctx);
+			this.activeDelegations = Math.max(0, this.activeDelegations - 1);
 			clearPlanIfComplete(ctx);
 			hidePeek();
 			clearViewerState();
-			// Clear scope after delegation completes
-			this.deps.scopeManager.clearScope();
-			// Clear per-delegation scope if parallel mode
+			// Clear the shared scope file ONLY when this is the last active delegation.
+			// A concurrent sibling may still be running its subagent against the shared
+			// file; unlinking it early would block that sibling's legitimate in-scope
+			// writes (false-positive over-block). clearScope(delegationId) additionally
+			// no-ops when a sibling has overwritten the file with its own scope marker,
+			// so a finishing delegation never deletes a sibling's file.
+			if (this.activeDelegations === 0) {
+				this.deps.scopeManager.clearScope(delegationId ?? undefined);
+			}
+			// Always clear this delegation's OWN per-delegation scope file.
 			if (delegationId) {
 				clearDelegationScope(delegationId);
 			}

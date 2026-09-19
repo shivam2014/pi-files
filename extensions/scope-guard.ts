@@ -12,7 +12,7 @@
  * Zero coupling to orchestrator module.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { join, relative, isAbsolute, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -29,6 +29,26 @@ function normalizePath(filePath: string, cwd: string): string {
   if (rel.startsWith("..") || isAbsolute(rel)) return absolute;
   return rel.replace(/\\/g, "/");
 }
+
+/**
+ * Temp-scratch prefixes that are ALWAYS writable regardless of scope.
+ *
+ * DEFECT-2 fix (parity with the orchestrator's ScopeGuard): allow '/tmp/' and
+ * realpath('/tmp') (macOS resolves '/tmp' -> '/private/tmp/'). Deliberately
+ * narrow — os.tmpdir() is NOT granted: on macOS that is '/var/folders/<...>/T'
+ * and blanket-allowing it would permit a '../' traversal escape from any cwd
+ * that lives under the temp root.
+ */
+const UNIVERSAL_ALLOWED: string[] = (() => {
+	const prefixes = new Set<string>(["/tmp/"]);
+	try {
+		const real = realpathSync("/tmp");
+		if (real === "/tmp" || real === "/private/tmp") {
+			prefixes.add(real.endsWith("/") ? real : real + "/");
+		}
+	} catch { /* /tmp may not exist on this platform */ }
+	return [...prefixes];
+})();
 
 interface Scope {
 	filesToModify: string[];
@@ -143,6 +163,11 @@ export default function (pi: ExtensionAPI) {
 
 		const path = ((event.input as any)?.path || (event.input as any)?.file_path || "") as string;
 		if (!path) return;
+
+		// Universal temp-scratch exemption (DEFECT-2 fix): a /tmp or /private/tmp
+		// (realpath of /tmp) write is always permitted, matching the orchestrator guard.
+		const normalized = normalizePath(path, ctx.cwd);
+		if (UNIVERSAL_ALLOWED.some((p) => normalized.startsWith(p))) return;
 
 		// Check file is in approved scope (both direct file-list and directory-level)
 		const inScope = isPathInScope(path, scope, ctx.cwd);
