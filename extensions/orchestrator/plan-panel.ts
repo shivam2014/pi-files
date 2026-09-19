@@ -6,7 +6,7 @@ import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilStat
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
 import { resetSpinner } from "./spinner-state.ts";
-import { registerChannel, unregisterChannel, flushChannel } from "./render-scheduler.ts";
+import { registerChannel, unregisterChannel } from "./render-scheduler.ts";
 
 import { debugLog } from "./debug.ts";
 import { getSessionMode } from "./orchestrator-config";
@@ -80,7 +80,6 @@ export class PlanPanel {
 	private planState: { goal: string; steps: PlanStep[]; startTime: number; sessionId: string; completed?: boolean } | null = null;
 	private _setWidget: ((key: string, content: string[] | undefined) => void) | null = null;
 	private _lastWidgetContent: string[] | null = null;
-	private _planTimer: ReturnType<typeof setInterval> | null = null;
 	private _spinnerChannel: string | null = null;
 	private _cleared: boolean = false;
 
@@ -517,42 +516,28 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 	private startPlanTimer(): void {
 		this.stopPlanTimer();
 		const self = this;
-		// Spinner driver: route through the shared render scheduler so this
-		// panel's 80 ms re-render coalesces with the other active drivers
-		// instead of running its own independent setInterval.
+		// Single render driver: route through the shared render scheduler so this
+		// panel's 80 ms re-render coalesces with the other active drivers instead
+		// of running its own independent setInterval. The elapsed display rides
+		// this same window — _renderWidget() recomputes it from Date.now() on
+		// every flush, and the content-compare guard in _renderWidget() makes the
+		// ~12 extra flushes per second no-ops until the second actually changes.
+		// (The former dedicated 1000 ms elapsed timer was provably redundant: on
+		// the same register/unregister lifecycle it only ever emitted
+		// flushChannel(plan channel) → the identical _renderWidget() the 80 ms
+		// window already emits.)
 		const channelKey = `plan:${++_planChannelSeq}`;
 		this._spinnerChannel = channelKey;
 		registerChannel(channelKey, () => {
 			if (self.planState) { self._renderWidget(); } else { self.stopPlanTimer(); }
 		});
-		// Elapsed driver keeps its own dedicated 1000 ms cadence (commit 070148a).
-		// Do NOT merge it into the scheduler's 80 ms window — the elapsed refresh
-		// must tick on 1000 ms, not the shared 80 ms window.
-		// Its render emission is still routed through the shared scheduler: the
-		// timer calls flushChannel(plan channel) instead of rendering directly, so
-		// no setInterval callback calls _renderWidget() itself.
-		this._planTimer = setInterval(() => {
-			if (self._planTimer === null) return;
-			if (self.planState) { self._requestPlanRender(); } else { self.stopPlanTimer(); }
-		}, 1000);
 	}
 
 	private stopPlanTimer(): void {
-		if (this._planTimer !== null) { clearInterval(this._planTimer); this._planTimer = null; }
 		if (this._spinnerChannel !== null) { unregisterChannel(this._spinnerChannel); this._spinnerChannel = null; }
 		// Strike animation owns a state timer + a scheduler channel; every teardown
 		// path funnels through stopPlanTimer, so clearing it here covers them all.
 		this._stopStrikeAnimation();
-	}
-
-	/**
-	 * Request an immediate render through the shared scheduler (no direct call).
-	 * Used by the 1000 ms elapsed timer so it never renders directly — it stays a
-	 * separate timer but emits via the plan channel, matching the single render
-	 * path. No-op when the plan channel is not registered.
-	 */
-	private _requestPlanRender(): void {
-		if (this._spinnerChannel !== null) flushChannel(this._spinnerChannel);
 	}
 
 	/**

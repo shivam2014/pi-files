@@ -1,9 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { PlanPanel, _instances } from "./plan-panel";
 import { registeredChannels, _resetScheduler } from "./render-scheduler";
-// Namespace import: lets the tests spy on scheduler exports (e.g. flushChannel)
-// so they observe the panel's *routing*, not just the end render.
-import * as renderScheduler from "./render-scheduler";
 import type { LoopUntilConfig, LoopUntilState, LoopIteration } from "./types";
 
 function makeConfig(overrides?: Partial<LoopUntilConfig>): LoopUntilConfig {
@@ -540,7 +537,7 @@ describe("strike animation — emitted via the shared render scheduler", () => {
 	});
 });
 
-describe("elapsed timer — emitted via the shared render scheduler", () => {
+describe("elapsed / plan refresh — emitted via the shared render window only", () => {
 	let ctx: ReturnType<typeof mockCtx>;
 	let panel: PlanPanel;
 
@@ -558,34 +555,25 @@ describe("elapsed timer — emitted via the shared render scheduler", () => {
 		_resetScheduler();
 	});
 
-	it("the 1000 ms elapsed timer emits through the plan channel and never renders directly", () => {
-		// No-op the channel flush so the ONLY remaining way this tick could call
-		// _renderWidget() is a direct call from the timer callback.
-		const flushSpy = vi.spyOn(renderScheduler, "flushChannel").mockReturnValue(true);
+	it("refreshes through the shared 80 ms window; the dedicated 1000 ms timer is gone", () => {
 		const renderSpy = vi.spyOn(PlanPanel.prototype as any, "_renderWidget");
 
-		// Arm the plan timer: this registers the plan/spinner channel AND starts the
-		// dedicated 1000 ms elapsed timer.
+		// Arm the plan panel: registers the plan channel with the shared scheduler.
 		panel.setupPlanPanel("Goal", ["Step A", "Step B"], ctx);
 
 		const planChannel = (panel as any)._spinnerChannel as string;
 		expect(typeof planChannel).toBe("string");
 		expect(registeredChannels()).toContain(planChannel);
 
-		// Park the shared scheduler window far beyond the tick under test: the plan
-		// channel stays registered (flushChannel remains a valid key) but the shared
-		// 80 ms window cannot fire and render on its own, isolating the 1000 ms timer.
-		renderScheduler.setWindowMs(100000);
+		// The former dedicated 1000 ms elapsed timer no longer exists.
+		expect((panel as any)._planTimer ?? null).toBeNull();
 
-		flushSpy.mockClear();
 		renderSpy.mockClear();
 
-		vi.advanceTimersByTime(1000);
-
-		// The timer emitted through the shared scheduler channel...
-		expect(flushSpy).toHaveBeenCalledTimes(1);
-		expect(flushSpy).toHaveBeenCalledWith(planChannel);
-		// ...and did NOT call _renderWidget() directly from the timer callback.
-		expect(renderSpy).not.toHaveBeenCalled();
+		// A single shared-window tick flushes the plan channel → _renderWidget(),
+		// which recomputes the elapsed display from Date.now() — so the elapsed
+		// refresh rides the 80 ms window with no separate 1000 ms driver.
+		vi.advanceTimersByTime(80);
+		expect(renderSpy).toHaveBeenCalled();
 	});
 });

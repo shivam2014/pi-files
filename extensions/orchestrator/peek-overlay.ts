@@ -355,6 +355,7 @@ function clearPeekState(): void {
     _viewerTokens = null;
     _pushRenderTimer = null;
     resetSpinner();
+    stopSpinnerTimer();
 }
 
 // ============================================================================
@@ -492,6 +493,10 @@ export function showPeek(
             _peekTui = tui;
             component._theme = theme;
             _peekDone = done;
+            // Drive the shared 80 ms render window so the time-derived spinner
+            // frame in the status line keeps advancing while the overlay is open.
+            // Idempotent: no-ops if the "peek" channel is already registered.
+            startSpinnerTimer();
             return component;
         },
         {
