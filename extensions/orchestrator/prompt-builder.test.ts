@@ -89,8 +89,10 @@ describe('buildOrchestratorPrompt', () => {
 		];
 		const result = buildOrchestratorPrompt({ basePrompt: '', skills });
 		expect(result.systemPrompt).toContain('Available skills');
-		expect(result.systemPrompt).toContain('**typescript**: TypeScript expertise');
-		expect(result.systemPrompt).toContain('**react**: React framework knowledge');
+		// Names-only catalog (compact) — descriptions are no longer injected.
+		expect(result.systemPrompt).toContain('typescript, react');
+		expect(result.systemPrompt).not.toContain('TypeScript expertise');
+		expect(result.systemPrompt).not.toContain('React framework knowledge');
 	});
 
 	it('omits skills section when skills array is empty', () => {
@@ -120,7 +122,7 @@ describe('buildOrchestratorPrompt', () => {
 	it('handles skills with missing description field gracefully', () => {
 		const skills = [{ name: 'minimal' } as { name: string; description?: string }];
 		const result = buildOrchestratorPrompt({ basePrompt: '', skills });
-		expect(result.systemPrompt).toContain('**minimal**');
+		expect(result.systemPrompt).toContain('minimal');
 	});
 
 	it('handles fusionEnabled=true with skills together', () => {
@@ -128,7 +130,7 @@ describe('buildOrchestratorPrompt', () => {
 		const result = buildOrchestratorPrompt({ basePrompt: '', skills, fusionEnabled: true });
 		expect(result.systemPrompt).toContain('Fusion Tool');
 		expect(result.systemPrompt).toContain('Available skills');
-		expect(result.systemPrompt).toContain('**test**');
+		expect(result.systemPrompt).toContain('test');
 	});
 });
 

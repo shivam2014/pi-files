@@ -24,12 +24,12 @@ import { join } from "path";
 import { subagentSessions } from "./subagent-sessions.ts";
 import { shortenLabel } from "../token-saver.ts";
 import { isLintableExtension } from "../lint-guard/lib/lint-guard-core.ts";
-import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics } from "./types.ts";
+import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics, CalibrationPayload, CalibrationBudgetGate } from "./types.ts";
 import { resolveSpecialistModel, DEFAULTS, getSessionModels } from "./orchestrator-config.ts";
 import { getLastOrchestratorModel } from "./orchestrator-model-state.ts";
 import type { Scope } from "./scope-manager.ts";
 import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS, ESCALATION_MAX_EXPLORATION_CALLS, ESCALATION_MAX_FILES_TOUCHED, ESCALATION_MAX_TURNS } from "./specialists.ts";
-import { extractDifficultyFromOutput } from "./delegate-pipeline.ts";
+import { extractDifficultyFromOutput, type DifficultySignal } from "./delegate-pipeline.ts";
 import {
 	ActivityFeed,
 	toolCallToSubstep,
@@ -126,13 +126,23 @@ export const ABORT_MARKER = "[aborted]";
 // mask a budget breach by reporting `recommend=none`. Budget constants live in
 // specialists.ts (SSOT) and are only interpolated into prompt text there.
 
-/** Exploration tool names counted against the exploration budget. */
-export const EXPLORATION_TOOLS = ["read", "grep", "find", "ls"] as const;
+/**
+ * Exploration tool names counted against the exploration budget.
+ *
+ * Only `read` and `grep` count. `find`/`ls` are ORIENTATION calls: a delegate
+ * often needs them just to locate the repo/dirs before any real reading, so
+ * counting them inflated the cap and forced spurious escalation (a cross-repo
+ * scout can burn the whole budget on orientation alone). They stay in the
+ * tool-call metrics but no longer contribute to the exploration cap.
+ */
+export const EXPLORATION_TOOLS = ["read", "grep"] as const;
 
 /**
  * Kind of budget breach, classified by which threshold(s) were crossed (strict `>`):
- *  - "substantive": exploration calls OR distinct files over budget — the worker
- *    genuinely had to investigate widely / unfamiliar code → always escalates.
+ *  - "substantive": exploration calls OR distinct files over budget — forces
+ *    escalation ONLY when the worker's final difficulty CORROBORATES confusion
+ *    (verification=fail, uncertainty=high, or recommend=investigate); a read-heavy
+ *    but clean run keeps the model's own recommend.
  *  - "turns-only": ONLY the turns threshold crossed (exploration + files under
  *    budget) — turns alone are weak evidence, so forcing is conditional on the
  *    worker's own final difficulty.
@@ -242,36 +252,106 @@ export function forceDifficultyRecommend(output: string, recommend: string): str
 }
 
 /**
+ * Whether a counted budget breach is GROSS: it blew past the counted budget by
+ * ≥2× on ANY axis (exploration calls, distinct files, or turns). A gross overrun
+ * is unmistakable and forces escalation regardless of the worker's self-report.
+ */
+export function isGrossBreach(
+	status: Pick<BudgetStatus, "explorationCalls" | "distinctFiles" | "turns">,
+): boolean {
+	return (
+		status.explorationCalls >= ESCALATION_MAX_EXPLORATION_CALLS * 2 ||
+		status.distinctFiles >= ESCALATION_MAX_FILES_TOUCHED * 2 ||
+		status.turns >= ESCALATION_MAX_TURNS * 2
+	);
+}
+
+/**
+ * FIX 3(a): labels for the axis/axes that actually CAUSED a gross forced
+ * escalation (≥2× the cap), so the banner names the real trigger instead of a
+ * non-gross axis that happened to latch the breach first.
+ */
+export function grossBreachAxisLabels(
+	status: Pick<BudgetStatus, "explorationCalls" | "distinctFiles" | "turns">,
+): string[] {
+	const axes: string[] = [];
+	if (status.explorationCalls >= ESCALATION_MAX_EXPLORATION_CALLS * 2) {
+		axes.push(`exploration calls ${status.explorationCalls} ≥ 2× cap ${ESCALATION_MAX_EXPLORATION_CALLS}`);
+	}
+	if (status.distinctFiles >= ESCALATION_MAX_FILES_TOUCHED * 2) {
+		axes.push(`distinct files ${status.distinctFiles} ≥ 2× cap ${ESCALATION_MAX_FILES_TOUCHED}`);
+	}
+	if (status.turns >= ESCALATION_MAX_TURNS * 2) {
+		axes.push(`turns ${status.turns} ≥ 2× cap ${ESCALATION_MAX_TURNS}`);
+	}
+	return axes;
+}
+
+/**
+ * FIX 3(a): build the one-line budget-gate banner from the FINAL counted totals.
+ * Reports ALL breached axes (counts + caps) and, when escalation is forced by a
+ * gross breach, names the gross axis/axes that caused it — never a non-gross axis.
+ */
+export function buildBudgetGateBanner(
+	status: BudgetStatus,
+	opts: { force: boolean; grossBreach: boolean },
+): string {
+	const head = `\u26a0 [Budget Gate] ${status.breachKind} budget breach (${status.reason})`;
+	if (!opts.force) return `${head} \u2014 observed; recommend left unchanged.`;
+	const grossNote = opts.grossBreach ? ` (gross breach: ${grossBreachAxisLabels(status).join("; ")})` : "";
+	return `${head} \u2014 forcing recommend=investigate${grossNote}.`;
+}
+
+/**
+ * FIX 3(c): a turns-only breach does NOT force escalation (see shouldForceRecommend),
+ * so its banner is pure context noise — it changes no behaviour and trains the
+ * reader to ignore the signal. Suppress it (route to the debug log); keep banners
+ * for substantive/gross breaches, which can force.
+ */
+export function shouldShowBudgetBanner(breachKind: BreachKind): boolean {
+	return breachKind !== "turns-only";
+}
+
+/**
  * Decide whether a counted budget breach should FORCE `recommend=investigate`.
  *
- *   - SUBSTANTIVE breach (exploration calls OR distinct files over budget) →
- *     ALWAYS force: wide investigation / unfamiliar code is the real signal.
+ *   - GROSS breach (≥2× the limit on any axis) → ALWAYS force, whatever the report.
+ *   - SUBSTANTIVE breach (exploration calls OR distinct files over budget) → force ONLY
+ *     when the difficulty block CORROBORATES confusion (`verification: fail`,
+ *     `uncertainty: high`, or the worker's own `recommend: investigate`). A read-heavy
+ *     but unambiguous run (uncertainty=low, verification=pass, recommend=plan/none)
+ *     keeps the model's own recommend — wide exploration alone is not evidence of
+ *     difficulty and forcing on it over-escalated live runs.
  *   - TURNS-ONLY breach (only the turn threshold crossed) → force ONLY when the
  *     worker's FINAL difficulty admits difficulty: `verification: fail` OR
- *     `uncertainty: high`. A turns-only breach with a clean report
- *     (verification=pass, uncertainty=low/medium) is NOT forced — turns alone are
- *     not evidence of difficulty and forcing on them over-escalated live runs.
+ *     `uncertainty: high`. A clean turns-only run keeps its own recommend.
  *   - "none" → never force.
  *
- * Missing/absent difficulty on a turns-only breach is treated as "no admission"
- * (do NOT force); there is nothing to corroborate the breach.
+ * Missing/absent difficulty is treated as "no admission" (do NOT force); there is
+ * nothing to corroborate the breach.
  */
 export function shouldForceRecommend(
 	breachKind: BreachKind,
-	difficulty: { verification?: string; uncertainty?: string } | null | undefined,
+	difficulty: { verification?: string; uncertainty?: string; recommend?: string } | null | undefined,
+	grossBreach = false,
 ): boolean {
 	if (breachKind === "none") return false;
-	if (breachKind === "substantive") return true;
-	// turns-only: force only on a self-admitted hard signal.
+	if (grossBreach) return true;
 	const verification = (difficulty?.verification ?? "").toLowerCase();
 	const uncertainty = (difficulty?.uncertainty ?? "").toLowerCase();
+	if (breachKind === "substantive") {
+		const recommend = (difficulty?.recommend ?? "").toLowerCase();
+		return verification === "fail" || uncertainty === "high" || recommend === "investigate";
+	}
+	// turns-only: force only on a self-admitted hard signal.
 	return verification === "fail" || uncertainty === "high";
 }
 
 /** One-time wrap-up message injected when the counted budget is crossed. */
 export const BUDGET_WRAPUP_MESSAGE =
 	"You have exceeded your exploration budget. Stop exploring immediately \u2014 do NOT make further read/grep/find/ls calls. " +
-	"Summarise what you already have, write your ## Completed / ## Findings report now, and set `## Difficulty` recommend: investigate.";
+	"Summarise what you already have and write your ## Completed / ## Findings report now. " +
+	"In the ## Difficulty block, give an HONEST assessment of the work you actually did \u2014 report what you really found; do not inflate or deflate it.";
 
 // ─── Delegate-model resolution (C2: no silent fallback to an expensive model) ───
 
@@ -692,6 +772,10 @@ export type SubagentResult = {
 	budgetBreachKind?: BreachKind;
 	/** Reason(s) the budget was crossed (empty/undefined when under budget). */
 	budgetReason?: string;
+	/** Path of the flight-recorder dump written for this delegation (instrumentation). */
+	flightRecorderPath?: string;
+	/** Calibration inputs captured for the persisted record (difficulty/budget/budgetGate). */
+	calibration?: import('./types.ts').CalibrationPayload;
 };
 
 /** Parameters for createFlightRecorderDump */
@@ -758,6 +842,8 @@ export class SubagentRunner {
 		const startTime = Date.now();
 		let envSnapshot: NodeJS.ProcessEnv;
 		let sessionId: string | undefined;
+		// Path of the flight-recorder dump written for this delegation (instrumentation).
+		let flightRecorderPath: string | undefined;
 		const { config } = this;
 		const feed = this.feed;
 
@@ -818,6 +904,13 @@ export class SubagentRunner {
 				loader = new DefaultResourceLoader({
 					cwd: config.cwd,
 					agentDir: config.agentDir,
+					// Drop the ~50-entry global skill pack (the ~16k-char XML index) while
+					// keeping the specialist's + orchestrator-passed skills. Verified in
+					// resource-loader.js:284-288 — when noSkills is true, skillPaths is
+					// mergePaths(cliEnabledSkills, additionalSkillPaths), so
+					// additionalSkillPaths survive and only enabledSkills (the global pack)
+					// is dropped.
+					noSkills: true,
 					additionalSkillPaths: resolvedSkillPaths,
 					systemPromptOverride: () => {
 						let prompt = specialist.systemPrompt;
@@ -1609,6 +1702,7 @@ export class SubagentRunner {
 						activityFeed: { ...feed.feedState },
 					});
 					writeFileSync(join(debugDir, filename), JSON.stringify(dump, null, 2));
+					flightRecorderPath = join(debugDir, filename);
 				} catch (e) {
 					// Best-effort — never let debugging dump failure break the delegation
 				}
@@ -1629,11 +1723,23 @@ export class SubagentRunner {
 			const cleaned = sanitizeOutputForOrchestrator(compressOutput(output || "(no output)"));
 			let finalOutput = truncateSubagentOutput(cleaned, OUTPUT_CAP);
 			// ── Programmatic budget gate (PART A.3a): conditionally FORCE the signal ──
-			// A SUBSTANTIVE breach (exploration calls OR distinct files over budget)
-			// always overrides the model's self-reported `recommend`. A TURNS-ONLY
-			// breach forces only when the FINAL `## Difficulty` admits difficulty
-			// (verification=fail OR uncertainty=high) — a clean turns-only run keeps
-			// the model's own recommend (turns alone over-escalated live runs).
+			// The observation banner ALWAYS surfaces a breach to the orchestrator. The
+			// `recommend` rewrite fires only when the breach is GROSS (≥2× any counted limit)
+			// or the FINAL `## Difficulty` CORROBORATES confusion (verification=fail,
+			// uncertainty=high, or recommend=investigate). A read-heavy-but-unambiguous run
+			// keeps the model's own recommend — wide exploration alone is not evidence of
+			// difficulty and forcing on it over-escalated live runs.
+			// ── Calibration record inputs (instrumentation only; no behavior change) ──
+			// Captured BEFORE the gate so the un-forced values are the defaults, then
+			// overwritten with the gate's ACTUAL emitted values (single source of truth).
+			let calibrationBudget: BudgetStatus = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns);
+			let calibrationDifficulty: DifficultySignal | null = extractDifficultyFromOutput(output);
+			let calibrationGate: CalibrationBudgetGate = {
+				forced: false,
+				grossBreach: false,
+				finalRecommend: calibrationDifficulty?.recommend ?? "",
+				banner: "",
+			};
 			if (budgetExceeded) {
 				// Recompute from the FINAL counters so the kind reflects the whole run,
 				// not just the breach that first latched the wrap-up nudge.
@@ -1641,10 +1747,29 @@ export class SubagentRunner {
 				budgetBreachKind = finalBudget.breachKind;
 				// Parse the worker's own final difficulty (from the untruncated output).
 				const finalDifficulty = extractDifficultyFromOutput(output);
-				if (shouldForceRecommend(budgetBreachKind, finalDifficulty)) {
-					finalOutput = `\u26a0 [Budget Gate] ${budgetBreachKind} budget breach (${budgetReason}) \u2014 forcing recommend=investigate.\n\n` + finalOutput;
+				const grossBreach = isGrossBreach(finalBudget);
+				const force = shouldForceRecommend(budgetBreachKind, finalDifficulty, grossBreach);
+				// FIX 3(a): build the banner from the FINAL totals (all breached axes; the
+				// gross axis/axes named as the trigger), not the stale first-latched reason.
+				// FIX 3(c): a turns-only breach forces nothing — suppress its banner.
+				const gateBanner = buildBudgetGateBanner(finalBudget, { force, grossBreach });
+				if (shouldShowBudgetBanner(finalBudget.breachKind)) {
+					finalOutput = `${gateBanner}\n\n${finalOutput}`;
+				} else {
+					debugLog("[budget] turns-only breach banner suppressed:", gateBanner);
+				}
+				if (force) {
 					finalOutput = forceDifficultyRecommend(finalOutput, "investigate");
 				}
+				// Record the values the gate ACTUALLY emitted (instrumentation only).
+				calibrationBudget = finalBudget;
+				calibrationDifficulty = finalDifficulty;
+				calibrationGate = {
+					forced: force,
+					grossBreach,
+					finalRecommend: force ? "investigate" : (finalDifficulty?.recommend ?? ""),
+					banner: gateBanner,
+				};
 			}
 
 			setViewerOutput(output);
@@ -1707,6 +1832,14 @@ export class SubagentRunner {
 				budgetExceeded: budgetExceeded || undefined,
 				budgetBreachKind: budgetExceeded ? budgetBreachKind : undefined,
 				budgetReason: budgetReason || undefined,
+				// ── Calibration instrumentation (additive; recorded, never acted on) ──
+				flightRecorderPath,
+				calibration: {
+					difficulty: calibrationDifficulty,
+					difficultyPresent: calibrationDifficulty !== null,
+					budget: calibrationBudget,
+					budgetGate: calibrationGate,
+				} as CalibrationPayload,
 				tokenUsage: { input: accInput, output: accOutput, cached: accCached },
 				hasLintFailures,
 				// ── Progress/stall + provider-failure summary from the observe-only detector ──

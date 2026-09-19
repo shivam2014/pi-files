@@ -327,9 +327,11 @@ Pi SDK docs (for reference \u2014 delegate to specialists who can read these):
 		return `  - **${name}** \u2014 ${desc}\n    tools: ${tools}${gapLine}`;
 	}).join("\n\n");
 
-	// Build skills summary
+	// Build skills summary — names only (compact). The orchestrator routes by
+	// passing skill names via delegate({ skills: [...] }); descriptions were the
+	// bulk of the old ~8.5-9k-char catalog and added little routing value.
 	const skillsSection = skills && skills.length > 0
-		? `\n\nAvailable skills (pass relevant ones in task descriptions):\n${skills.map(s => `  - **${s.name}**: ${s.description}`).join("\n")}`
+		? `\n\nAvailable skills (pass names via delegate({ skills: [...] })):\n  ${skills.map(s => s.name).join(", ")}`
 		: "";
 
 	const fusionSection = fusionEnabled ? FUSION_INSTRUCTION : "";

@@ -62,10 +62,12 @@ describe("computeBudgetStatus (pure counted budget)", () => {
 	});
 
 	it("exploration count crosses the budget → exceeded with reason", () => {
-		const s = computeBudgetStatus({ read: 7 }, 7, 7);
+		const calls = ESCALATION_MAX_EXPLORATION_CALLS + 1;
+		// Keep distinct files/turns under budget so ONLY the exploration count crosses.
+		const s = computeBudgetStatus({ read: calls }, 1, 1);
 		expect(s.exceeded).toBe(true);
 		expect(s.breachKind).toBe("substantive");
-		expect(s.reason).toContain(`exploration calls 7 > ${ESCALATION_MAX_EXPLORATION_CALLS}`);
+		expect(s.reason).toContain(`exploration calls ${calls} > ${ESCALATION_MAX_EXPLORATION_CALLS}`);
 	});
 
 	it("exactly at every limit is NOT exceeded (strict >, matches 'MORE THAN')", () => {
@@ -88,10 +90,12 @@ describe("computeBudgetStatus (pure counted budget)", () => {
 		expect(s.reason).toContain("turns");
 	});
 
-	it("exploration tools are read+grep+find+ls (bash/edit are not exploration)", () => {
-		const s = computeBudgetStatus({ read: 3, grep: 1, find: 1, ls: 1, bash: 99, edit: 99 }, 0, 0);
-		expect(s.explorationCalls).toBe(6);
-		expect(s.exceeded).toBe(false); // 6 is exactly the budget, not over
+	it("exploration tools are read+grep only (find/ls are orientation; bash/edit are not exploration)", () => {
+		// FIX 3(b): find/ls were removed from the exploration cap — a cross-repo scout
+		// legitimately spends them on orientation. Only read+grep count now.
+		const s = computeBudgetStatus({ read: 3, grep: 1, find: 99, ls: 99, bash: 99, edit: 99 }, 0, 0);
+		expect(s.explorationCalls).toBe(4);
+		expect(s.exceeded).toBe(false); // 4 is well under the exploration budget
 	});
 });
 
@@ -140,9 +144,13 @@ describe("forceDifficultyRecommend (programmatic recommend override)", () => {
 		expect(r.formatted).toContain("recommend=investigate");
 	});
 
-	it("BUDGET_WRAPUP_MESSAGE tells the subagent to stop exploring and report", () => {
+	it("BUDGET_WRAPUP_MESSAGE tells the subagent to stop exploring and report honestly", () => {
 		expect(BUDGET_WRAPUP_MESSAGE).toMatch(/exceeded your exploration budget/i);
-		expect(BUDGET_WRAPUP_MESSAGE).toMatch(/recommend: investigate/);
+		expect(BUDGET_WRAPUP_MESSAGE).toMatch(/## Difficulty/);
+		expect(BUDGET_WRAPUP_MESSAGE).toMatch(/honest/i);
+		// FIX: the nudge must NOT prescribe `recommend: investigate` — that value
+		// would self-justify the budget gate's forcing rule (circular escalation).
+		expect(BUDGET_WRAPUP_MESSAGE).not.toMatch(/recommend: investigate/);
 	});
 });
 
@@ -201,11 +209,12 @@ const assistantEnd = (stopReason: string, text: string) => ({
 });
 
 describe("PART A — runner forces recommend=investigate on a counted budget breach", () => {
-	it("(a) 7 reads > budget with model self-report recommend:none → forced recommend=investigate", { timeout: 20_000 }, async () => {
+	it("(a) exploration-count breach with a CLEAN difficulty → banner shown, recommend NOT rewritten", { timeout: 20_000 }, async () => {
 		const { ref, resolvePrompt, resultPromise } = createRunner("budget-over");
 		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
 
-		// Same path each time so ONLY the exploration count crosses (files stays 1).
+		// Same path each time so ONLY the exploration count crosses (files stays 1), and
+		// stay under 2× the cap so this is a plain (non-gross) substantive breach.
 		for (let i = 0; i < ESCALATION_MAX_EXPLORATION_CALLS + 1; i++) {
 			ref.subscribeCb!(toolStart("read", `r${i}`, { path: `/tmp/one-file.ts` }));
 			ref.subscribeCb!(toolEnd("read", `r${i}`));
@@ -218,23 +227,54 @@ describe("PART A — runner forces recommend=investigate on a counted budget bre
 		resolvePrompt();
 		const result = await resultPromise;
 
-		// Code-detected breach flag
+		// Code-detected breach flag still latches.
 		expect(result.budgetExceeded).toBe(true);
 		expect(result.budgetBreachKind).toBe("substantive");
 		expect(result.budgetReason).toContain("exploration calls");
 
-		// The model reported `recommend: none`; the programmatic gate overrides it.
+		// The observation banner MUST still surface to the orchestrator...
+		expect(result.output).toContain("⚠ [Budget Gate]");
+		expect(result.output).toContain("budget breach");
+
+		// ...but a read-heavy run with a CLEAN, uncorroborated difficulty keeps its own
+		// `recommend` — the gate no longer rewrites it (no false positive).
 		const d = extractDifficultyFromOutput(result.output);
 		expect(d).not.toBeNull();
-		expect(d!.recommend).toBe("investigate");
+		expect(d!.recommend).toBe("none");
+		expect(result.output).not.toContain("forcing recommend=investigate");
 
-		// The orchestrator-facing line carries it.
+		// So the orchestrator-facing line does NOT carry a forced investigate.
 		const r = formatResult({
 			output: result.output,
 			metrics: result.metrics as any,
 			elapsed: 1, turns: result.turns, toolCalls: 7, status: "ok",
 		});
-		expect(r.formatted).toContain("recommend=investigate");
+		expect(r.formatted).not.toContain("recommend=investigate");
+	});
+
+	it("(a-gross) a GROSS exploration breach (2× the limit) forces even with a clean difficulty", { timeout: 20_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createRunner("budget-gross");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		// 2× the exploration cap is a gross breach — it forces regardless of self-report.
+		for (let i = 0; i < ESCALATION_MAX_EXPLORATION_CALLS * 2; i++) {
+			ref.subscribeCb!(toolStart("read", `g${i}`, { path: `/tmp/one-file.ts` }));
+			ref.subscribeCb!(toolEnd("read", `g${i}`));
+		}
+
+		const report = `## Findings\n- summary: blew the budget\n\n## Difficulty\n- exploration: low\n- uncertainty: low\n- verification: pass\n- iteration: low\n- recommend: none\n`;
+		ref.subscribeCb!(textDelta(report));
+		ref.subscribeCb!(assistantEnd("end_turn", report));
+
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.budgetBreachKind).toBe("substantive");
+		expect(result.output).toContain("⚠ [Budget Gate]");
+		expect(result.output).toContain("forcing recommend=investigate");
+		expect(result.output).toContain("gross breach");
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("investigate");
 	});
 
 	it("(b) under-budget run keeps the model's own difficulty signal unchanged", { timeout: 20_000 }, async () => {

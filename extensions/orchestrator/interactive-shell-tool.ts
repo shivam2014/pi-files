@@ -361,6 +361,17 @@ export function registerInteractiveShellTool(pi: ExtensionAPI): void {
 			_onUpdate?: (update: any) => void,
 			ctx?: any
 		) {
+			// A bare `input` string (no inputKeys/inputHex/inputPaste directive) is sent
+			// as raw text, which can leak into the HOST editor once a modal (e.g. pi's
+			// /model picker) has already closed. Route bare `input` through the
+			// bracketed-paste path instead. Explicit inputKeys/inputHex/inputPaste are
+			// left untouched.
+			if (params.input && !params.inputKeys && !params.inputPaste && !(params as any).inputHex) {
+				const normalized: ShellParamsType = { ...params, inputPaste: params.input };
+				delete (normalized as any).input;
+				params = normalized;
+			}
+
 			// Try ctx.interactiveShell() if available on ExtensionContext
 			if (ctx?.interactiveShell) {
 				try {

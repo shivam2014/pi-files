@@ -242,6 +242,16 @@ export function registerAdvancePlanStepTool(pi: ExtensionAPI): void {
                     details: { error: 'No active plan.' },
                 };
             }
+            // FIX 2: distinguish a COMPLETE plan from an ABSENT one. A finished plan is
+            // preserved (FIX 1), so a bare advance would misleadingly imply nothing
+            // happened; return an actionable, complete-specific message instead.
+            const planState = panel.getPlanState();
+            if (planState && planState.steps.length > 0 && planState.steps.every((s) => s.completed)) {
+                return {
+                    content: [{ type: 'text', text: 'Plan complete — no pending steps. Use plan_add_steps() to add more.' }],
+                    details: { status: 'complete', goal: planState.goal },
+                };
+            }
             const result = panel.advanceStep();
             if (result.status === 'error') {
                 return {

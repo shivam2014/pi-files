@@ -1,14 +1,14 @@
 import type { ReadSkillParams } from "./types.ts";
 import { Type } from "typebox";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolveSkillFilePath } from "./skill-resolver.ts";
 
 /**
  * Create the read_skill tool definition.
  *
- * Reads the SKILL.md file from ~/.pi/agent/skills/{name}/SKILL.md
- * with path-sandboxing to prevent directory traversal.
+ * Reads the SKILL.md file for a named skill, probing <agentDir>/skills,
+ * ~/.agents/skills, and npm-bundled <agentDir>/npm/node_modules/<pkg>/skills
+ * (incl. scoped packages), with path-sandboxing to prevent directory traversal.
  *
  * Returns a tool definition object (not registered — caller registers it).
  */
@@ -18,7 +18,7 @@ export function createReadSkillTool() {
 		label: "read_skill",
 		description:
 			"Read the contents of a skill file by name. " +
-			"Skills are loaded from ~/.pi/agent/skills/{name}/SKILL.md. " +
+			"Skills are loaded from <agentDir>/skills, ~/.agents/skills, and npm-bundled <agentDir>/npm/node_modules/*/skills (incl. scoped packages). " +
 			"Example skill names: tdd, implement, code-review, diagnosing-bugs, agents-md-writer, domain-modeling.",
 		parameters: Type.Object({
 			name: Type.String({
@@ -52,28 +52,12 @@ export function createReadSkillTool() {
 				};
 			}
 
-			// Resolve agent dir first (follows symlinks at base level)
-			const agentDir = realpathSync(getAgentDir());
-			const skillsDir = join(agentDir, "skills");
-			const skillPath = join(skillsDir, name, "SKILL.md");
+			// Resolve across all skill roots (probe order is shared with list_skills
+			// and resolveSkill). The name guard above already blocks traversal
+			// characters (.., /, \), so join() inside the resolver stays under each root.
+			const skillPath = resolveSkillFilePath(name);
 
-			// Sandbox check: name is validated against traversal characters (.., /, \),
-			// so join() produces a path guaranteed under skillsDir by construction.
-			// Individual skill dirs may be symlinks (e.g. to ~/.agents/skills/) —
-			// the OS resolves them transparently at read time.
-			if (!skillPath.startsWith(skillsDir + "/")) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Error: Invalid skill name '${name}'. Path traversal is blocked.`,
-						},
-					],
-					details: {},
-				};
-			}
-
-			if (!existsSync(skillPath)) {
+			if (!skillPath) {
 				return {
 					content: [
 						{

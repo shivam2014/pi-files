@@ -14,6 +14,53 @@ import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
 import { formatMetricsLine } from "./types.ts";
 import { captureDiagnostic, isDiagnosticsEnabled, persistDiagnostic, cleanupOldDiagnostics } from "./subagent-diagnostics.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { readFileSync, writeFileSync } from "node:fs";
+import type { BudgetStatus } from "./subagent-runner.ts";
+import type { CalibrationRecord, CalibrationBudgetGate } from "./types.ts";
+
+/** Neutral BudgetStatus — used when a delegation produced no calibration inputs. */
+export const EMPTY_BUDGET_STATUS: BudgetStatus = {
+	exceeded: false,
+	breachKind: "none",
+	reason: "",
+	explorationCalls: 0,
+	distinctFiles: 0,
+	turns: 0,
+};
+
+/** Neutral budget-gate outcome — no breach, nothing forced. */
+export const EMPTY_BUDGET_GATE: CalibrationBudgetGate = {
+	forced: false,
+	grossBreach: false,
+	finalRecommend: "",
+	banner: "",
+};
+
+/**
+ * Merge the calibration record into an existing flight-recorder dump file
+ * (read-modify-write, SAME path — ONE joinable record per delegation, no join
+ * key required). ADDITIVE instrumentation: it records escalation data the
+ * pipeline already computed and never influences any decision.
+ *
+ * Best-effort: never throws. An undefined path (the runner did not write a dump)
+ * or an unwritable file must NOT break a delegation. Mirrors the existing
+ * flight-recorder gating — the write is not gated by PI_ORCHESTRATOR_DIAGNOSTICS;
+ * it is attempted and failures are swallowed.
+ */
+export function writeCalibrationRecord(
+	filePath: string | undefined,
+	calibration: CalibrationRecord,
+): void {
+	if (!filePath) return;
+	try {
+		const raw = readFileSync(filePath, "utf-8");
+		const record = JSON.parse(raw);
+		Object.assign(record, calibration);
+		writeFileSync(filePath, JSON.stringify(record, null, 2));
+	} catch {
+		// Best-effort — never let instrumentation failure break a delegation.
+	}
+}
 import os from "os";
 import { statusIcon, styledSymbol, getTheme } from "./orchestrator-theme.ts";
 import { getSessionMode, loadOrchestratorConfig } from "./orchestrator-config";
@@ -332,7 +379,7 @@ export class DelegatePipeline {
 			};
 		}
 
-		// Resolve skills: override replaces defaults (issue #42)
+		// Resolve skills: override merges (union) with defaults (issue #42)
 		const resolvedSuggestedSkills = getSpecialistSkills(specialist.name, params.skills);
 
 		const { signal } = params;
@@ -556,6 +603,22 @@ export class DelegatePipeline {
 			stallTerminated: result?.stallTerminated === true,
 		});
 
+		// ── Persist the calibration record (instrumentation; best-effort, non-throwing) ──
+		// Read-modify-write into the SAME flight-recorder dump the runner already wrote,
+		// keyed by its path — ONE joinable record per delegation, no join key needed.
+		writeCalibrationRecord(result?.flightRecorderPath, {
+			difficulty: result?.calibration?.difficulty ?? null,
+			difficultyPresent: result?.calibration?.difficultyPresent ?? false,
+			budget: result?.calibration?.budget ?? EMPTY_BUDGET_STATUS,
+			budgetGate: result?.calibration?.budgetGate ?? EMPTY_BUDGET_GATE,
+			outcome,
+			progress: {
+				progressState: result?.progressState,
+				providerFailures: result?.providerFailures,
+				stallTerminated: result?.stallTerminated === true,
+			},
+		});
+
 		// ── Handle diagnostics (capture + persist, no UI) ──
 		const diagnostic = this.handleDiagnostics(result, specialist.name, params.task, ctx, metrics, startTime);
 
@@ -587,31 +650,6 @@ export class DelegatePipeline {
 				}, undefined, ctx);
 			} catch (e) {
 				debugLog('[diagnostic] display failed', e);
-			}
-		}
-
-		// ── Findings salvage: if output is empty/short, check disk ──
-		let salvagedFindings = '';
-		if (!rawSubagentOutput || rawSubagentOutput.trim().length < 50) {
-			try {
-				const fs = await import('node:fs');
-				const path = await import('node:path');
-				const osMod = await import('node:os');
-				const findingsPath = path.join(osMod.tmpdir(), 'orchestrator-debug', `findings-${ctx.sessionId}.md`);
-				if (fs.existsSync(findingsPath)) {
-					salvagedFindings = fs.readFileSync(findingsPath, 'utf-8');
-				}
-			} catch {}
-		}
-
-		// Apply salvaged findings to result.output before formatting
-		if (salvagedFindings) {
-			if (!result?.output || result.output.trim().length < 50) {
-				// Output empty/short — replace entirely with salvaged findings
-				result.output = `⚠ PARTIAL — salvaged from disk\n\n${salvagedFindings}`;
-			} else if (salvagedFindings.length > (result.output.length - (result.output.length - rawSubagentOutput?.length || 0))) {
-				// Output exists but salvaged is longer — append
-				result.output += `\n\n---\n⚠ SALVAGED FINDINGS (additional context from disk)\n\n${salvagedFindings}`;
 			}
 		}
 

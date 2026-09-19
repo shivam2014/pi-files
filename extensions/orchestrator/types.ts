@@ -6,6 +6,10 @@
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Scope } from "./scope-manager.ts";
+import type { DifficultySignal } from "./delegate-pipeline.ts";
+import type { BudgetStatus } from "./subagent-runner.ts";
+import type { DelegationOutcome } from "./outcome.ts";
+import type { ProgressState } from "./progress-detector.ts";
 
 /** A step in the orchestration plan (Layer 1 header) */
 export interface OrchestratorStep {
@@ -393,5 +397,63 @@ export type ReadonlySessionManager = Pick<SessionManager, "getCwd" | "getSession
  */
 export interface SessionContext {
 	sessionManager?: ReadonlySessionManager;
+}
+
+// ─── Calibration record (instrumentation) ────────────────────────────────────
+// The escalation data computed for a single delegation, persisted into the
+// existing flight-recorder dump file as ONE joinable record. ADDITIVE: these
+// shapes only RECORD what the escalation logic already computes.
+
+/** Budget-gate forcing outcome for a delegation (instrumentation only). */
+export interface CalibrationBudgetGate {
+	/** True when the gate rewrote the recommendation to `investigate`. */
+	forced: boolean;
+	/** True when the breach was gross (>= 2x any counted limit). */
+	grossBreach: boolean;
+	/** The recommend value actually emitted (post-force). Empty string when none. */
+	finalRecommend: string;
+	/** The `[Budget Gate]` banner prepended to the output (empty when no breach). */
+	banner: string;
+}
+
+/** Progress/stall + provider-failure summary for a delegation (instrumentation only). */
+export interface CalibrationProgress {
+	progressState?: ProgressState;
+	providerFailures?: number;
+	stallTerminated?: boolean;
+}
+
+/**
+ * Runner-supplied calibration inputs. The `outcome` group is pipeline-owned
+ * (classifyDelegationOutcome runs after the runner returns), so it is NOT here.
+ */
+export interface CalibrationPayload {
+	/** The worker's self-reported `## Difficulty` signal (null when the block was absent). */
+	difficulty: DifficultySignal | null;
+	/** True when a `## Difficulty` block was present (distinguishes absent vs present-but-empty). */
+	difficultyPresent: boolean;
+	/** Programmatic budget status (reuses the runner's BudgetStatus shape). */
+	budget: BudgetStatus;
+	/** Budget-gate forcing outcome. */
+	budgetGate: CalibrationBudgetGate;
+}
+
+/**
+ * The single joinable calibration record persisted per delegation. Written into
+ * the same flight-recorder dump file (same path) so no join key is required.
+ */
+export interface CalibrationRecord {
+	/** The full `DifficultySignal`, or explicit null when the block was absent. */
+	difficulty: DifficultySignal | null;
+	/** True when a `## Difficulty` block was present (absent vs present-but-empty). */
+	difficultyPresent: boolean;
+	/** Programmatic budget status. */
+	budget: BudgetStatus;
+	/** Budget-gate forcing outcome. */
+	budgetGate: CalibrationBudgetGate;
+	/** Canonical delegation outcome from classifyDelegationOutcome(). */
+	outcome: DelegationOutcome;
+	/** Progress/stall + provider-failure summary. */
+	progress: CalibrationProgress;
 }
 

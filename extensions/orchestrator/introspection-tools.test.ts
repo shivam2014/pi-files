@@ -19,6 +19,14 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 	};
 });
 
+// Isolate skill roots: getSkillRoots() also probes ~/.agents/skills and
+// <agentDir>/npm/node_modules. Redirect homedir to a non-existent path so these
+// tests exercise only the mocked getAgentDir() root.
+vi.mock("os", async () => {
+	const actual = await vi.importActual<any>("node:os");
+	return { ...actual, homedir: () => "/nonexistent-skill-home" };
+});
+
 // Mock fusion config
 vi.mock("./fusion-tool.ts", () => ({
 	loadFusionConfig: vi.fn(),

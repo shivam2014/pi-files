@@ -73,7 +73,7 @@ export class PlanPanel {
 	private _timelineStart: number = Date.now();
 	private _sessionId: string | null = null;
 	private _activeDelegations: number = 0;
-	private planState: { goal: string; steps: PlanStep[]; startTime: number; sessionId: string } | null = null;
+	private planState: { goal: string; steps: PlanStep[]; startTime: number; sessionId: string; completed?: boolean } | null = null;
 	private _setWidget: ((key: string, content: string[] | undefined) => void) | null = null;
 	private _lastWidgetContent: string[] | null = null;
 	private _planTimer: ReturnType<typeof setInterval> | null = null;
@@ -102,6 +102,7 @@ export class PlanPanel {
 				steps: this.planState.steps.map(s => ({ label: s.label, completed: s.completed, errored: s.errored, kind: s.kind })),
 				startTime: this.planState.startTime,
 				sessionId: this._sessionId,
+				completed: this.planState.completed ?? false,
 			}, null, 2));
 		} catch { /* silent */ }
 	}
@@ -146,6 +147,17 @@ export class PlanPanel {
 		} catch { return null; }
 	}
 
+	/**
+	 * FIX 1: set the explicit completion flag once every step is done, so the
+	 * plan can be told apart from a never-created (null) plan and preserved.
+	 */
+	private _markCompleteIfAllDone(): void {
+		if (!this.planState) return;
+		if (this.planState.steps.length > 0 && this.planState.steps.every(s => s.completed)) {
+			this.planState.completed = true;
+		}
+	}
+
 	/** Find the first pending (non-completed, non-errored, non-active) step and activate it. */
 	private _activateNextPending(): void {
 		if (!this.planState) return;
@@ -170,7 +182,7 @@ export class PlanPanel {
 				const kind = VALID_STEP_KINDS.includes(s?.kind) ? s.kind : undefined;
 				return { ...s, kind, active: false };
 			});
-			return { goal: saved.goal, steps, startTime: saved.startTime || Date.now(), sessionId: this._sessionId ?? saved.sessionId ?? "unknown" };
+			return { goal: saved.goal, steps, startTime: saved.startTime || Date.now(), sessionId: this._sessionId ?? saved.sessionId ?? "unknown", completed: saved.completed === true };
 		} catch { return null; }
 	}
 
@@ -530,8 +542,12 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		const modePrefix = mode === "parallel" ? "⚡" : "🔄";
 		const goalWithMode = `${modePrefix} ${goal}`;
 		const sameGoal = this.planState?.goal === goalWithMode;
+		// A finished plan must not bleed its completed flags into a fresh plan: when the
+		// orchestrator declares a plan again after completion, start clean (step reuse is
+		// only meaningful for an in-progress plan).
+		const previousComplete = !!this.planState && this.planState.steps.length > 0 && this.planState.steps.every(s => s.completed);
 		if (!sameGoal) { this._sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8); this._activeDelegations = 0; }
-		const oldSteps = sameGoal ? (this.planState?.steps || []) : [];
+		const oldSteps = (sameGoal && !previousComplete) ? (this.planState?.steps || []) : [];
 		const prevStart = this.planState?.startTime;
 		this.planState = {
 			goal: goalWithMode, sessionId: this._sessionId!,
@@ -547,7 +563,8 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 				const wasCompleted = old?.completed === true;
 				return { label, kind, delegationLabel, loopUntil, completed: wasCompleted, errored: false, active: !wasCompleted && i === 0, startTime: wasCompleted ? old.startTime : (!wasCompleted && i === 0 ? Date.now() : undefined), endTime: wasCompleted ? old.endTime : undefined };
 			}),
-			startTime: sameGoal && prevStart ? prevStart : Date.now(),
+			startTime: (sameGoal && !previousComplete && prevStart) ? prevStart : Date.now(),
+			completed: false,
 		};
 		this._setWidget = ctx.ui.setWidget.bind(ctx.ui);
 		this._lastWidgetContent = null;
@@ -558,6 +575,20 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 
 	clearPlanPanel(ctx: { ui: { setWidget: (key: string, content: string[] | undefined) => void } }): void {
 		if (this._activeDelegations > 0 && this.planState?.sessionId === this._sessionId) return;
+		// FIX 1: a COMPLETE plan is preserved, not discarded. The documented contract is
+		// that the plan persists after all steps complete so the orchestrator can keep
+		// delegating without re-planning. Nulling it makes "complete" indistinguishable
+		// from "never created", so the delegate auto-create path would replace it with a
+		// fresh 1-step plan. Keep the instance + state; only genuine teardown (a new
+		// plan() or a different session) replaces it.
+		if (this.planState?.completed) {
+			this.stopPlanTimer();
+			this._setWidget = null;
+			this._lastWidgetContent = null;
+			clearDelegationWidgets(ctx);
+			this.savePlanState();
+			return;
+		}
 		const sessionId = this._sessionId;
 		this._cleared = true;
 		this._setWidget = null;
@@ -570,6 +601,25 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		if (sessionId) _removeSession(sessionId);
 	}
 
+	/**
+	 * DEFECT 2: unconditional teardown used at session_shutdown.
+	 *
+	 * clearPlanPanel() PRESERVES a plan whose `completed` flag is set (that is the
+	 * documented turn-boundary contract). session_shutdown is a process-lifetime
+	 * boundary where the retained instance must go, so it needs a teardown that
+	 * ignores the `completed` flag. This drops plan state and stops timers; the
+	 * `_instances` map entry is removed by the module-level discardPlanPanel().
+	 */
+	discard(): void {
+		this._cleared = true;
+		this._setWidget = null;
+		this.stopPlanTimer();
+		if (this._timeline.length > 0) this.dumpTimelineToDisk();
+		this.planState = null;
+		this._lastWidgetContent = null;
+		this.clearSavedPlanState();
+	}
+
 	pushPlanStep(label: string): void {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return;
 		const activeIdx = this.planState.steps.findIndex((s) => s.active);
@@ -579,6 +629,10 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		}
 		this.planState.steps.push({ label, completed: false, errored: false, active: true });
 		this.planState.steps[this.planState.steps.length - 1].startTime = Date.now();
+		// DEFECT 1: a newly appended PENDING step means the plan is no longer complete.
+		// Cleared here so every append path that funnels through pushPlanStep (delegate
+		// fallback append + batch) resets the flag regardless of entry point.
+		this.planState.completed = false;
 		resetSpinner();
 		this._renderWidget();
 	}
@@ -695,6 +749,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		activeStep.detailLines = undefined;
 		this._startStrikeAnimation(activeStep.label, this.planState.steps.indexOf(activeStep));
 		this._activateNextPending();
+		this._markCompleteIfAllDone();
 		this._renderWidget();
 		this.savePlanState();
 		this.recordTimelineFrame("step_complete");
@@ -715,6 +770,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			step.completed = true; step.errored = false; step.active = false; step.detail = undefined; step.detailLines = undefined; step.endTime = Date.now();
 			this._activateNextPending();
 		}
+		this._markCompleteIfAllDone();
 		this._renderWidget(); this.savePlanState(); this.recordTimelineFrame("step_complete");
 	}
 
@@ -731,6 +787,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 				step.detailLines = undefined;
 				step.endTime = Date.now();
 				this._activateNextPending();
+				this._markCompleteIfAllDone();
 				this._renderWidget();
 				this.savePlanState();
 				this.recordTimelineFrame("step_complete");
@@ -756,9 +813,12 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		}
 
 		if (!this.planState.steps.every(s => s.completed)) return;
+		// FIX 1: all steps done → mark the plan explicitly COMPLETE (keep it alive).
 		// Keep plan alive — do NOT call clearPlanPanel(). Just stop timer and re-render.
+		this.planState.completed = true;
 		this.stopPlanTimer();
 		this.dumpTimelineToDisk();
+		this.savePlanState();
 		this._renderWidget();
 	}
 
@@ -833,6 +893,8 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			this.planState.steps.splice(spliceIdx + inserted, 0, newStep);
 			inserted++;
 		}
+		// DEFECT 1: an inserted pending step reopens a completed plan.
+		if (inserted > 0) this.planState.completed = false;
 		this._renderWidget();
 		this.savePlanState();
 		return { inserted };
@@ -853,6 +915,8 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 				count++;
 			}
 		}
+		// DEFECT 1: an appended pending step reopens a completed plan.
+		if (count > 0) this.planState.completed = false;
 		this._renderWidget();
 		this.savePlanState();
 		return { added: count };
@@ -884,10 +948,27 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		return `${styledSymbol("icon.plug")} ${truncateLabel(goal, 58)} ${dots} [${completed}/${total}] ${thFormatDuration(elapsed)}`;
 	}
 
+	/**
+	 * FIX 2: out-of-range error that names the ACTIVE plan (goal + step labels) so the
+	 * caller knows which plan is in play, plus a plan_add_steps() hint when the plan
+	 * is complete or the requested index exceeds the step count. Keeps "out of range".
+	 */
+	private _outOfRangeError(index: number): string {
+		const steps = this.planState?.steps ?? [];
+		const goal = this.planState?.goal ?? "(none)";
+		const labels = steps.map((s, i) => `${i + 1}: ${s.label}`).join("; ");
+		const complete = this.planState?.completed === true || (steps.length > 0 && steps.every(s => s.completed));
+		let msg = `Index ${index} out of range (1–${steps.length}) for plan "${goal}" with steps [${labels}].`;
+		if (complete || index > steps.length) {
+			msg += ` The plan is ${complete ? "complete" : "shorter than the requested index"} — use plan_add_steps() to append steps.`;
+		}
+		return msg;
+	}
+
 	modifyStep(index: number, label: string, kind?: StepKind): { success: boolean; error?: string } {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return { success: false, error: 'No active plan' };
 		const idx = index - 1; // 1-based external → 0-based internal
-		if (idx < 0 || idx >= this.planState.steps.length) return { success: false, error: `Index ${index} out of range (1–${this.planState.steps.length})` };
+		if (idx < 0 || idx >= this.planState.steps.length) return { success: false, error: this._outOfRangeError(index) };
 		this.planState.steps[idx].label = label;
 		if (kind !== undefined) this.planState.steps[idx].kind = kind;
 		this._renderWidget();
@@ -897,7 +978,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 	removeStep(index: number): { success: boolean; error?: string } {
 		if (!this.planState || this.planState.sessionId !== this._sessionId) return { success: false, error: 'No active plan' };
 		const idx = index - 1; // 1-based external → 0-based internal
-		if (idx < 0 || idx >= this.planState.steps.length) return { success: false, error: `Index ${index} out of range (1–${this.planState.steps.length})` };
+		if (idx < 0 || idx >= this.planState.steps.length) return { success: false, error: this._outOfRangeError(index) };
 		if (this.planState.steps[idx].active) return { success: false, error: 'Cannot remove active step' };
 		this.planState.steps.splice(idx, 1);
 		// After removal, if no step is active, activate the next pending step
@@ -1478,6 +1559,21 @@ function _resolveOrCreate(ctx: unknown): PlanPanel {
 
 export const setupPlanPanel = (g: string, s: Array<string | PlanStepSetupEntry>, c: unknown) => _resolveOrCreate(c).setupPlanPanel(g, s, c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
 export const clearPlanPanel = (c: unknown) => resolvePlanPanel(c)?.clearPlanPanel(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
+/**
+ * DEFECT 2: fully discard a session's plan panel — drops the retained (possibly
+ * completed) plan AND removes the `_instances` entry so nothing is kept for the
+ * process lifetime. Use at session_shutdown. Contrast clearPlanPanel(), which
+ * PRESERVES a completed plan across turn boundaries.
+ */
+export function discardPlanPanel(ctx: unknown): void {
+	const panel = resolvePlanPanel(ctx);
+	if (panel) panel.discard();
+	const sessionId = _extractSessionId(ctx);
+	if (sessionId) _instances.delete(sessionId);
+	try {
+		clearDelegationWidgets(ctx as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
+	} catch { /* best-effort: ctx may not carry ui during teardown */ }
+}
 export const completePlanStep = (c: unknown) => resolvePlanPanel(c)?.completePlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });
 export const finalizePlanStep = (c: unknown, stepIndex?: number) => resolvePlanPanel(c)?.finalizePlanStep(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } }, stepIndex);
 export const clearPlanIfComplete = (c: unknown) => resolvePlanPanel(c)?.clearPlanIfComplete(c as { ui: { setWidget: (key: string, content: string[] | undefined) => void } });

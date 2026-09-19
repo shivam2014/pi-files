@@ -7,9 +7,10 @@
 
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getSkillRoots } from "./skill-resolver.ts";
 
 /**
  * Register the list_skills tool on the pi extension API.
@@ -31,36 +32,47 @@ export function registerListSkillsTool(pi: ExtensionAPI): void {
             "Output: Returns bulleted list of installed skills as '• name: description' text, or 'No skills found' if empty",
 		],
 		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-			const agentDir = getAgentDir();
-			const skillsDir = join(agentDir, "skills");
+			// Scan every skill root (shared probe order with read_skill / resolveSkill).
+			const roots = getSkillRoots();
+			let anyRootReadable = false;
+			const seen = new Set<string>();
+			const results: string[] = [];
 
-			let entries: string[] = [];
-			try {
-				entries = readdirSync(skillsDir, { withFileTypes: true })
-					.filter((dirent) => dirent.isDirectory())
-					.map((dirent) => dirent.name);
-			} catch {
+			for (const skillsDir of roots) {
+				let entries: string[] = [];
+				try {
+					entries = readdirSync(skillsDir, { withFileTypes: true })
+						.filter((dirent) => dirent.isDirectory())
+						.map((dirent) => dirent.name);
+				} catch {
+					continue; // root missing / unreadable — try the next
+				}
+				anyRootReadable = true;
+
+				for (const dir of entries.sort()) {
+					if (seen.has(dir)) continue; // first root in probe order wins
+					seen.add(dir);
+					try {
+						const skillPath = join(skillsDir, dir, "SKILL.md");
+						if (!existsSync(skillPath)) continue;
+						const content = readFileSync(skillPath, "utf-8");
+						const { frontmatter } = parseFrontmatter(content);
+						const name = (frontmatter.name as string) || dir;
+						const description = (frontmatter.description as string) || "";
+						const displayName = name || dir;
+						const displayDesc = description || "(no description)";
+						results.push(`\u2022 ${displayName}: ${displayDesc}`);
+					} catch {
+						continue; // skip unreadable entries
+					}
+				}
+			}
+
+			if (!anyRootReadable) {
 				return {
 					content: [{ type: "text", text: "No skills directory found." }],
 					details: {},
 				};
-			}
-
-			const results: string[] = [];
-			for (const dir of entries.sort()) {
-				try {
-					const skillPath = join(skillsDir, dir, "SKILL.md");
-					if (!existsSync(skillPath)) continue;
-					const content = readFileSync(skillPath, "utf-8");
-					const { frontmatter } = parseFrontmatter(content);
-					const name = (frontmatter.name as string) || dir;
-					const description = (frontmatter.description as string) || "";
-					const displayName = name || dir;
-					const displayDesc = description || "(no description)";
-					results.push(`\u2022 ${displayName}: ${displayDesc}`);
-				} catch {
-					continue; // skip unreadable entries
-				}
 			}
 
 			if (results.length === 0) {

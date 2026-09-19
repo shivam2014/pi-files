@@ -18,7 +18,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { SUBAGENT_ENV_KEY } from "./subagent-runner.ts";
 import { subagentSessions, type SubagentState } from "./subagent-sessions.ts";
-import { clearPlanPanel, PlanPanel } from "./plan-panel.ts";
+import { clearPlanPanel, discardPlanPanel, PlanPanel } from "./plan-panel.ts";
 import { showPeek, hidePeek, isPeekOpen } from "./peek-overlay.ts";
 import { debugLog } from "./debug.ts";
 import { traceToolCallEntry, traceMark } from "./debug-path-trace.ts";
@@ -189,9 +189,13 @@ export default function (pi: ExtensionAPI) {
 	// the orchestrator's own model).
 	pi.on("session_shutdown", async (_event, ctx) => {
 		try {
-			clearPlanPanel(ctx);
+			// DEFECT 2: session_shutdown is process-lifetime teardown — fully discard
+			// the instance (drop the retained plan + _instances entry). clearPlanPanel()
+			// deliberately preserves a completed plan across turn boundaries, so it is
+			// the wrong primitive here.
+			discardPlanPanel(ctx);
 		} catch (err) {
-			debugLog("session_shutdown: failed to clear plan panel", err);
+			debugLog("session_shutdown: failed to discard plan panel", err);
 		}
 		if (!isSubagentLoad) {
 			try {

@@ -1,0 +1,6 @@
+# Runtime artifacts — written by running pi sessions, not source.
+.pi/orchestrator-plan.json
+diagnostics/
+node_modules/
+.DS_Store
+*.log

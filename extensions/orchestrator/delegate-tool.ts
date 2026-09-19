@@ -38,7 +38,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				description: "Optional short human-readable summary for the plan step label (e.g. 'Health-check orchestrator'). Omit and the framework derives a semantic label from the task.",
 			})),
 			skills: Type.Optional(Type.Array(Type.String(), {
-				description: "Override the specialist's default skill pack(s) for this delegation (e.g. ['tdd', 'review']). Replaces defaults, does not append.",
+				description: "Additional skill pack(s) for this delegation (e.g. ['tdd', 'review']). Merges (union) with the specialist's default skills — does not replace them.",
 			})),
 			scope: Type.Optional(Type.Object({
 				filesToModify: Type.Array(Type.String(), {

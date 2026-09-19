@@ -10,13 +10,94 @@ import { formatFusionResult, formatPanelResults } from "./fusion-format.ts";
 // ─── FusionRunContext: per-execution state bag ─────────────
 export class FusionRunContext {
 	readonly temperaturePreferenceCache = new Map<string, boolean>();
+	/** Session id used for provider attribution headers (captured by panelPhase). */
+	sessionId?: string;
 }
 
-// Internal default context for backward-compat API (tests call without ctx)
-const _defaultCtx = new FusionRunContext();
+// Fallback temperature cache for the backward-compat free-function API (callers may
+// omit ctx, e.g. tests). It holds ONLY cached temperature preferences keyed by model
+// id — it deliberately does NOT carry a sessionId, so no run's attribution state can
+// leak into another run through a shared module-level object.
+const _fallbackTemperatureCache = new Map<string, boolean>();
+
+function temperatureCacheFor(ctx?: FusionRunContext): Map<string, boolean> {
+	return ctx?.temperaturePreferenceCache ?? _fallbackTemperatureCache;
+}
 
 export function _resetTemperatureCacheForTests(ctx?: FusionRunContext): void {
-	(ctx ?? _defaultCtx).temperaturePreferenceCache.clear();
+	temperatureCacheFor(ctx).clear();
+}
+
+// ─── Provider attribution headers (parity with pi's normal SDK path) ───
+// pi-ai's complete() only emits `x-opencode-session` / `x-opencode-client` when
+// the model sets compat.sendSessionAffinityHeaders; the opencode-go models do
+// not, so a bare complete() reaches the gateway without the session header and
+// gets 400 MissingSessionID. pi's own SDK provider wrapper injects the header
+// explicitly (provider-attribution.ts getSessionHeaders). Fusion calls complete()
+// directly, so it must inject the same headers itself — but ONLY for providers
+// that require them.
+const OPENCODE_HOST = "opencode.ai";
+
+function matchesOpencodeHost(baseUrl: unknown): boolean {
+	if (typeof baseUrl !== "string" || baseUrl.length === 0) return false;
+	try {
+		const host = new URL(baseUrl).hostname; // lowercased, port stripped
+		// Match the apex host and any subdomain (*.opencode.ai), but NOT lookalikes
+		// such as "opencode.ai.evil.com" or "notopencode.ai".
+		return host === OPENCODE_HOST || host.endsWith(`.${OPENCODE_HOST}`);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Build the session attribution headers pi's normal path would send for this
+ * model + session. Returns undefined when no header applies (non-opencode
+ * provider, or no sessionId) — callers then leave the request untouched.
+ */
+export function getSessionAttributionHeaders(model: any, sessionId?: string): Record<string, string> | undefined {
+	if (!sessionId) return undefined;
+	if (
+		model?.provider !== "opencode" &&
+		model?.provider !== "opencode-go" &&
+		!matchesOpencodeHost(model?.baseUrl)
+	) {
+		return undefined;
+	}
+	return { "x-opencode-session": sessionId, "x-opencode-client": "pi" };
+}
+
+/** Merge session attribution headers into a complete() options bag (no-op if not applicable). */
+function withSessionAttributionHeaders(model: any, options: any, sessionId?: string): any {
+	const sessionHeaders = getSessionAttributionHeaders(model, sessionId);
+	if (!sessionHeaders) return options;
+	return { ...options, headers: { ...sessionHeaders, ...(options?.headers ?? {}) } };
+}
+
+/**
+ * Extract concatenated reasoning/thinking text from an assistant message.
+ * Used to recover JSON a reasoning model emitted in a thinking block while the
+ * visible text block was prose.
+ */
+function extractThinkingText(response: any): string {
+	const content = Array.isArray(response?.content) ? response.content : [];
+	return content
+		.filter((c: any) => c?.type === "thinking" && typeof c.thinking === "string")
+		.map((c: any) => c.thinking)
+		.join("\n");
+}
+
+/**
+ * Parse a judge response into a FusionAnalysis. Prefers the visible text blocks
+ * (pi's extractText) but also recovers JSON that a reasoning model emitted inside
+ * a `thinking` block while the text block was prose.
+ */
+export function parseJudgeFromResponse(response: any): FusionAnalysis | null {
+	const fromText = parseJudgeAnalysis(extractText(response));
+	if (fromText) return fromText;
+	const thinking = extractThinkingText(response);
+	if (thinking) return parseJudgeAnalysis(thinking);
+	return null;
 }
 
 // ─── Temperature fallback ────────────────────────────────
@@ -26,24 +107,41 @@ export async function tryCompleteWithTemperatureFallback(
 	options: any,
 	ctx?: FusionRunContext,
 ): Promise<AssistantMessage> {
-	const cache = (ctx ?? _defaultCtx).temperaturePreferenceCache;
+	const cache = temperatureCacheFor(ctx);
 	const modelId = model?.id ?? String(model);
 	const cachedPreference = cache.get(modelId);
 	const requestedTemperature = options?.temperature;
 
+	// Session attribution (upfront). pi-ai's complete() does NOT emit
+	// `x-opencode-session` for opencode-go models: its compat.sendSessionAffinityHeaders
+	// path only sends `session_id` / `x-client-request-id` / `x-session-affinity` (the
+	// wrong header names), so the gateway rejects the request with 400 MissingSessionID.
+	// pi's normal SDK wrapper injects the attribution headers itself; fusion calls
+	// complete() directly, so it injects the same headers on the FIRST request — no
+	// doomed headerless attempt. No-op for providers that don't need them and when
+	// sessionId is undefined.
+	const completeWithAttribution = async (opts: any): Promise<AssistantMessage> => {
+		const attributedOpts = withSessionAttributionHeaders(
+			model,
+			opts,
+			opts?.sessionId ?? ctx?.sessionId,
+		);
+		return complete(model, payload, attributedOpts);
+	};
+
 	if (cachedPreference === false) {
-		return complete(model, payload, { ...options, temperature: undefined });
+		return completeWithAttribution({ ...options, temperature: undefined });
 	}
 
 	try {
-		const result = await complete(model, payload, options);
+		const result = await completeWithAttribution(options);
 
 		// Any error when temperature was set — retry once without it
 		// (Some providers reject non-default temperatures, others wrap the error)
 		if (requestedTemperature != null && result?.stopReason === "error") {
 			debugLog("fusion-tool: retrying without temperature", { model: modelId, error: result.errorMessage });
 			cache.set(modelId, false);
-			return complete(model, payload, { ...options, temperature: undefined });
+			return completeWithAttribution({ ...options, temperature: undefined });
 		}
 
 		cache.set(modelId, true);
@@ -52,7 +150,7 @@ export async function tryCompleteWithTemperatureFallback(
 		if (requestedTemperature != null) {
 			debugLog("fusion-tool: retrying without temperature", { model: modelId, error: err?.message ?? String(err) });
 			cache.set(modelId, false);
-			return complete(model, payload, { ...options, temperature: undefined });
+			return completeWithAttribution({ ...options, temperature: undefined });
 		}
 		throw err;
 	}
@@ -70,7 +168,7 @@ export async function probeTemperatureSupport(
 	registry: any,
 	ctx?: FusionRunContext,
 ): Promise<boolean> {
-	const cache = (ctx ?? _defaultCtx).temperaturePreferenceCache;
+	const cache = temperatureCacheFor(ctx);
 	const modelId = model?.id ?? String(model);
 
 	// Fast path: already probed this session
@@ -82,13 +180,13 @@ export async function probeTemperatureSupport(
 		const auth = await registry.getApiKeyAndHeaders(model);
 		const result = await complete(model, {
 			messages: [{ role: "user", content: [{ type: "text", text: "Hi" }], timestamp: Date.now() }],
-		}, {
+		}, withSessionAttributionHeaders(model, {
 			temperature,
 			maxTokens: 10,
 			timeoutMs: 10_000,
 			apiKey: auth.apiKey,
 			headers: auth.headers,
-		});
+		}, ctx?.sessionId));
 
 		if (result?.stopReason === "error") {
 			cache.set(modelId, false);
@@ -177,11 +275,18 @@ async function runPanelModel(
 
 // ─── FusionPipeline ───────────────────────────────────────
 export class FusionPipeline {
+	private ctx: FusionRunContext;
+
 	constructor(
 		private registry: any,
 		private config: Required<FusionConfig>,
-		private ctx: FusionRunContext,
-	) {}
+		ctx?: FusionRunContext,
+	) {
+		// Always own a per-instance context: two pipelines constructed without an
+		// explicit ctx must never share session-attribution state (the old
+		// module-global default `_defaultCtx` leaked one run's sessionId to another).
+		this.ctx = ctx ?? new FusionRunContext();
+	}
 
 	/**
 	 * Phase 1: Run panel models with concurrency limit of 2.
@@ -195,6 +300,9 @@ export class FusionPipeline {
 		onUpdate?: any,
 		sessionId?: string,
 	): Promise<{ succeeded: any[]; failed: any[] }> {
+		// Capture the session id so subsequent phases (judge/probe) can attach the
+		// same attribution headers without threading an extra parameter.
+		if (sessionId) this.ctx.sessionId = sessionId;
 		const panelResults = await mapWithConcurrencyLimit(panelModels, 2, async (model: any) => {
 			onUpdate?.({
 				content: [{ type: "text", text: `  ⏳ Panel: ${model.id}...` }],
@@ -288,7 +396,7 @@ Return valid JSON ONLY with these fields:
 			}
 
 			lastJudgeText = extractText(judgeResponse);
-			analysis = parseJudgeAnalysis(lastJudgeText);
+			analysis = parseJudgeFromResponse(judgeResponse);
 
 			if (analysis) {
 				debugLog("fusion-tool: judge analysis parsed", { model: judgeModel.id, attempt });
@@ -302,6 +410,9 @@ Return valid JSON ONLY with these fields:
 			debugLog("fusion-tool: judge parse failure", { model: judgeModel.id, attempt, error: parseError });
 
 			if (attempt < maxAttempts) {
+				// Change the request on retry: echo the rejected reply and issue a
+				// stricter instruction (JSON first, no prose). Attempt 2's body must
+				// differ from attempt 1's.
 				judgeMessages.push({
 					role: "assistant",
 					content: [{ type: "text", text: lastJudgeText }],
@@ -309,13 +420,32 @@ Return valid JSON ONLY with these fields:
 				});
 				judgeMessages.push({
 					role: "user",
-					content: [{ type: "text", text: `That response was invalid: ${parseError}. Return a single valid JSON object matching the required schema exactly.` }],
+					content: [{ type: "text", text: `Your previous reply was not valid JSON (${parseError}). Output the JSON object as the very FIRST characters of your reply — no prose before or after. Emit exactly one object with keys: consensus, contradictions, unique_insights, blind_spots, recommendations.` }],
 					timestamp: Date.now(),
 				});
 			}
 		}
 
-		judgeError = judgeError || (analysis ? undefined : `Judge failed to produce valid analysis after ${maxAttempts} attempts: ${lastParseError}`);
+		if (!analysis && !judgeError) {
+			judgeError = `Judge failed to produce valid analysis after ${maxAttempts} attempts: ${lastParseError}`;
+		}
+
+		// Fail-soft: the judge responded (transport succeeded) but never produced
+		// parseable JSON. Do NOT discard the panel result — return a degraded but
+		// non-null analysis so the pipeline still surfaces panel content, and keep
+		// the judge error recorded. If the judge call itself failed (no text), the
+		// null analysis path is preserved so the caller falls back to panel output.
+		if (!analysis && lastJudgeText.trim()) {
+			debugLog("fusion-tool: judge fail-soft, preserving panel result", { model: judgeModel.id, error: judgeError });
+			analysis = {
+				consensus: [],
+				contradictions: [],
+				unique_insights: [],
+				blind_spots: [],
+				recommendations: [],
+			};
+		}
+
 		return { analysis, judgeError, lastJudgeText };
 	}
 
@@ -338,7 +468,10 @@ Return valid JSON ONLY with these fields:
 				blindSpotsCount: analysis.blind_spots.length,
 				recommendationsCount: analysis.recommendations.length,
 			});
-			const formatted = formatFusionResult(analysis, succeeded, failed, panelModels, judgeModel);
+			let formatted = formatFusionResult(analysis, succeeded, failed, panelModels, judgeModel);
+			if (judgeError) {
+				formatted += `\n\n*(Judge returned no structured analysis — ${judgeError})*`;
+			}
 			return {
 				content: [{ type: "text" as const, text: formatted }],
 				details: {
@@ -346,6 +479,7 @@ Return valid JSON ONLY with these fields:
 					analysis,
 					panelModels: panelModels.map((m: any) => `${m.provider}/${m.id}`),
 					judgeModel: `${judgeModel.provider}/${judgeModel.id}`,
+					...(judgeError ? { judgeError } : {}),
 				},
 			} as any;
 		}

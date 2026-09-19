@@ -1,7 +1,7 @@
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { parseFrontmatter, stripFrontmatter } from '@earendil-works/pi-coding-agent';
+import { parseFrontmatter, stripFrontmatter, getAgentDir } from '@earendil-works/pi-coding-agent';
 
 export interface SkillResolution {
   name: string;
@@ -25,6 +25,80 @@ export type SkillResult =
 const DEFAULT_SKILLS_ROOT = join(homedir(), '.pi', 'agent', 'skills');
 const SKILL_NAME_REGEX = /^[a-z][a-z0-9-]*$/;
 
+/**
+ * Ordered list of skill roots to probe — the single source of truth for skill
+ * discovery, shared by read_skill, list_skills, and resolveSkill.
+ *
+ * Probe order:
+ *   1. <agentDir>/skills
+ *   2. ~/.agents/skills
+ *   3. npm-bundled package roots under <agentDir>/npm/node_modules
+ *      (both <pkg>/skills and scoped <@scope>/<pkg>/skills).
+ * Only existing roots are meaningful; callers test each candidate for existence.
+ */
+export function getSkillRoots(): string[] {
+  const agentDir = getAgentDir();
+  const roots: string[] = [join(agentDir, 'skills'), join(homedir(), '.agents', 'skills')];
+  const npmModules = join(agentDir, 'npm', 'node_modules');
+  try {
+    for (const entry of readdirSync(npmModules, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('@')) {
+        const scopeDir = join(npmModules, entry.name);
+        try {
+          for (const sub of readdirSync(scopeDir, { withFileTypes: true })) {
+            if (sub.isDirectory()) roots.push(join(scopeDir, sub.name, 'skills'));
+          }
+        } catch {
+          // skip unreadable scope dir
+        }
+      } else {
+        roots.push(join(npmModules, entry.name, 'skills'));
+      }
+    }
+  } catch {
+    // no npm-bundled root available
+  }
+  return roots;
+}
+
+/**
+ * Resolve a skill name to the first existing {root}/{name}/SKILL.md across all
+ * roots in probe order. Returns undefined when no root contains the skill.
+ */
+export function resolveSkillFilePath(name: string): string | undefined {
+  for (const root of getSkillRoots()) {
+    const candidate = join(root, name, 'SKILL.md');
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Enumerate every on-disk skill name across all skill roots.
+ * A skill name is a directory under a root that contains a SKILL.md
+ * (the same name read_skill/resolveSkillFilePath resolve against).
+ * Deduplicated (first root in probe order wins) and sorted for stable output.
+ */
+export function listAvailableSkillNames(): string[] {
+  const seen = new Set<string>();
+  for (const root of getSkillRoots()) {
+    let entries: string[];
+    try {
+      entries = readdirSync(root, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+    } catch {
+      continue; // root missing / unreadable — try the next
+    }
+    for (const name of entries) {
+      if (seen.has(name)) continue; // first root in probe order wins
+      if (existsSync(join(root, name, 'SKILL.md'))) seen.add(name);
+    }
+  }
+  return [...seen].sort();
+}
+
 export function resolveSkillPath(name: string, skillsRoot?: string): string {
   return join(skillsRoot || DEFAULT_SKILLS_ROOT, name, 'SKILL.md');
 }
@@ -41,7 +115,9 @@ export function resolveSkill(name: string, skillsRoot?: string): SkillResult {
     };
   }
 
-  const filePath = resolveSkillPath(name, skillsRoot);
+  const filePath = skillsRoot
+    ? resolveSkillPath(name, skillsRoot)
+    : resolveSkillFilePath(name) ?? resolveSkillPath(name);
 
   let content: string;
   try {

@@ -2,8 +2,11 @@
  * budget-gate-breach-kind.test.ts
  *
  * Verifies the budget-gate FORCING RULE is breach-kind aware:
- *   - SUBSTANTIVE breach (exploration calls OR distinct files over budget)
- *     ALWAYS forces `recommend=investigate`.
+ *   - SUBSTANTIVE breach (exploration calls OR distinct files over budget) forces
+ *     ONLY when the FINAL `## Difficulty` CORROBORATES confusion (verification=fail,
+ *     uncertainty=high, or recommend=investigate). A read-heavy but clean run keeps
+ *     the model's own recommend.
+ *   - GROSS breach (≥2× any counted limit) ALWAYS forces, regardless of report.
  *   - TURNS-ONLY breach forces ONLY when the worker's FINAL `## Difficulty`
  *     admits difficulty (verification=fail OR uncertainty=high). A clean
  *     turns-only run keeps the model's own recommend.
@@ -14,6 +17,7 @@ import {
 	SubagentRunner,
 	computeBudgetStatus,
 	shouldForceRecommend,
+	isGrossBreach,
 	BUDGET_WRAPUP_MESSAGE,
 } from "./subagent-runner.ts";
 import { extractDifficultyFromOutput } from "./delegate-pipeline.ts";
@@ -49,10 +53,22 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 describe("shouldForceRecommend (breach-kind forcing rule)", () => {
 	const clean = { verification: "pass", uncertainty: "low" };
 
-	it("substantive breach ALWAYS forces, even on a clean difficulty", () => {
-		expect(shouldForceRecommend("substantive", clean)).toBe(true);
-		expect(shouldForceRecommend("substantive", { verification: "pass", uncertainty: "medium" })).toBe(true);
-		expect(shouldForceRecommend("substantive", null)).toBe(true);
+	it("substantive breach with a CLEAN difficulty does NOT force (corroboration required)", () => {
+		expect(shouldForceRecommend("substantive", clean)).toBe(false);
+		expect(shouldForceRecommend("substantive", { verification: "pass", uncertainty: "medium" })).toBe(false);
+		expect(shouldForceRecommend("substantive", null)).toBe(false);
+	});
+
+	it("substantive breach forces when the difficulty CORROBORATES confusion", () => {
+		expect(shouldForceRecommend("substantive", { verification: "fail", uncertainty: "low" })).toBe(true);
+		expect(shouldForceRecommend("substantive", { verification: "pass", uncertainty: "high" })).toBe(true);
+		expect(shouldForceRecommend("substantive", { verification: "pass", uncertainty: "low", recommend: "investigate" })).toBe(true);
+	});
+
+	it("a GROSS breach forces regardless of a clean difficulty", () => {
+		expect(shouldForceRecommend("substantive", clean, true)).toBe(true);
+		expect(shouldForceRecommend("turns-only", clean, true)).toBe(true);
+		expect(shouldForceRecommend("none", clean, true)).toBe(false);
 	});
 
 	it("turns-only breach with verification=fail forces", () => {
@@ -81,6 +97,22 @@ describe("shouldForceRecommend (breach-kind forcing rule)", () => {
 	it("is case-insensitive on difficulty values", () => {
 		expect(shouldForceRecommend("turns-only", { verification: "FAIL", uncertainty: "LOW" })).toBe(true);
 		expect(shouldForceRecommend("turns-only", { verification: "pass", uncertainty: "High" })).toBe(true);
+	});
+});
+
+// ── Gross-breach hard cap (pure) ─────────────────────────────────────────────
+describe("isGrossBreach (≥2× any counted limit)", () => {
+	it("flags exploration calls at 2× the limit, not 2×-1", () => {
+		expect(isGrossBreach({ explorationCalls: ESCALATION_MAX_EXPLORATION_CALLS * 2, distinctFiles: 0, turns: 0 })).toBe(true);
+		expect(isGrossBreach({ explorationCalls: ESCALATION_MAX_EXPLORATION_CALLS * 2 - 1, distinctFiles: 0, turns: 0 })).toBe(false);
+	});
+	it("flags distinct files at 2× the limit, not 2×-1", () => {
+		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: ESCALATION_MAX_FILES_TOUCHED * 2, turns: 0 })).toBe(true);
+		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: ESCALATION_MAX_FILES_TOUCHED * 2 - 1, turns: 0 })).toBe(false);
+	});
+	it("flags turns at 2× the limit, not 2×-1", () => {
+		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: 0, turns: ESCALATION_MAX_TURNS * 2 })).toBe(true);
+		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: 0, turns: ESCALATION_MAX_TURNS * 2 - 1 })).toBe(false);
 	});
 });
 
@@ -166,11 +198,11 @@ const report = (opts: { verification: string; uncertainty: string; recommend?: s
 	`## Findings\n- summary: done\n\n## Difficulty\n- exploration: medium\n- uncertainty: ${opts.uncertainty}\n- verification: ${opts.verification}\n- iteration: high\n- recommend: ${opts.recommend ?? "none"}\n`;
 
 describe("PART A — breach-kind forcing (end-to-end)", () => {
-	it("(files) 6 files > 5 with a CLEAN difficulty → substantive → forced recommend=investigate", { timeout: 20_000 }, async () => {
+	it("(files) 6 files > 5 with a CLEAN difficulty → substantive but NOT gross → banner shown, recommend NOT rewritten", { timeout: 20_000 }, async () => {
 		const { ref, resolvePrompt, resultPromise } = createRunner("files-over");
 		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
 
-		// 6 distinct paths: exploration = 6 (NOT over), files = 6 (> 5) → substantive.
+		// 6 distinct paths: files = 6 (> 5, substantive) but < 10 (not gross); exploration = 6 (under 10).
 		for (let i = 0; i < ESCALATION_MAX_FILES_TOUCHED + 1; i++) {
 			ref.subscribeCb!(toolStart("read", `r${i}`, { path: `/tmp/file-${i}.ts` }));
 			ref.subscribeCb!(toolEnd("read", `r${i}`));
@@ -185,7 +217,9 @@ describe("PART A — breach-kind forcing (end-to-end)", () => {
 
 		expect(result.budgetExceeded).toBe(true);
 		expect(result.budgetBreachKind).toBe("substantive");
-		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("investigate");
+		expect(result.output).toContain("⚠ [Budget Gate]");
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
+		expect(result.output).not.toContain("forcing recommend=investigate");
 	});
 
 	it("(turns-clean) 13 turns > 12, exploration/files under, verification=pass + uncertainty=low → NOT forced", { timeout: 20_000 }, async () => {

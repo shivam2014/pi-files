@@ -5,6 +5,7 @@
  */
 
 import { type Specialist } from "./types.ts";
+import { listAvailableSkillNames } from "./skill-resolver.ts";
 
 /** Shared clarification protocol instruction — ask orchestrator before guessing. */
 export const CLARIFICATION_PROTOCOL = `follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info"`;
@@ -79,9 +80,9 @@ If you have read more than 3 files without narrowing the question, STOP and call
 // ── Worker-initiated escalation — counted, objective budget thresholds ──
 // The worker cannot bias these: they are counted by the framework/tool-call log,
 // not self-reported (AG2 Escalation Pattern; avoids unreliable self-reported difficulty).
-export const ESCALATION_MAX_EXPLORATION_CALLS = 6;
-export const ESCALATION_MAX_FILES_TOUCHED = 5;
-export const ESCALATION_MAX_TURNS = 12;
+export const ESCALATION_MAX_EXPLORATION_CALLS = 10;
+export const ESCALATION_MAX_FILES_TOUCHED = 12;
+export const ESCALATION_MAX_TURNS = 20;
 
 /**
  * Hard budget escalation rule — injected into coder/scout prompts.
@@ -90,7 +91,7 @@ export const ESCALATION_MAX_TURNS = 12;
  * escalate the ladder (spawn a scout) rather than just answer.
  */
 export const WORKER_ESCALATION_RULE = `## Hard Exploration Budget
-You have an exploration budget that is COUNTED and ENFORCED by the framework — crossing it forces escalation in code, regardless of what you report. If you cross MORE THAN ${ESCALATION_MAX_EXPLORATION_CALLS} exploration calls (read/grep/find/ls), or MORE THAN ${ESCALATION_MAX_FILES_TOUCHED} distinct files, or MORE THAN ${ESCALATION_MAX_TURNS} turns, STOP now and call ask_orchestrator to request a scout/investigation. This is a hard rule — do not silently keep exploring past the budget.
+You have an exploration budget that is COUNTED and ENFORCED by the framework — crossing it forces escalation in code, regardless of what you report. If you cross MORE THAN ${ESCALATION_MAX_EXPLORATION_CALLS} exploration calls (read/grep), or MORE THAN ${ESCALATION_MAX_FILES_TOUCHED} distinct files, or MORE THAN ${ESCALATION_MAX_TURNS} turns, STOP now and call ask_orchestrator to request a scout/investigation. This is a hard rule — do not silently keep exploring past the budget.
 
 Start by escalating: when you cross the budget, do NOT just answer in prose. Call ask_orchestrator directly with a structured escalation request carrying \`recommend: investigate\` so the orchestrator knows to escalate:
 \`\`\`
@@ -195,9 +196,26 @@ export const SPECIALIST_VERBS: Record<string, string> = {
 	writer: "Writing",
 };
 
-// ── Findings Durability (shared across all specialists) ──
+// ── Findings Durability (only for specialists that can actually write to /tmp) ──
 
-function buildFindingsDurability(recoveryTool: string): string {
+/**
+ * Tools that can persist a file OUTSIDE the repo working directory (e.g. /tmp).
+ * The tool half of the durability capability check is derived from the roster's
+ * real tool arrays so the instruction can never name a tool a specialist lacks.
+ */
+const DURABILITY_WRITE_TOOLS = ["write", "edit", "bash"] as const;
+
+/**
+ * Build the durability section ONLY when the specialist can satisfy it: it needs a
+ * write-capable tool AND a scope policy that permits paths outside the repo (to /tmp).
+ *   - scout / researcher: no write-capable tool → section omitted.
+ *   - reviewer:           read-only → section omitted.
+ *   - writer:             write/edit but scope confined to repo docs → section omitted.
+ *   - coder:              write/edit + unrestricted scope → the ONLY specialist included.
+ */
+function buildFindingsDurability(tools: readonly string[], scopeUnrestricted: boolean): string {
+	const hasWriteTool = tools.some((t) => (DURABILITY_WRITE_TOOLS as readonly string[]).includes(t));
+	if (!scopeUnrestricted || !hasWriteTool) return "";
 	return `## ═══ Findings Durability ═══
 
 For robustness, write findings summary to a durability file:
@@ -205,7 +223,7 @@ For robustness, write findings summary to a durability file:
 - Include: summary, key files, evidence, issues found.
 - After writing, it is vital you re-read the file to verify correctness and append any missing details.
 - The orchestrator will not see your output if the connection fails — the file is the fallback.
-- Use ${recoveryTool} to write the file.`;
+- Use \`write\` to write the file.`;
 }
 
 // ── Specialist roster: 5 built-in specialists ──
@@ -283,7 +301,7 @@ Structure it EXACTLY like this:
 <specific next steps>
 Do NOT truncate. Do NOT leave sections empty. If you ran out of time, output whatever you found so far.
 
-${buildFindingsDurability("write")}`,
+${buildFindingsDurability(SCOUT_TOOLS, false)}`,
 	},
 
 	coder: {
@@ -307,6 +325,10 @@ You are an implementation specialist. You write and edit code.
 - NEVER use \`bash head\`, \`bash tail\`, or \`bash wc\` to read files — use the \`read\` tool instead
 - These get redirected by the interceptor and waste a turn
 - Use \`bash\` ONLY for: running tests, compilation, gh CLI, commands without tool equivalents
+
+## Environment
+- macOS: there is no \`timeout\`/\`gtimeout\`. For a bounded run use \`perl -e 'alarm 90; exec @ARGV' -- <cmd>\`, or run the command without a timeout.
+- \`bash\` invocations of \`ls\`/\`cat\`/\`grep\`/\`find\` are intercepted by the guard — use the native tools; pass \`override: true\` only when genuinely required.
 
 Rules:
 - Focus on making exactly the described changes, unless the task explicitly asks for restructuring or you discover dead code or critical information/flow that changes the defined task. Adapt then and report it to the orchestrator without fail.
@@ -361,7 +383,7 @@ You do NOT have: git-read, gh, web_search, fetch_content.
 
 ${COMMUNICATION_INSTRUCTION}
 
-${buildFindingsDurability("write")}`,
+${buildFindingsDurability(CODER_TOOLS, true)}`,
 	},
 
 	reviewer: {
@@ -387,6 +409,10 @@ Your job:
 - NEVER edit or write any file.
 - Follow the Minimal Action rule above.
 
+## Environment
+- macOS: there is no \`timeout\`/\`gtimeout\`. For a bounded run use \`perl -e 'alarm 90; exec @ARGV' -- <cmd>\`, or run the command without a timeout.
+- \`bash\` invocations of \`ls\`/\`cat\`/\`grep\`/\`find\` are intercepted by the guard — use the native tools; pass \`override: true\` only when genuinely required.
+
 Output format:
 ## Critical Issues
 <must-fix bugs, security vulnerabilities, data loss risks>
@@ -406,7 +432,7 @@ You do NOT have: find, ls, git-read, gh, edit, write, lint, web_search, fetch_co
 
 ${COMMUNICATION_INSTRUCTION}
 
-${buildFindingsDurability("bash")}`,
+${buildFindingsDurability(REVIEWER_TOOLS, false)}`,
 	},
 
 	researcher: {
@@ -450,7 +476,7 @@ You do NOT have: gh, bash, edit, write, lint.
 
 ${COMMUNICATION_INSTRUCTION}
 
-${buildFindingsDurability("write")}`,
+${buildFindingsDurability(RESEARCHER_TOOLS, false)}`,
 	},
 
 	writer: {
@@ -498,7 +524,7 @@ You do NOT have: grep, gh, bash, lint, web_search, fetch_content.
 
 ${COMMUNICATION_INSTRUCTION}
 
-${buildFindingsDurability("write")}`,
+${buildFindingsDurability(WRITER_TOOLS, false)}`,
 	},
 };
 
@@ -549,18 +575,12 @@ export function getSpecialistSkills(name: string, override?: string[]): string[]
  */
 export function buildSkillSection(name: string, skills: string[]): string {
 	if (!skills || skills.length === 0) return "";
-	const skillLines = skills.map(s => `  - **${s}** — use read_skill("${s}") to load`).join("\n");
+	const available = listAvailableSkillNames();
 	return `
 ## Skills
-| Condition | Action |
-|-----------|--------|
-| Task matches a skill's description | read_skill("matching-skill") for full instructions |
-| Task explicitly names a skill | read_skill("named-skill") |
-| Loaded skill references another | read_skill() to load that too |
-| No match | Proceed without
-
-Available skills:
-${skillLines}`;
+Load any skill with read_skill("<name>").
+Your pack: ${skills.join(", ")}
+All available: ${available.join(", ")}`;
 }
 
 /**
