@@ -24,6 +24,10 @@ Each specialist is a focused profession with its own tools, skills, and guardrai
 
 It scales the orchestration to the task: trivial tasks run as a single coder; harder ones escalate. A hard exploration budget forces escalation when a worker starts floundering, so it can't quietly burn minutes going nowhere.
 
+![pi orchestrator: plan panel and specialist delegation](docs/assets/hero-plan-panel.gif)
+
+*A real run: the plan panel sets 3 steps, a Scout delegation investigates, a Coder fixes the bug, and tests are reported passing.*
+
 ## Extensions
 
 | Extension | What problem it solves |
@@ -46,6 +50,21 @@ pi gives you one agent and a context window. `pi-files` makes it work like a tea
 - **Cheap models do the work, expensive models decide.** Scouting and editing burn tokens on cheap models; the orchestrator holds only decisions. Reading a file in a cheap subagent costs pennies; holding it in the expensive orchestrator costs dollars and degrades every later decision.
 - **Guards, not vibes.** `lint-guard` and `scope-guard` are deterministic — no LLM — so they are free and cannot hallucinate.
 - **Fusion for hard calls.** `fusion()` runs a panel of models and a judge to critique a plan before expensive work begins.
+
+## How it compares
+
+How each project documents the capabilities below, as of this reading. "—" means the project does not document that capability; "not documented" means we checked and found no mention.
+
+| Capability | pi-files (this) | nicobailon/pi-subagents | tintinweb/pi-subagents | vanilla pi |
+|-----------|-----------------|-------------------------|------------------------|------------|
+| Scope enforcement | Tool-level, fail-closed | not documented | not documented | none |
+| Orchestrator reads files | blocked; must delegate | — | — | full access |
+| Deterministic guards | lint-guard + scope-guard, no LLM | — | — | — |
+| Difficulty-driven escalation | yes | — | — | — |
+| Per-delegation tokens/cost | shown per delegation | — | display only | totals only |
+| Published with/without benchmark | no (not yet) | no | no | n/a |
+
+No head-to-head benchmark has been run, so this table is about documented capabilities, not measured performance.
 
 ## Evidence
 
