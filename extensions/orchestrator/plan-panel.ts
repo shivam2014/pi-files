@@ -6,7 +6,7 @@ import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilStat
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
 import { resetSpinner } from "./spinner-state.ts";
-import { registerChannel, unregisterChannel } from "./render-scheduler.ts";
+import { registerChannel, unregisterChannel, flushChannel } from "./render-scheduler.ts";
 
 import { debugLog } from "./debug.ts";
 import { getSessionMode } from "./orchestrator-config";
@@ -327,7 +327,9 @@ export class PlanPanel {
 
   // ── Strike animation state ──────────────────────────────────────
   private _strikeTimer: ReturnType<typeof setInterval> | null = null;
+  private _strikeChannel: string | null = null;
   private _strikeFrame = 0;
+  private _strikeDirty = false;
   private _strikeLabelText: string = "";
   private _strikeStepIdx: number = -1;
 
@@ -454,28 +456,62 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
   /**
    * Start strikethrough reveal animation for a completed step.
    * One animation at a time — new completion replaces previous.
-   * Uses 65ms setInterval, owns the timer lifecycle.
+   *
+   * Cadence split (do not collapse these):
+   *  - the 65 ms setInterval below advances the strike reveal *state* only —
+   *    it NEVER calls _renderWidget();
+   *  - render emission is coalesced through the shared render scheduler via a
+   *    named `strike:<seq>` channel, so this animation no longer owns a
+   *    render interval (it joins the single 80 ms emission path).
+   * The strike reveal therefore still progresses at 65 ms while the render is
+   * emitted on the shared window.
    */
   private _startStrikeAnimation(label: string, stepIdx: number): void {
-    if (this._strikeTimer) {
-      clearInterval(this._strikeTimer);
-      this._strikeTimer = null;
-    }
+    // Replace any in-flight strike (clears its timer + unregisters its channel).
+    this._stopStrikeAnimation();
     this._strikeFrame = 0;
     this._strikeLabelText = label;
     this._strikeStepIdx = stepIdx;
+    this._strikeDirty = true;
 
+    const key = `strike:${++_planChannelSeq}`;
+    this._strikeChannel = key;
+    registerChannel(key, () => {
+      if (this._strikeDirty) {
+        this._strikeDirty = false;
+        this._renderWidget();
+      }
+      // Animation finished (stepIdx cleared by the 65 ms tick) or the panel was
+      // torn down: drop the channel so no timer leaks. _stopStrikeAnimation
+      // unregisters via the scheduler's key-snapshot flush (safe mid-flush).
+      if (this._cleared || this._strikeStepIdx === -1) this._stopStrikeAnimation();
+    });
+
+    // 65 ms state advance ONLY — no render call here.
     this._strikeTimer = setInterval(() => {
       this._strikeFrame++;
+      this._strikeDirty = true;
       if (this._strikeFrame > TOTAL_STRIKE_FRAMES) {
         if (this._strikeTimer) { clearInterval(this._strikeTimer); this._strikeTimer = null; }
         this._strikeStepIdx = -1;
         this._strikeLabelText = "";
-        this._renderWidget();
-        return;
       }
-      this._renderWidget();
     }, 65);
+  }
+
+  /**
+   * Stop the strike animation: clear the 65 ms state timer and unregister the
+   * strike render channel. Idempotent — safe to call when nothing is running.
+   * Called on every teardown path (via stopPlanTimer) and when the animation
+   * completes.
+   */
+  private _stopStrikeAnimation(): void {
+    if (this._strikeTimer !== null) { clearInterval(this._strikeTimer); this._strikeTimer = null; }
+    if (this._strikeChannel !== null) { unregisterChannel(this._strikeChannel); this._strikeChannel = null; }
+    this._strikeFrame = 0;
+    this._strikeDirty = false;
+    this._strikeLabelText = "";
+    this._strikeStepIdx = -1;
   }
 
 	private startPlanTimer(): void {
@@ -489,18 +525,34 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		registerChannel(channelKey, () => {
 			if (self.planState) { self._renderWidget(); } else { self.stopPlanTimer(); }
 		});
-		// Elapsed driver stays a dedicated 1000 ms timer — deliberately
-		// decoupled from the spinner cadence (commit 070148a). Do NOT merge it
-		// into the scheduler's 80 ms window; that re-freezes/desyncs the spinner.
+		// Elapsed driver keeps its own dedicated 1000 ms cadence (commit 070148a).
+		// Do NOT merge it into the scheduler's 80 ms window — the elapsed refresh
+		// must tick on 1000 ms, not the shared 80 ms window.
+		// Its render emission is still routed through the shared scheduler: the
+		// timer calls flushChannel(plan channel) instead of rendering directly, so
+		// no setInterval callback calls _renderWidget() itself.
 		this._planTimer = setInterval(() => {
 			if (self._planTimer === null) return;
-			if (self.planState) { self._renderWidget(); } else { self.stopPlanTimer(); }
+			if (self.planState) { self._requestPlanRender(); } else { self.stopPlanTimer(); }
 		}, 1000);
 	}
 
 	private stopPlanTimer(): void {
 		if (this._planTimer !== null) { clearInterval(this._planTimer); this._planTimer = null; }
 		if (this._spinnerChannel !== null) { unregisterChannel(this._spinnerChannel); this._spinnerChannel = null; }
+		// Strike animation owns a state timer + a scheduler channel; every teardown
+		// path funnels through stopPlanTimer, so clearing it here covers them all.
+		this._stopStrikeAnimation();
+	}
+
+	/**
+	 * Request an immediate render through the shared scheduler (no direct call).
+	 * Used by the 1000 ms elapsed timer so it never renders directly — it stays a
+	 * separate timer but emits via the plan channel, matching the single render
+	 * path. No-op when the plan channel is not registered.
+	 */
+	private _requestPlanRender(): void {
+		if (this._spinnerChannel !== null) flushChannel(this._spinnerChannel);
 	}
 
 	/**

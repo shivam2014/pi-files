@@ -81,6 +81,25 @@ export function registerChannel(key: string, flush: FlushFn): void {
 }
 
 /**
+ * Flush a single registered channel immediately, on demand.
+ *
+ * This keeps emission on the shared path: a caller that needs a one-off
+ * refresh (e.g. the plan panel's 1000 ms elapsed timer) triggers that
+ * channel's flush rather than rendering directly. No-op when the key is not
+ * registered. Returns true when a flush ran.
+ */
+export function flushChannel(key: string): boolean {
+	const flush = _channels.get(key);
+	if (!flush) return false;
+	try {
+		flush();
+	} catch (err) {
+		console.error(`[render-scheduler] channel "${key}" flush failed:`, err);
+	}
+	return true;
+}
+
+/**
  * Unregister a channel. When the last channel is removed the shared timer is
  * cleared — this is the single teardown point that prevents leaked timers.
  */

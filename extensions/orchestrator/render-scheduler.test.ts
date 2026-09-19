@@ -11,6 +11,7 @@ import {
 	isSchedulerRunning,
 	registeredChannels,
 	setWindowMs,
+	flushChannel,
 	_resetScheduler,
 	RENDER_WINDOW_MS,
 } from "./render-scheduler.ts";
@@ -155,6 +156,32 @@ describe("render-scheduler — fault isolation", () => {
 		vi.advanceTimersByTime(RENDER_WINDOW_MS);
 		expect(b).toHaveBeenCalledTimes(1); // gone on subsequent ticks
 		expect(a).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("render-scheduler — on-demand flushChannel", () => {
+	it("flushes only the named channel, immediately", () => {
+		vi.useFakeTimers();
+		const plan = vi.fn();
+		const other = vi.fn();
+		registerChannel("plan:1", plan);
+		registerChannel("peek", other);
+
+		const ran = flushChannel("plan:1");
+		expect(ran).toBe(true);
+		expect(plan).toHaveBeenCalledTimes(1);
+		expect(other).not.toHaveBeenCalled();
+	});
+
+	it("is a no-op for an unregistered key", () => {
+		vi.useFakeTimers();
+		expect(flushChannel("missing")).toBe(false);
+	});
+
+	it("does not arm a timer when nothing is registered", () => {
+		vi.useFakeTimers();
+		flushChannel("plan:1");
+		expect(isSchedulerRunning()).toBe(false);
 	});
 });
 

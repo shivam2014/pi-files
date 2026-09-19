@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { PlanPanel, _instances } from "./plan-panel";
+import { registeredChannels, _resetScheduler } from "./render-scheduler";
+// Namespace import: lets the tests spy on scheduler exports (e.g. flushChannel)
+// so they observe the panel's *routing*, not just the end render.
+import * as renderScheduler from "./render-scheduler";
 import type { LoopUntilConfig, LoopUntilState, LoopIteration } from "./types";
 
 function makeConfig(overrides?: Partial<LoopUntilConfig>): LoopUntilConfig {
@@ -464,5 +468,124 @@ describe("Loop Mode", () => {
 
 			expect(panel.hasActivePlan()).toBe(true);
 		});
+	});
+});
+
+describe("strike animation — emitted via the shared render scheduler", () => {
+	let ctx: ReturnType<typeof mockCtx>;
+	let panel: PlanPanel;
+
+	beforeEach(() => {
+		_resetScheduler();
+		vi.useFakeTimers();
+		ctx = mockCtx();
+		// Unique cwd: the plan state persists to <cwd>/.pi/orchestrator-plan.json,
+		// so a shared cwd would let one test's completed step leak into the next.
+		panel = new PlanPanel({ cwd: `/tmp/plan-panel-strike-${Math.random().toString(36).slice(2)}` });
+		_instances.set(ctx.sessionManager.sessionId, panel);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.useRealTimers();
+		_resetScheduler();
+	});
+
+	it("advances strike state at 65 ms but only renders on the shared 80 ms window", () => {
+		const renderSpy = vi.spyOn(PlanPanel.prototype as any, "_renderWidget");
+		panel.setupPlanPanel("Goal", ["Step A", "Step B"], ctx);
+
+		const before = registeredChannels().filter((k) => k.startsWith("strike:")).length;
+		const res = panel.advanceStep();
+		expect(res.status).toBe("completed");
+		const during = registeredChannels().filter((k) => k.startsWith("strike:")).length;
+		expect(during).toBe(before + 1);
+
+		// 65 ms tick advances the strike reveal state, and does NOT render.
+		(panel as any)._strikeFrame = 0;
+		renderSpy.mockClear();
+		vi.advanceTimersByTime(65);
+		expect((panel as any)._strikeFrame).toBe(1);
+		expect(renderSpy).not.toHaveBeenCalled();
+
+		// The next shared 80 ms window flushes the strike (and plan) channel(s).
+		vi.advanceTimersByTime(80);
+		expect(renderSpy).toHaveBeenCalled();
+	});
+
+	it("auto-unregisters the strike channel when the reveal completes", () => {
+		panel.setupPlanPanel("Goal", ["Step A", "Step B"], ctx);
+		panel.advanceStep();
+		expect(registeredChannels().some((k) => k.startsWith("strike:"))).toBe(true);
+
+		// TOTAL_STRIKE_FRAMES is 14; run past it plus one shared window.
+		vi.advanceTimersByTime(65 * 16 + 80);
+		expect(registeredChannels().some((k) => k.startsWith("strike:"))).toBe(false);
+		expect((panel as any)._strikeTimer).toBeNull();
+	});
+
+	it("teardown (reset) clears the strike timer and unregisters its channel", () => {
+		panel.setupPlanPanel("Goal", ["Step A", "Step B"], ctx);
+		panel.advanceStep();
+		expect(registeredChannels().some((k) => k.startsWith("strike:"))).toBe(true);
+
+		panel.reset();
+
+		expect(registeredChannels().some((k) => k.startsWith("strike:"))).toBe(false);
+		expect((panel as any)._strikeTimer).toBeNull();
+
+		const renderSpy = vi.spyOn(PlanPanel.prototype as any, "_renderWidget");
+		vi.advanceTimersByTime(2000);
+		expect(renderSpy).not.toHaveBeenCalled();
+	});
+});
+
+describe("elapsed timer — emitted via the shared render scheduler", () => {
+	let ctx: ReturnType<typeof mockCtx>;
+	let panel: PlanPanel;
+
+	beforeEach(() => {
+		_resetScheduler();
+		vi.useFakeTimers();
+		ctx = mockCtx();
+		panel = new PlanPanel({ cwd: `/tmp/plan-panel-elapsed-${Math.random().toString(36).slice(2)}` });
+		_instances.set(ctx.sessionManager.sessionId, panel);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.useRealTimers();
+		_resetScheduler();
+	});
+
+	it("the 1000 ms elapsed timer emits through the plan channel and never renders directly", () => {
+		// No-op the channel flush so the ONLY remaining way this tick could call
+		// _renderWidget() is a direct call from the timer callback.
+		const flushSpy = vi.spyOn(renderScheduler, "flushChannel").mockReturnValue(true);
+		const renderSpy = vi.spyOn(PlanPanel.prototype as any, "_renderWidget");
+
+		// Arm the plan timer: this registers the plan/spinner channel AND starts the
+		// dedicated 1000 ms elapsed timer.
+		panel.setupPlanPanel("Goal", ["Step A", "Step B"], ctx);
+
+		const planChannel = (panel as any)._spinnerChannel as string;
+		expect(typeof planChannel).toBe("string");
+		expect(registeredChannels()).toContain(planChannel);
+
+		// Park the shared scheduler window far beyond the tick under test: the plan
+		// channel stays registered (flushChannel remains a valid key) but the shared
+		// 80 ms window cannot fire and render on its own, isolating the 1000 ms timer.
+		renderScheduler.setWindowMs(100000);
+
+		flushSpy.mockClear();
+		renderSpy.mockClear();
+
+		vi.advanceTimersByTime(1000);
+
+		// The timer emitted through the shared scheduler channel...
+		expect(flushSpy).toHaveBeenCalledTimes(1);
+		expect(flushSpy).toHaveBeenCalledWith(planChannel);
+		// ...and did NOT call _renderWidget() directly from the timer callback.
+		expect(renderSpy).not.toHaveBeenCalled();
 	});
 });
