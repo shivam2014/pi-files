@@ -11,11 +11,15 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export { createAskOrchestratorResolver } from "./ask-resolver.ts";
-import { SPINNER_FRAMES, SPINNER_INTERVAL_MS, currentFrame } from "./spinner-state.ts";
+import { SPINNER_FRAMES, currentFrame } from "./spinner-state.ts";
+import { registerChannel, unregisterChannel } from "./render-scheduler.ts";
 import { statusIcon, getTheme, formatTokens, formatDuration } from "./orchestrator-theme.ts";
 
 import { Text } from "@earendil-works/pi-tui";
 import { executeDelegate } from "./delegate-controller.ts";
+
+/** Monotonic id source for render-scheduler channel keys (one per delegation). */
+let _delegateChannelSeq = 0;
 
 /**
  * Register the delegate tool on the pi extension API.
@@ -123,16 +127,20 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 		if (text && text === state.lastRenderedText && isPartial) return context.lastComponent ?? new Text("", 0, 0);
 		if (text) state.lastRenderedText = text;
 
-			if (isPartial && !state.interval) {
-					context.invalidate(); // first paint so spinner shows before ✓
-					state.interval = setInterval(() => {
-						context.invalidate();
-					}, SPINNER_INTERVAL_MS);
-
+			if (isPartial && !state.renderChannel) {
+				context.invalidate(); // first paint so spinner shows before ✓
+				// Route the 80 ms spinner driver through the shared render
+				// scheduler so it coalesces with other active drivers instead of
+				// arming its own independent interval.
+				const channelKey = `delegate:${++_delegateChannelSeq}`;
+				state.renderChannel = channelKey;
+				registerChannel(channelKey, () => {
+					context.invalidate();
+				});
 			}
-			if (!isPartial && state.interval) {
-				clearInterval(state.interval);
-				state.interval = undefined;
+			if (!isPartial && state.renderChannel) {
+				unregisterChannel(state.renderChannel);
+				state.renderChannel = undefined;
 			}
 
 			const comp = context.lastComponent ?? new Text("", 0, 0);

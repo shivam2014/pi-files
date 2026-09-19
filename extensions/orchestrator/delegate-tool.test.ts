@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerDelegateTool } from "./delegate-tool.ts";
+import { registeredChannels, isSchedulerRunning } from "./render-scheduler.ts";
 import { runSubagent } from "./subagent-runner.ts";
 import type { Scope } from "./scope-manager.ts";
 
@@ -120,6 +121,57 @@ describe("delegate tool rendering", () => {
 		// Task should appear EXACTLY ONCE — either in header or goal, not both
 		const matches = comp.text.match(/fix auth bug/g);
 		expect(matches).toHaveLength(1);
+	});
+});
+
+describe("delegate render driver — shared render scheduler", () => {
+	const theme = {
+		fg: (_name: string, text: string) => text,
+		bold: (text: string) => text,
+		dim: (text: string) => text,
+	};
+
+	it("partial render registers a delegate channel on the shared scheduler", () => {
+		const pi = createMockPi();
+		registerDelegateTool(pi as any);
+		const delegateTool = pi.getAllTools().find((t: any) => t.name === "delegate");
+		const context: any = { state: { delegateArgs: { specialist: "coder", task: "x" } }, invalidate: vi.fn() };
+
+		const before = registeredChannels().filter((k) => k.startsWith("delegate:")).length;
+		delegateTool.renderResult(
+			{ content: [{ type: "text", text: "working" }], details: {} },
+			{ isPartial: true },
+			theme,
+			context,
+		);
+		const during = registeredChannels().filter((k) => k.startsWith("delegate:")).length;
+		expect(during).toBe(before + 1);
+		expect(isSchedulerRunning()).toBe(true);
+	});
+
+	it("final render unregisters the delegate channel (no leaked timer)", () => {
+		const pi = createMockPi();
+		registerDelegateTool(pi as any);
+		const delegateTool = pi.getAllTools().find((t: any) => t.name === "delegate");
+		const context: any = { state: { delegateArgs: { specialist: "coder", task: "x" } }, invalidate: vi.fn() };
+
+		delegateTool.renderResult(
+			{ content: [{ type: "text", text: "working" }], details: {} },
+			{ isPartial: true },
+			theme,
+			context,
+		);
+		const during = registeredChannels().filter((k) => k.startsWith("delegate:")).length;
+		expect(during).toBeGreaterThan(0);
+
+		delegateTool.renderResult(
+			{ content: [{ type: "text", text: "done" }], details: {} },
+			{ isPartial: false },
+			theme,
+			context,
+		);
+		const after = registeredChannels().filter((k) => k.startsWith("delegate:")).length;
+		expect(after).toBe(during - 1);
 	});
 });
 

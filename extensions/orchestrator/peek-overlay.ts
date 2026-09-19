@@ -11,6 +11,7 @@
  */
 
 import { SPINNER_FRAMES, resetSpinner, currentFrame } from "./spinner-state.ts";
+import { registerChannel, unregisterChannel } from "./render-scheduler.ts";
 import { formatDuration } from "./ui-utils.ts";
 import { styledSymbol, statusIcon, getTheme, formatTokens } from "./orchestrator-theme.ts";
 import { matchesKey, Key } from "@earendil-works/pi-tui";
@@ -427,20 +428,26 @@ function scheduleRender(): void {
 // Spinner timer — drives re-renders so time-based spinner frames update visually
 // ============================================================================
 
-let _spinnerTimer: ReturnType<typeof setInterval> | null = null;
+let _spinnerRegistered = false;
+
+/** Channel key for the shared render scheduler. */
+const PEEK_CHANNEL_KEY = "peek";
 
 export function stopSpinnerTimer(): void {
-    if (_spinnerTimer !== null) {
-        clearInterval(_spinnerTimer);
-        _spinnerTimer = null;
+    if (_spinnerRegistered) {
+        unregisterChannel(PEEK_CHANNEL_KEY);
+        _spinnerRegistered = false;
     }
 }
 
 export function startSpinnerTimer(): void {
-    stopSpinnerTimer();
-    _spinnerTimer = setInterval(() => {
-        scheduleRender();
-    }, 80);
+    if (_spinnerRegistered) return;
+    // Route the peek 80 ms spinner driver through the shared render scheduler
+    // so it coalesces with the other active drivers instead of running its own
+    // interval. The flush still calls scheduleRender(), so the existing
+    // microtask coalescing and the 200 ms streaming debounce are preserved.
+    registerChannel(PEEK_CHANNEL_KEY, () => scheduleRender());
+    _spinnerRegistered = true;
 }
 
 // ============================================================================

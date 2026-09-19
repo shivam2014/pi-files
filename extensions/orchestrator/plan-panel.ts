@@ -5,7 +5,8 @@ import { styledSymbol, formatDuration as thFormatDuration, partialStrikethrough,
 import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilState, LoopIteration, LoopUntilStepInput, PlanStepSetupEntry } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
-import { SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
+import { resetSpinner } from "./spinner-state.ts";
+import { registerChannel, unregisterChannel } from "./render-scheduler.ts";
 
 import { debugLog } from "./debug.ts";
 import { getSessionMode } from "./orchestrator-config";
@@ -64,6 +65,9 @@ const MAX_TIMELINE_FRAMES = 500;
 const WIDGET_KEY = "orchestrator-status";
 const BUDGET = 9;
 
+/** Monotonic id source for render-scheduler channel keys (one per panel lifecycle). */
+let _planChannelSeq = 0;
+
 // Loop state is transient — not persisted to JSON
 const _loopStates = new Map<string, LoopUntilState>(); // keyed by step label
 
@@ -77,7 +81,7 @@ export class PlanPanel {
 	private _setWidget: ((key: string, content: string[] | undefined) => void) | null = null;
 	private _lastWidgetContent: string[] | null = null;
 	private _planTimer: ReturnType<typeof setInterval> | null = null;
-	private _spinnerTimer: ReturnType<typeof setInterval> | null = null;
+	private _spinnerChannel: string | null = null;
 	private _cleared: boolean = false;
 
 	constructor(ctx?: { cwd?: string }) {
@@ -477,10 +481,17 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 	private startPlanTimer(): void {
 		this.stopPlanTimer();
 		const self = this;
-		this._spinnerTimer = setInterval(() => {
-			if (self._spinnerTimer === null) return;
+		// Spinner driver: route through the shared render scheduler so this
+		// panel's 80 ms re-render coalesces with the other active drivers
+		// instead of running its own independent setInterval.
+		const channelKey = `plan:${++_planChannelSeq}`;
+		this._spinnerChannel = channelKey;
+		registerChannel(channelKey, () => {
 			if (self.planState) { self._renderWidget(); } else { self.stopPlanTimer(); }
-		}, SPINNER_INTERVAL_MS);
+		});
+		// Elapsed driver stays a dedicated 1000 ms timer — deliberately
+		// decoupled from the spinner cadence (commit 070148a). Do NOT merge it
+		// into the scheduler's 80 ms window; that re-freezes/desyncs the spinner.
 		this._planTimer = setInterval(() => {
 			if (self._planTimer === null) return;
 			if (self.planState) { self._renderWidget(); } else { self.stopPlanTimer(); }
@@ -489,7 +500,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 
 	private stopPlanTimer(): void {
 		if (this._planTimer !== null) { clearInterval(this._planTimer); this._planTimer = null; }
-		if (this._spinnerTimer !== null) { clearInterval(this._spinnerTimer); this._spinnerTimer = null; }
+		if (this._spinnerChannel !== null) { unregisterChannel(this._spinnerChannel); this._spinnerChannel = null; }
 	}
 
 	/**
