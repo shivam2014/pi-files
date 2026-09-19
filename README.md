@@ -49,15 +49,16 @@ pi gives you one agent and a context window. `pi-files` makes it work like a tea
 
 ## Evidence
 
-- **1170 tests passing** across 74 files, plus a clean typecheck.
+- **1243 tests passing** across 81 files, plus a clean typecheck.
 - **TUI smoke test: 9/9 checks** (plan panel, activity feed, specialist blocks, no crashes).
 - **8 extensions**, each with its own focused README.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/shivam2014/pi-files
-# pi auto-discovers extensions in ~/.pi/agent/extensions/
+pi install git:github.com/shivam2014/pi-files
+pi list          # verify
+pi remove git:github.com/shivam2014/pi-files
 ```
 
 ## Documentation

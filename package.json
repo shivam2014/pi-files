@@ -1,4 +1,19 @@
 {
+  "name": "pi-files",
+  "version": "1.0.0",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "extensions/orchestrator/index.ts",
+      "extensions/token-saver.ts",
+      "extensions/lint-guard.ts",
+      "extensions/scope-guard.ts",
+      "extensions/vision-router.ts",
+      "extensions/local-latex/index.ts",
+      "extensions/diagram.ts",
+      "extensions/herdr-agent-state.ts"
+    ]
+  },
   "dependencies": {
     "typebox": "^1.2.18"
   }
