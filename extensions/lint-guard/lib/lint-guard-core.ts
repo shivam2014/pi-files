@@ -46,6 +46,33 @@ export function resolveFile(p: string): string {
 	return isAbsolute(expandTilde(p)) ? expandTilde(p) : p;
 }
 
+// ── Bash write detection ──────────────────────────────────────────────
+
+/** In-place flag belonging to sed/awk: `-i`, `-i.bak`, `-ni`, `--in-place[=SUFFIX]`. */
+const IN_PLACE_FLAG = /(?:^|\s)(?:-[A-Za-z]*i\S*|--in-place\S*)(?=\s|$)/;
+
+/** Command separators, so a flag from another pipeline command (e.g. `grep -i`) never counts. */
+const COMMAND_SEPARATOR = /\|\||&&|[|;&\n]/;
+
+/**
+ * True when a bash command performs an actual file write that should go
+ * through the edit/write tools instead:
+ *   - `sed`/`awk` invoked in place (`-i` / `-i.bak` / `--in-place`)
+ *   - trailing shell redirection to an extension-bearing file (`... > out.txt`)
+ *
+ * Read-only forms stay allowed: `sed -n '1,5p' file.txt`,
+ * `sed 's/x/y/' file.txt`, `sed -n '1p' file.txt | grep -i foo`.
+ */
+export function isFileWriteCommand(command: string): boolean {
+	if (typeof command !== "string" || command.length === 0) return false;
+	if (/>\s*\S+\.\w+\s*$/.test(command)) return true;
+	for (const segment of command.split(COMMAND_SEPARATOR)) {
+		if (!/\b(?:sed|awk)\b/.test(segment)) continue;
+		if (IN_PLACE_FLAG.test(segment)) return true;
+	}
+	return false;
+}
+
 // ── Command availability ──────────────────────────────────────────────
 
 export function commandExists(cmd: string): boolean {

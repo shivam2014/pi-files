@@ -16,6 +16,7 @@ import { Type } from "typebox";
 import {
 	buildLintTool,
 	formatResult,
+	isFileWriteCommand,
 	type LintTool,
 	type LintResult,
 } from "./lint-guard/lib/lint-guard-core";
@@ -148,14 +149,11 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Block bash+sed/awk — enforce edit/write for file modifications ─
 
-	const SED_PATTERN =
-		/(\bsed\b.*-i\b)|(\bawk\b.*-i\b)|(>\s*\S+\.\w+\s*$)|(\bsed\b.*'[^']*'\s+\S+\.)/;
-
 	pi.on("tool_call", async (event, ctx) => {
 		if (
 			event.toolName === "bash" &&
 			typeof event.input.command === "string" &&
-			SED_PATTERN.test(event.input.command)
+			isFileWriteCommand(event.input.command)
 		) {
 			return {
 				block: true,
