@@ -11,6 +11,11 @@ import {
 	resolveSkillPaths,
 	createFlightRecorderDump,
 	SubagentRunner,
+	isCleanCompleteStop,
+	hasDeliverableMarkers,
+	nextIntervention,
+	INITIAL_INTERVENTION,
+	STALL_GRACE_TURNS,
 } from "./subagent-runner.ts";
 import { DEFAULTS, resolveSpecialistModel, getSessionModels, setSessionModels, _sessionModels } from "./orchestrator-config.ts";
 import { shortenLabel, truncateLabel } from "../token-saver.ts";
@@ -929,6 +934,96 @@ describe("BUG regression loops — runner returns real metrics, status, planStep
 			const entry = result.toolCallTrail.find((t: { tool?: unknown }) => String(t.tool).startsWith("bash:")) as any;
 			expect(entry).toBeDefined();
 			expect(entry.outputPreview).toBe("first preview");
+		}
+	});
+});
+
+// ─── Stall termination: a delegation that delivered its report must never be killed ──
+//
+// Recorded failure (delegation-2026-09-20T13-12-05-305Z-reviewer.json): the completion
+// guard was computed ONCE before the nudge prompts; the stale `false` opened the stall
+// block, the model answered the nudge WITH its final report (so `output` gained
+// deliverable markers and `turns` advanced past nudgedAtTurns), `d2` returned terminate,
+// and session.abort() killed completed work.
+
+describe("stall termination guard — point-of-use recompute + abort veto", () => {
+	const DELIVERED_REPORT = [
+		"## Completed",
+		"Recomputed the completion guard at its point of use.",
+		"",
+		"## Findings",
+		"- summary: guard was stale across nudges",
+	].join("\n");
+
+	it("regression: budget nudge → deliverable report → ends completed, stallTerminated false", () => {
+		const stopReason = "stop";
+		const stepsIncomplete = false;
+		// What the run looked like when the guard was captured (line ~1546), pre-nudge:
+		const outputBeforeNudges = "Wrapping up, writing the report now...";
+		// What the model produced IN RESPONSE to the nudge (the delivered report):
+		const outputAfterNudges = outputBeforeNudges + "\n" + DELIVERED_REPORT;
+
+		// The stale snapshot — this is the `false` that used to open the stall block.
+		const staleSnapshot = isCleanCompleteStop(stopReason, stepsIncomplete, outputBeforeNudges);
+		expect(staleSnapshot).toBe(false);
+
+		// The point-of-use recompute must see the delivered report and suppress the block.
+		const atPointOfUse = isCleanCompleteStop(stopReason, stepsIncomplete, outputAfterNudges);
+		expect(atPointOfUse).toBe(true);
+
+		// And the abort-site veto covers the same output independently.
+		expect(hasDeliverableMarkers(outputAfterNudges)).toBe(true);
+	});
+
+	it("regression: report delivered while steps still open → guard false, abort still vetoed", () => {
+		// Old stepsIncomplete ⇒ isCleanCompleteStop stays false even when fresh, so the
+		// deliverable veto at the abort site is the only thing protecting the run.
+		expect(isCleanCompleteStop("stop", true, DELIVERED_REPORT)).toBe(false);
+		expect(hasDeliverableMarkers(DELIVERED_REPORT)).toBe(true);
+	});
+
+	it("edge: veto is stop-reason agnostic (length/error-turn report is still a deliverable)", () => {
+		for (const reason of ["length", "toolUse", null, undefined]) {
+			expect(isCleanCompleteStop(reason, false, DELIVERED_REPORT)).toBe(false);
+			expect(hasDeliverableMarkers(DELIVERED_REPORT)).toBe(true);
+		}
+	});
+
+	it("edge: every SSOT deliverable marker is recognised by the veto", () => {
+		for (const marker of ["## Completed", "## Findings", "## Files Changed"]) {
+			expect(hasDeliverableMarkers(`intro text\n${marker}\nbody`)).toBe(true);
+		}
+		expect(hasDeliverableMarkers("Nope. Just prose with no headings.")).toBe(false);
+	});
+
+	it("grace: one further turn after the nudge is not enough to terminate", () => {
+		const nudged = nextIntervention(INITIAL_INTERVENTION, "STALLED", 10);
+		expect(nudged.action).toBe("nudge");
+		expect(nudged.next.nudgedAtTurns).toBe(10);
+		// Same turn + 1 turn later must both continue (the report-writing turn).
+		expect(nextIntervention(nudged.next, "STALLED", 10).action).toBe("continue");
+		expect(nextIntervention(nudged.next, "STALLED", 11).action).toBe("continue");
+	});
+
+	it("negative: no deliverable markers → run still terminates (cap preserved)", () => {
+		const stalledOutput = "still retrying the same failing tool, no report";
+		expect(hasDeliverableMarkers(stalledOutput)).toBe(false);
+		expect(isCleanCompleteStop("stop", false, stalledOutput)).toBe(false);
+
+		let intervention = INITIAL_INTERVENTION;
+		const nudged = nextIntervention(intervention, "STALLED", 10);
+		expect(nudged.action).toBe("nudge"); // ONE nudge cap
+		intervention = nudged.next;
+		expect(nextIntervention(intervention, "STALLED", 11).action).toBe("continue"); // grace
+		const terminated = nextIntervention(intervention, "STALLED", 10 + STALL_GRACE_TURNS);
+		expect(terminated.action).toBe("terminate");
+		expect(terminated.next).toBe(intervention); // idempotent, no re-nudge
+	});
+
+	it("negative: HEALTHY/DEGRADED never nudge, never terminate", () => {
+		for (const state of ["HEALTHY", "DEGRADED"] as const) {
+			expect(nextIntervention(INITIAL_INTERVENTION, state, 5).action).toBe("continue");
+			expect(nextIntervention({ everNudged: true, nudgedAtTurns: 1 }, state, 9).action).toBe("continue");
 		}
 	});
 });

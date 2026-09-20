@@ -580,12 +580,19 @@ export const INITIAL_INTERVENTION: InterventionSnapshot = { everNudged: false, n
 export type InterventionAction = "continue" | "nudge" | "terminate";
 
 /**
+ * Turns of grace granted AFTER the single stall nudge before termination may fire.
+ * One turn is not enough: the nudged turn is where the model writes its report, and
+ * the same turn advances the counter past nudgedAtTurns.
+ */
+export const STALL_GRACE_TURNS = 2;
+
+/**
  * Pure graduated-intervention transition.
  *
  *  HEALTHY / DEGRADED → continue (DEGRADED raises watch upstream, no action here).
  *  STALLED (never nudged) → ONE facts-only nudge.
- *  STALLED (already nudged, past the grace turn) → terminate.
- *  STALLED (already nudged, within grace) → continue (give the model its turn).
+ *  STALLED (already nudged, ≥ STALL_GRACE_TURNS turns later) → terminate.
+ *  STALLED (already nudged, within grace) → continue (give the model its turns).
  */
 export function nextIntervention(
 	prev: InterventionSnapshot,
@@ -598,7 +605,7 @@ export function nextIntervention(
 	if (!prev.everNudged) {
 		return { action: "nudge", next: { everNudged: true, nudgedAtTurns: turns } };
 	}
-	if (prev.nudgedAtTurns !== null && turns > prev.nudgedAtTurns) {
+	if (prev.nudgedAtTurns !== null && turns - prev.nudgedAtTurns >= STALL_GRACE_TURNS) {
 		return { action: "terminate", next: prev };
 	}
 	return { action: "continue", next: prev };
@@ -1567,9 +1574,16 @@ export class SubagentRunner {
 					}
 
 					// ── Graduated stall intervention: HEALTHY → DEGRADED → STALLED ──
-					// ONE facts-only nudge cap; terminate if STALLED persists past the nudge.
-					// Skipped for cleanCompleteStop (see C1 guard above).
-					if (!cleanCompleteStop) try {
+					// ONE facts-only nudge cap; terminate only if STALLED persists past the
+					// nudge AND the run still has no deliverable.
+					//
+					// The completion guard is RECOMPUTED here, at the point of use: the value
+					// captured before the nudge prompts above is stale by now. A model that
+					// answers a nudge with its final report sets deliverable markers on the
+					// live `output` in this same pass — evaluating the pre-nudge snapshot
+					// instead kept `false` and opened this block, terminating delivered work.
+					const stallSuppressed = isCleanCompleteStop(lastStopReason, stepsIncomplete, output);
+					if (!stallSuppressed) try {
 						const decision = nextIntervention(intervention, detector.state(), turns);
 						intervention = decision.next;
 						if (decision.action === "nudge") {
@@ -1589,11 +1603,16 @@ export class SubagentRunner {
 							// Re-evaluate after the model had its chance to recover.
 							const d2 = nextIntervention(intervention, detector.state(), turns);
 							intervention = d2.next;
-							if (d2.action === "terminate") {
+							// Abort veto: the nudged turn is exactly where a run delivers its report
+							// (deliverable markers present on `output`). Such a run is not stalled —
+							// never kill it, regardless of the state machine's verdict.
+							if (d2.action === "terminate" && !hasDeliverableMarkers(output)) {
 								stallTerminated = true;
 								try { session.abort(); } catch {}
 								output += "\n\n[intervention] Terminated: no observable progress after stall nudge.";
 								debugLog("[intervention] terminated after unanswered stall nudge", { specialist: specialist.name, turns });
+							} else if (d2.action === "terminate") {
+								debugLog("[intervention] abort vetoed — deliverable report present on output", { specialist: specialist.name, turns });
 							}
 						}
 					} catch (e) {
