@@ -700,9 +700,9 @@ describe("BUG regression loops — runner returns real metrics, status, planStep
 			readCalls: 1, grepCalls: 0, findCalls: 0,
 			editCalls: 1, writeCalls: 0, bashCalls: 2, lsCalls: 0,
 		});
-		// 4 tool calls + 1 auto-added `lint:` substep (edit target a.ts is lintable)
+		// 4 tool calls + 1 auto-added `auto-lint queued:` substep (edit target a.ts is lintable)
 		expect(result.toolCallTrail).toHaveLength(5);
-		expect(result.toolCallTrail.some((t: { tool?: unknown }) => String(t.tool).startsWith("lint: checking a.ts"))).toBe(true);
+		expect(result.toolCallTrail.some((t: { tool?: unknown }) => String(t.tool).startsWith("auto-lint queued: a.ts"))).toBe(true);
 	});
 
 	it("FIX-4: lint substep only added for lintable files", { timeout: 15_000 }, async () => {
@@ -715,7 +715,7 @@ describe("BUG regression loops — runner returns real metrics, status, planStep
 			ref.subscribeCb!(assistantEnd("end_turn", "done"));
 			resolvePrompt();
 			const result = await resultPromise;
-			expect(result.toolCallTrail.some((t: { tool?: unknown }) => String(t.tool).startsWith("lint: checking"))).toBe(true);
+			expect(result.toolCallTrail.some((t: { tool?: unknown }) => String(t.tool).startsWith("auto-lint queued"))).toBe(true);
 		}
 		// .md → no lint substep
 		{
