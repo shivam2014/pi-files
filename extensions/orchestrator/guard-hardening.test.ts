@@ -10,6 +10,15 @@
  *   - boolean-flag operand scanning (W1)
  *   - broadened extension allowlist / extensionless write paths (W2)
  *   - force-plan gate for read-only children (planSteps itself never gated)
+ *
+ * Round 2 (live-verified false negatives):
+ *   - git write ops with no extractable path feed the no-scope fail-closed gate (C-3)
+ *   - env-prefixed write payloads (C-1)
+ *   - command substitutions + interpreter script files (C-2)
+ *   - cp/mv/install `-t` target-directory operands are write targets (C-4)
+ *   - pipe-bridged xargs writes re-escalate prior read paths (C-5)
+ *   - quoted extensionless targets, commit -am/-F positions, escaped `\;`,
+ *     target-aware readOnly /tmp exemption (warnings a–d)
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -62,8 +71,9 @@ function installGuard() {
 	return guard;
 }
 
-function runBash(command: string, opts: { readOnly?: boolean; planParsed?: boolean } = {}) {
+function runBash(command: string, opts: { readOnly?: boolean; planParsed?: boolean; noScope?: boolean } = {}) {
 	const guard = installGuard();
+	if (opts.noScope) guard.isScopeValid.mockReturnValue(false);
 	const state: SubagentState = {
 		specialistName: opts.readOnly ? "reviewer" : "coder",
 		planParsed: opts.planParsed !== false,
@@ -192,5 +202,189 @@ describe("force-plan gate (all tools, planSteps exempt)", () => {
 		const state: SubagentState = { specialistName: "reviewer", planParsed: false, cwd: DELEGATION_CWD, blockedCalls: [] };
 		const result = handleSubagentToolCall({ toolName: "planSteps", input: { goal: "g", steps: ["s"] } }, true, undefined, state);
 		expect(result).toBeUndefined();
+	});
+});
+
+describe("C3 (round 2) — git write ops with no extractable path", () => {
+	it("blocks `git add -A` with no scope (write op feeds the fail-closed gate)", () => {
+		const { result } = runBash("git add -A", { noScope: true });
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toContain("no approved scope");
+	});
+
+	it("blocks `git reset --hard` with no scope", () => {
+		const { result } = runBash("git reset --hard", { noScope: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it("blocks `git clean -fdx` with no scope", () => {
+		const { result } = runBash("git clean -fdx", { noScope: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it("still allows `git add -A` when a scope is established", () => {
+		const { result } = runBash("git add -A");
+		expect(result?.block).toBeFalsy();
+	});
+});
+
+describe("C1 (round 2) — env-prefixed write payloads", () => {
+	it("blocks `env X=1 rm -f /outside/x.ts` for a scoped coder", () => {
+		const { result } = runBash("env X=1 rm -f /outside/x.ts");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/x.ts is outside the allowed scope");
+	});
+
+	it("blocks env-prefixed writes for read-only specialists", () => {
+		const { result } = runBash("env X=1 rm -f /outside/x.ts", { readOnly: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it("allows `env X=1 rm -f <in-scope>/x.ts`", () => {
+		const { result } = runBash(`env X=1 rm -f ${SCOPE_DIR}/x.ts`);
+		expect(result?.block).toBeFalsy();
+	});
+});
+
+describe("C2 (round 2) — command substitution in quoted/unquoted text", () => {
+	it('blocks `echo "$(rm -f /outside/x.ts)"`', () => {
+		const { result } = runBash('echo "$(rm -f /outside/x.ts)"');
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/x.ts is outside the allowed scope");
+	});
+
+	it("blocks unquoted `echo $(rm -f /outside/x.ts)`", () => {
+		const { result } = runBash("echo $(rm -f /outside/x.ts)");
+		expect(result?.block).toBe(true);
+	});
+
+	it("blocks backtick substitution", () => {
+		const { result } = runBash("echo `rm -f /outside/x.ts`");
+		expect(result?.block).toBe(true);
+	});
+
+	it("blocks substitution for read-only specialists", () => {
+		const { result } = runBash('echo "$(rm -f /outside/x.ts)"', { readOnly: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it("checks in-scope substitution targets as write paths", () => {
+		const { result, guard } = runBash(`echo "$(rm -f ${SCOPE_DIR}/x.ts)"`);
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).toHaveBeenCalledWith(`${SCOPE_DIR}/x.ts`, "write");
+	});
+});
+
+describe("C2 (round 2) — interpreter script files / inline code", () => {
+	it("blocks `node /outside/script.js`", () => {
+		const { result } = runBash("node /outside/script.js");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/script.js is outside the allowed scope");
+	});
+
+	it("blocks `node -p` inline code for read-only specialists", () => {
+		const { result } = runBash('node -p "1+1"', { readOnly: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it("blocks `python3 /outside/script.py`", () => {
+		const { result } = runBash("python3 /outside/script.py");
+		expect(result?.block).toBe(true);
+	});
+
+	it("blocks stdin-heredoc interpreters for read-only specialists", () => {
+		const { result } = runBash("python3 <<'EOF'", { readOnly: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it("blocks `awk -i inplace` on an out-of-scope file", () => {
+		const { result } = runBash(`awk -i inplace '{$0="x"}' /outside/f.ts`);
+		expect(result?.block).toBe(true);
+	});
+
+	it("keeps `node --version` and `node --test` read-class", () => {
+		expect(runBash("node --version").result?.block).toBeFalsy();
+		expect(runBash("node --test").result?.block).toBeFalsy();
+	});
+});
+
+describe("C4 (round 2) — target-directory operand is a write target", () => {
+	it("blocks `cp -t /outside <in-scope-src>`", () => {
+		const { result } = runBash(`cp -t /outside ${SCOPE_DIR}/a.ts`);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside is outside the allowed scope");
+	});
+
+	it("blocks `mv -t /outside <in-scope-src>`", () => {
+		const { result } = runBash(`mv -t /outside ${SCOPE_DIR}/a.ts`);
+		expect(result?.block).toBe(true);
+	});
+
+	it("blocks `install -t /outside <in-scope-src>`", () => {
+		const { result } = runBash(`install -t /outside ${SCOPE_DIR}/a.ts`);
+		expect(result?.block).toBe(true);
+	});
+
+	it("allows `cp -t <in-scope-dir> src.ts`", () => {
+		const { result } = runBash(`cp -t ${SCOPE_DIR}/sub ${SCOPE_DIR}/a.ts`);
+		expect(result?.block).toBeFalsy();
+	});
+});
+
+describe("C5 (round 2) — pipe-bridged xargs write", () => {
+	it("blocks `echo /outside/x.ts | xargs rm -f` (prior read path re-escalated)", () => {
+		const { result } = runBash("echo /outside/x.ts | xargs rm -f");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/x.ts is outside the allowed scope");
+	});
+
+	it("allows `echo <in-scope>/x.ts | xargs rm -f` and checks it as write", () => {
+		const { result, guard } = runBash(`echo ${SCOPE_DIR}/x.ts | xargs rm -f`);
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).toHaveBeenCalledWith(`${SCOPE_DIR}/x.ts`, "write");
+	});
+
+	it("does not re-escalate across `;` (different pipeline)", () => {
+		const { result } = runBash("echo /outside/x.ts ; xargs rm -f");
+		expect(result?.block).toBeFalsy();
+	});
+});
+
+describe("warnings (round 2) — quoted extensionless, commit flags, escaped separators, /tmp targets", () => {
+	it('blocks `tee "/outside/secret"` (quoted extensionless target)', () => {
+		const { result } = runBash('tee "/outside/secret"');
+		expect(result?.block).toBe(true);
+	});
+
+	it('allows `git commit -am "fix /outside/x.ts"` (combined -am message position)', () => {
+		expect(runBash('git commit -am "fix /outside/x.ts"').result?.block).toBeFalsy();
+	});
+
+	it('allows `git commit -F /outside/msg.txt` (message file position)', () => {
+		expect(runBash("git commit -F /outside/msg.txt").result?.block).toBeFalsy();
+	});
+
+	it("still blocks `git commit /outside/x.ts` (positional path)", () => {
+		const { result } = runBash("git commit /outside/x.ts");
+		expect(result?.block).toBe(true);
+	});
+
+	it("does not split on escaped `\\;` (literal echo argument)", () => {
+		expect(runBash("echo a \\; rm -f /outside/x.ts").result?.block).toBeFalsy();
+	});
+
+	it("blocks read-only `mv <in-scope-src> /tmp/x` (target-aware /tmp exemption)", () => {
+		const { result } = runBash(`mv ${SCOPE_DIR}/src.ts /tmp/x`, { readOnly: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it("still allows read-only scratch writes (`cat f > /tmp/out.txt`, `tee /tmp/out.txt`)", () => {
+		expect(runBash("cat f > /tmp/out.txt", { readOnly: true }).result?.block).toBeFalsy();
+		expect(runBash("tee /tmp/out.txt", { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("blocks read-only copies whose TARGET is outside /tmp", () => {
+		const { result } = runBash("cp /tmp/a /outside/b.ts", { readOnly: true });
+		expect(result?.block).toBe(true);
 	});
 });

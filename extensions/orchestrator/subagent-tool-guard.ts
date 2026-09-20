@@ -32,6 +32,73 @@ function isScopedTempWrite(text: string): boolean {
 	return /\s>>?\s|\b(mkdir|touch|tee|cp|mv|sed|perl|tar|unzip|gzip|gunzip|bzip2|xz|python|python3|node)\b/.test(text);
 }
 
+/** True for scratch paths under /tmp (or macOS's /private/tmp alias). */
+function isTmpPath(p: string): boolean {
+	return p.startsWith('/tmp/') || p.startsWith('/private/tmp/');
+}
+
+/**
+ * W2: broadened file-like extension allowlist (+sh/json/yaml/md/env/csv/log/mjs/cjs…).
+ * Round 2: hoisted to module scope so substitution-payload scanning can reuse it.
+ * Limit: bare extensionless filenames without a `/` (Makefile, LICENSE) are only
+ * caught via the per-segment write-op extensionless rule.
+ */
+const pathRegex = /[\w./-]+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc|md|mdx|yaml|yml|toml|txt|sh|bash|zsh|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|sql|env|csv|tsv|log|xml|html|css|scss|sass|less|vue|svelte|lock|cfg|ini|conf|graphql|proto|tf|tfvars)/g;
+
+/**
+ * C2 (round 2): locate command substitutions (`$( … )` with a balanced-paren
+ * best-effort scan, and backticks) ANYWHERE in a segment — including inside
+ * double quotes, where the tokenizer otherwise leaves only opaque text.
+ * Substitutions execute arbitrary code: the owning segment is write-class
+ * (fail closed) and the payload is scanned for write-target paths.
+ */
+function extractCommandSubstitutions(text: string): string[] {
+	const subs: string[] = [];
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i];
+		if (ch === '\\') { i++; continue; }
+		if (ch === '$' && text[i + 1] === '(') {
+			let depth = 1;
+			let j = i + 2;
+			while (j < text.length && depth > 0) {
+				const c = text[j];
+				if (c === '\\') { j++; }
+				else if (c === '(') depth++;
+				else if (c === ')') depth--;
+				if (depth === 0) break;
+				j++;
+			}
+			subs.push(text.slice(i + 2, j));
+			i = j;
+			continue;
+		}
+		if (ch === '`') {
+			const end = text.indexOf('`', i + 1);
+			if (end < 0) { subs.push(text.slice(i + 1)); break; }
+			subs.push(text.slice(i + 1, end));
+			i = end;
+			continue;
+		}
+	}
+	return subs;
+}
+
+/** C2: write-target candidates inside a substitution payload (best-effort). */
+function substitutionWritePaths(inner: string): string[] {
+	const found: string[] = [];
+	pathRegex.lastIndex = 0;
+	for (const m of inner.matchAll(pathRegex)) found.push(m[0]);
+	for (const word of inner.split(/\s+/)) {
+		const cleaned = word.replace(/^[()"'`]+/, '').replace(/[)"'`;,&|]+$/, '');
+		if (cleaned.length === 0 || cleaned.startsWith('-')) continue;
+		if (!/[\/]/.test(cleaned)) continue;
+		if (/^[a-z][a-z0-9+.-]*:\/\//.test(cleaned)) continue;
+		if (!/(?:^|\/)[\w.-]+\/?$/.test(cleaned)) continue;
+		if (!found.includes(cleaned)) found.push(cleaned);
+	}
+	return found;
+}
+
 /** Check if a bash call should be intercepted and replaced with a native tool. */
 function checkBashInterception(
 	event: any,
@@ -118,9 +185,11 @@ function tokenizeShell(command: string): ShellToken[] {
 			continue;
 		}
 		// C2: outside quotes, backslash makes the next char literal
-		// (including quotes and separators).
+		// (including quotes and separators). Round 2: the escaped char also flags
+		// the token as quoted so `\;` can never fake a segment split.
 		if (ch === '\\' && i + 1 < command.length) {
 			current += command[i + 1];
+			currentQuoted = true;
 			i++;
 			continue;
 		}
@@ -142,19 +211,30 @@ function tokenizeShell(command: string): ShellToken[] {
 	return tokens;
 }
 
+/** A tokenized segment plus the separator token that preceded it (null for the first). */
+interface ShellSegment {
+	segment: ShellToken[];
+	sep: string | null;
+}
+
 /** Split a tokenized command line into per-command segments at shell separators. */
-function splitShellSegments(tokens: ShellToken[]): ShellToken[][] {
-	const segments: ShellToken[][] = [];
+function splitShellSegments(tokens: ShellToken[]): ShellSegment[] {
+	const segments: ShellSegment[] = [];
 	let current: ShellToken[] = [];
+	let sep: string | null = null;
+	const push = () => {
+		if (current.length > 0) segments.push({ segment: current, sep });
+		current = [];
+	};
 	for (const token of tokens) {
 		if (!token.quoted && SHELL_SEPARATORS.has(token.value)) {
-			if (current.length > 0) segments.push(current);
-			current = [];
+			push();
+			sep = token.value;
 		} else {
 			current.push(token);
 		}
 	}
-	if (current.length > 0) segments.push(current);
+	push();
 	return segments;
 }
 
@@ -198,28 +278,41 @@ const VALUE_FLAGS_BY_CMD: Record<string, ReadonlySet<string>> = {
 	find: new Set(['-name', '-iname', '-path', '-type', '-maxdepth', '-mindepth', '-newer']),
 	awk: new Set(['-F', '-v', '-f']),
 	xargs: new Set(['-n', '-s', '-P', '-I', '-i', '-E', '-d']),
-	cp: new Set(['-t', '--target-directory']),
-	mv: new Set(['-t', '--target-directory']),
-	install: new Set(['-t', '--target-directory']),
+	// C4 (round 2): cp/mv/install `-t`/`--target-directory` are DELIBERATELY
+	// omitted — their operand is a write TARGET, not a value to swallow.
+	// (Leaving them here skipped the destination: `cp -t /outside src` only
+	// checked `src`.)
 };
 
 /**
  * C1: wrapper commands that execute a write-classified payload even though the
  * wrapper itself is read-listed — python3 -c / node -e run arbitrary code;
- * xargs <write cmd>; find -exec/-delete.
+ * xargs <write cmd>; find -exec/-delete. Round 2: script-file operands and
+ * inline-code flags for node/python3, and `awk -i inplace`.
  */
 function wrapperWrites(tokens: ShellToken[], cmdIdx: number): boolean {
 	const word = tokens[cmdIdx]?.value;
 	const rest = tokens.slice(cmdIdx + 1);
 	const values = rest.map((t) => t.value);
 	if (word === 'python' || word === 'python3') {
-		return values.includes('-c');
+		// Round 2: -c / -m execute arbitrary code; any non-flag operand is a
+		// script file (or heredoc marker) — all write-class.
+		if (values.includes('-c') || values.includes('-m')) return true;
+		return rest.some((t) => !t.value.startsWith('-'));
 	}
 	if (word === 'node') {
-		return values.includes('-e') || values.includes('--eval');
+		// Round 2: -e/--eval/-p/--print execute inline code; any non-flag operand
+		// is a script file (or heredoc marker). `node --test …` stays read-class.
+		if (values.includes('-e') || values.includes('--eval') || values.includes('-p') || values.includes('--print')) return true;
+		if (values.includes('--test')) return false;
+		return rest.some((t) => !t.value.startsWith('-'));
 	}
 	if (word === 'perl') {
 		return values.includes('-e') || values.includes('-E');
+	}
+	if (word === 'awk') {
+		// Round 2: `awk -i inplace …` edits files in place.
+		return values.includes('-i') || values.includes('-iinplace');
 	}
 	if (word === 'xargs') {
 		let j = 0;
@@ -355,15 +448,18 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				// segments split at &&, ||, ;, | so one command's tokens can never leak
 				// into another's scope check.
 				const TEST_RUNNER_PREFIXES = ['npx vitest', 'npx jest', 'npm test', 'npx playwright', 'npx mocha', 'npx cypress', 'yarn test', 'pnpm test', 'npx tsc', 'node --test'];
-				// W2: broadened extension allowlist (+sh/json/yaml/md/env/csv/log/mjs/cjs…).
-				// Limit: bare extensionless filenames without a `/` (Makefile, LICENSE) are
-				// only caught via the write-op extensionless rule below, unquoted only.
-				const pathRegex = /[\w./-]+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc|md|mdx|yaml|yml|toml|txt|sh|bash|zsh|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|sql|env|csv|tsv|log|xml|html|css|scss|sass|less|vue|svelte|lock|cfg|ini|conf|graphql|proto|tf|tfvars)/g;
+				// W2: file-like token matcher is hoisted to module scope (pathRegex) so
+				// substitution-payload scanning can reuse it.
 
 				// C5: fold `cd <dir>` / `git -C <dir>` while walking segments so a
 				// mid-chain cd (`true && cd /outside && git add x.ts`) rebases later paths.
 				let baseDir = cwd;
-				for (const segment of splitShellSegments(tokenizeShell(cmd))) {
+				// C5 (round 2): where the current pipeline's filePaths entries begin —
+				// used to re-escalate read ops when a downstream xargs is write-class.
+				let pipelineEntryStart = 0;
+				for (const { segment, sep } of splitShellSegments(tokenizeShell(cmd))) {
+					if (sep !== '|') pipelineEntryStart = filePaths.length;
+					const segmentEntryStart = filePaths.length;
 					const cmdIdx = firstCommandIndex(segment);
 					const cmdWord = segment[cmdIdx]?.value;
 
@@ -389,6 +485,9 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 							const stashSub = args.find((arg: string) => !arg.startsWith('-'));
 							// Bare "git stash" defaults to "stash list" (safe)
 							if (stashSub && !safeStashSubs.has(stashSub)) {
+								// C3 (round 2): stash pop/apply/drop mutate — write-class, so the
+								// no-scope fail-closed gate below cannot be skipped.
+								bashWriteOp = true;
 								if (ctx?.readOnly) {
 									return { block: true, reason: `⛔ Git write command blocked for read-only specialist: git stash ${stashSub}` };
 								}
@@ -407,18 +506,27 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 							// C4: commit messages are exempt by ARGUMENT POSITION — tokens after
 							// -m/--message are messages, everything else may name files. Quoted
 							// args are scanned too: a quoted path is still a path.
+							// Round 2 (W-b): -F/--file and --author take values too, and a
+							// combined short bundle embedding m (`-am …`) takes the message as
+							// its next operand.
 							let skipNext = false;
 							for (const arg of args) {
 								if (skipNext) { skipNext = false; continue; }
-								if (arg === '-m' || arg === '--message') { skipNext = true; continue; }
+								if (arg === '-m' || arg === '--message' || arg === '-F' || arg === '--file' || arg === '--author') { skipNext = true; continue; }
+								if (arg.startsWith('--message=') || arg.startsWith('--file=') || arg.startsWith('--author=')) continue;
+								if (/^-[A-Za-z]*m[A-Za-z]*$/.test(arg)) { skipNext = true; continue; }
 								if (arg.startsWith('-')) continue;
 								pathRegex.lastIndex = 0;
 								for (const match of arg.matchAll(pathRegex)) {
-									if (match[0].startsWith('/tmp/') || match[0].startsWith('/private/tmp/')) continue;
+									if (isTmpPath(match[0])) continue;
 									filePaths.push({ raw: match[0], base: segBase, op: 'write' });
 								}
 							}
 						} else if (GIT_WRITE_COMMANDS.has(subcmd)) {
+							// C3 (round 2): write-class even when no path is extractable
+							// (`git add -A`, `git reset --hard`, `git clean -fdx`) — feeds the
+							// no-scope fail-closed gate and the readOnly gate.
+							bashWriteOp = true;
 							// Read-only specialist: block git write commands
 							if (ctx?.readOnly) {
 								return { block: true, reason: `⛔ Git write command blocked for read-only specialist. Command: git ${subcmd}` };
@@ -458,16 +566,23 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						// quoted tokens so a quoted `>` cannot classify the segment as a write,
 						// while unquoted redirects still do. Wrapper forms (python3 -c, node -e,
 						// xargs <write cmd>, find -exec/-delete) are write-op by construction.
+						// Round 2: (a) re-classify the cmdIdx-anchored slice so transparent
+						// prefixes (`env X=1 rm …`) cannot mask a write behind the read-listed
+						// `env`; (b) any command substitution is opaque write-class.
 						const classifierSegment = classifierText(segment);
-						const segmentWrite = isWriteCommand(classifierSegment) || wrapperWrites(segment, cmdIdx);
+						const anchoredText = cmdIdx > 0 && cmdIdx < segment.length ? classifierText(segment.slice(cmdIdx)) : undefined;
+						const substitutionInners = extractCommandSubstitutions(segment.map((t) => t.value).join(' '));
+						const segmentWrite =
+							isWriteCommand(classifierSegment)
+							|| (anchoredText !== undefined && isWriteCommand(anchoredText))
+							|| wrapperWrites(segment, cmdIdx)
+							|| substitutionInners.length > 0;
 						if (segmentWrite) bashWriteOp = true;
 
-						// Read-only specialist: block write-modifying non-git bash commands.
-						// Ordering: the scoped /tmp scratch exemption (BUG-5) applies BEFORE
-						// this block — `cat f > /tmp/out.txt` passes for read-only specialists.
-						if (ctx?.readOnly && segmentWrite && !isScopedTempWrite(classifierSegment)) {
-							return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
-						}
+						// Path extraction happens BEFORE the readOnly gate: the /tmp
+						// scratch exemption (W-d, round 2) is target-aware and needs the
+						// segment's write targets.
+						const segEntries: { raw: string; op: 'read' | 'write' }[] = [];
 						// Test runner and compiler commands are read-only — skip file path extraction
 						const isTestRunner = TEST_RUNNER_PREFIXES.some(prefix => classifierSegment.startsWith(prefix));
 						if (!isTestRunner) {
@@ -475,7 +590,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 							// tokens are scanned too — a quoted path is still a path. W1: only
 							// flags KNOWN to consume a value swallow their operand; boolean
 							// flags (-f, -n, …) never do. W2: extensionless candidates count
-							// as paths only for write ops, only when unquoted.
+							// as paths for write ops (round 2: quoted included too).
 							const valueFlags = VALUE_FLAGS_BY_CMD[cmdWord ?? ''] ?? EMPTY_VALUE_FLAGS;
 							for (let t = 0; t < segment.length; t++) {
 								const token = segment[t];
@@ -498,7 +613,6 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 									if (
 										matches.length === 0 &&
 										segmentWrite &&
-										!token.quoted &&
 										!candidate.startsWith('-') &&
 										/[\/]/.test(candidate) &&
 										/(?:^|\/)[\w.-]+\/?$/.test(candidate) &&
@@ -511,12 +625,65 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 										matches.push(candidate);
 									}
 									for (const match of matches) {
-										// BUG-5: temp-scratch paths are exempt from scope checks — subagents
-										// legitimately write findings/scratch files under /tmp
-										if (match.startsWith('/tmp/') || match.startsWith('/private/tmp/')) continue;
-										filePaths.push({ raw: match, base: baseDir, op: segmentWrite ? 'write' : 'read' });
+										segEntries.push({ raw: match, op: segmentWrite ? 'write' : 'read' });
 									}
 								}
+							}
+							// C2: substitution payload paths are write targets (best-effort).
+							for (const inner of substitutionInners) {
+								for (const p of substitutionWritePaths(inner)) {
+									segEntries.push({ raw: p, op: 'write' });
+								}
+							}
+						}
+						// W-d: the /tmp scratch exemption (BUG-5) is TARGET-aware — a
+						// readOnly write is exempt only when every write TARGET is /tmp
+						// scratch. For a pure-redirect write (`cat src > /tmp/x`) only the
+						// redirect target decides; when the command itself is write-class
+						// (`mv <in-scope-src> /tmp/x`) its non-tmp path operands are
+						// mutations and must not be waved through.
+						const redirectTargets: string[] = [];
+						const baseTokens: ShellToken[] = [];
+						for (let t = 0; t < segment.length; t++) {
+							const token = segment[t];
+							if (!token) continue;
+							if (!token.quoted && (token.value === '>' || token.value === '>>')) {
+								const next = segment[t + 1];
+								if (next && !SHELL_SEPARATORS.has(next.value)) {
+									redirectTargets.push(next.value);
+									t++;
+								}
+								continue;
+							}
+							if (!token.quoted && token.value.startsWith('>') && token.value.length > 1) {
+								redirectTargets.push(token.value.startsWith('>>') ? token.value.slice(2) : token.value.slice(1));
+								continue;
+							}
+							baseTokens.push(token);
+						}
+						const baseCmdIdx = firstCommandIndex(baseTokens);
+						const baseAnchored = baseCmdIdx > 0 && baseCmdIdx < baseTokens.length ? classifierText(baseTokens.slice(baseCmdIdx)) : undefined;
+						const baseWrite =
+							redirectTargets.length > 0
+								? isWriteCommand(classifierText(baseTokens)) || (baseAnchored !== undefined && isWriteCommand(baseAnchored)) || wrapperWrites(baseTokens, baseCmdIdx)
+								: segmentWrite;
+						const nonTmpWriteSeen = baseWrite
+							? segEntries.some((e) => e.op === 'write' && !isTmpPath(e.raw))
+							: redirectTargets.some((t) => !isTmpPath(t));
+						if (ctx?.readOnly && segmentWrite && !(isScopedTempWrite(classifierSegment) && !nonTmpWriteSeen)) {
+							return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
+						}
+						// Commit entries; /tmp scratch paths stay exempt from scope checks.
+						for (const e of segEntries) {
+							if (isTmpPath(e.raw)) continue;
+							filePaths.push({ raw: e.raw, base: baseDir, op: e.op });
+						}
+						// C5 (round 2): a write-class xargs bridges stdin into file mutation —
+						// re-escalate prior read ops from the same pipeline so
+						// `echo /outside/x.ts | xargs rm -f` is write-checked.
+						if (cmdWord === 'xargs' && segmentWrite) {
+							for (let e = pipelineEntryStart; e < segmentEntryStart; e++) {
+								if (filePaths[e].op === 'read') filePaths[e].op = 'write';
 							}
 						}
 					}
