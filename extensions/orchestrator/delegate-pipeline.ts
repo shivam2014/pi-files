@@ -301,6 +301,18 @@ export function buildBatchStepLabel(specialist: string, task: string, label?: st
 /** Marker identifying the framework-injected plan-seed block in a child task. */
 export const PLAN_SEED_MARKER = "[framework] Plan seed";
 
+/**
+ * Shape of the PARENT panel's auto-created goal: `delegate to <specialist>: ...`
+ * (see buildAutoPlanLabels). That string describes the parent's plan step, not
+ * the child's work — it must never become a child goal or step.
+ */
+const PARENT_PANEL_GOAL_PREFIX = "delegate to ";
+
+/** True when a value is a parent-panel label rather than child-authored structure. */
+function isParentPanelLabel(value: string | undefined): boolean {
+	return (value ?? "").trim().toLowerCase().startsWith(PARENT_PANEL_GOAL_PREFIX);
+}
+
 /** Max seeded steps / max chars per seeded step — keeps the seed bounded. */
 const PLAN_SEED_MAX_STEPS = 12;
 const PLAN_SEED_MAX_STEP_CHARS = 160;
@@ -339,10 +351,13 @@ export function extractStepsFromTask(task: string): string[] {
 /**
  * Derive the child's seed plan steps. Precedence:
  * 1. explicit step list in the task text (`## Steps` section)
- * 2. the delegation's own step label (delegate `label`, else the framework's
- *    semantic summary) — the same label shown as the parent's plan step
- * Returns [] when nothing is derivable → caller keeps today's behaviour
- * (no seed injection; the child gets no steps beyond the standard prompt).
+ * 2. the delegation's EXPLICIT `label`, when the orchestrator supplied one
+ * Returns [] when nothing is derivable → caller keeps the un-seeded behaviour
+ * (the child authors its own goal and steps).
+ *
+ * The framework-derived parent panel labels (`buildAutoPlanLabels`) are NOT a
+ * valid source — seeding from them made the child copy a machine-derived goal
+ * verbatim instead of authoring its own plan.
  */
 export function deriveChildPlanSteps(task: string, stepLabel?: string): string[] {
 	const fromTask = extractStepsFromTask(task);
@@ -353,17 +368,48 @@ export function deriveChildPlanSteps(task: string, stepLabel?: string): string[]
 
 /**
  * Build the framework plan-seed instruction prepended to the child's task.
- * Returns "" when no steps are derivable so the caller falls back to today's
- * behaviour (no seed).
+ * Returns "" when no steps are derivable so the caller falls back to the
+ * un-seeded behaviour (no seed).
+ *
+ * Goal selection: the explicit goal wins; otherwise the first step. A goal in
+ * the parent-panel shape (`delegate to ...`) is never substituted — the first
+ * non-parent-shaped step is used instead, and "" when none exists.
  */
 export function buildPlanSeedBlock(goal: string, steps: string[]): string {
 	if (!steps || steps.length === 0) return "";
-	const goalLine = (goal ?? "").trim() || steps[0];
+	const goalLine = seedGoalLine(goal, steps);
+	if (!goalLine) return "";
 	return (
 		`${PLAN_SEED_MARKER}: call planSteps({ goal, steps }) as your FIRST action — before any other tool call — using exactly these steps:\n` +
 		`planSteps({ goal: ${JSON.stringify(goalLine)}, steps: ${JSON.stringify(steps)} })\n` +
 		`Do not invent different steps. Then do the task below.`
 	);
+}
+
+/** Explicit goal when usable, else step 1 — never a parent-panel-shaped string. */
+function seedGoalLine(goal: string, steps: string[]): string {
+	const explicit = (goal ?? "").trim();
+	if (explicit && !isParentPanelLabel(explicit)) return explicit;
+	return steps.find(s => !isParentPanelLabel(s))?.trim() ?? "";
+}
+
+/**
+ * Compose the child's task: the raw task, with the plan-seed block prepended
+ * ONLY when the delegation carries real structure — an explicit `label`, or an
+ * explicit `## Steps` section in the task text.
+ *
+ * No structure → the task is returned byte-identical to the raw task, so the
+ * child authors its own goal and steps (pre-`a5c61cd` behaviour).
+ * Parent-panel-shaped labels (`delegate to ...`) are not structure and are
+ * dropped, so they can never be seeded into the child.
+ */
+export function composeSeededTask(task: string, label?: string): string {
+	const explicitGoal = isParentPanelLabel(label) ? "" : (label ?? "").trim();
+	const steps = deriveChildPlanSteps(task, explicitGoal || undefined)
+		.filter(step => !isParentPanelLabel(step));
+	if (steps.length === 0) return task;
+	const seedBlock = buildPlanSeedBlock(explicitGoal, steps);
+	return seedBlock ? `${seedBlock}\n\n${task}` : task;
 }
 
 export class DelegatePipeline {
@@ -595,14 +641,10 @@ export class DelegatePipeline {
 		};
 
 		// ── Seed the child's plan at spawn ──
-		// Deterministic steps: explicit step list in the task text, else the
-		// delegation's own step label (delegate label / semantic summary). No
-		// steps derivable → no seed block (today's behaviour).
-		const seedBlock = buildPlanSeedBlock(
-			params.label?.trim() || autoGoal,
-			deriveChildPlanSteps(params.task, stepLabel),
-		);
-		const taskWithSeed = seedBlock ? `${seedBlock}\n\n${params.task}` : params.task;
+		// Seeded ONLY from explicit structure: a `## Steps` section in the task,
+	// or an explicit `label`. The framework's parent-panel labels (autoGoal /
+	// stepLabel) are never seeded — the child authors its own plan instead.
+		const taskWithSeed = composeSeededTask(params.task, params.label);
 
 		// ── Append acceptance test instructions for coder tasks ──
 		const effectiveTask = (params.specialist === "coder" && params.task)

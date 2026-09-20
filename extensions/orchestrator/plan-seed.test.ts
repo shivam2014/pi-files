@@ -5,7 +5,9 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+	buildAutoPlanLabels,
 	buildPlanSeedBlock,
+	composeSeededTask,
 	deriveChildPlanSteps,
 	extractStepsFromTask,
 	PLAN_SEED_MARKER,
@@ -71,6 +73,59 @@ describe("buildPlanSeedBlock", () => {
 
 	it("returns '' when there are no steps (fallback: no seed injection)", () => {
 		expect(buildPlanSeedBlock("Fix login bug", [])).toBe("");
+	});
+});
+
+describe("composeSeededTask — the seed gate", () => {
+	const steplessTask = "Fix the flaky login test. Do not touch snapshots.";
+
+	it("injects NO seed when the delegation has no label and the task has no ## Steps", () => {
+		expect(composeSeededTask(steplessTask, undefined)).toBe(steplessTask);
+		expect(composeSeededTask(steplessTask, undefined)).not.toContain(PLAN_SEED_MARKER);
+		expect(composeSeededTask(steplessTask, "   ")).toBe(steplessTask);
+	});
+
+	it("never seeds a goal that starts with 'delegate to ' (parent-panel label shape)", () => {
+		const parentShaped = "delegate to scout: READ-ONLY investigation";
+		// A parent-shaped label alone is not structure → no seed at all.
+		expect(composeSeededTask(steplessTask, parentShaped)).toBe(steplessTask);
+		// With real structure the seed is injected, but never with the parent goal.
+		const composed = composeSeededTask("Do the work.\n\n## Steps\n1. read the file\n2. patch it", parentShaped);
+		expect(composed).toContain(PLAN_SEED_MARKER);
+		expect(composed).not.toMatch(/goal: "delegate to /);
+		expect(composed).toContain('"read the file"');
+	});
+
+	it("buildPlanSeedBlock never substitutes a goal that starts with 'delegate to '", () => {
+		const block = buildPlanSeedBlock("delegate to scout: READ-ONLY investigation", ["read the file"]);
+		expect(block).not.toMatch(/goal: "delegate to /);
+		expect(block).toContain('goal: "read the file"');
+		expect(buildPlanSeedBlock("delegate to scout: X", ["delegate to scout: Y"])).toBe("");
+	});
+
+	it("legitimate path: an explicit label with no ## Steps still seeds that goal", () => {
+		const composed = composeSeededTask(steplessTask, "Health-check orchestrator");
+		expect(composed).toContain(PLAN_SEED_MARKER);
+		expect(composed).toContain('goal: "Health-check orchestrator"');
+		expect(composed.endsWith(steplessTask)).toBe(true);
+	});
+
+	it("legitimate path: a task with a ## Steps section still seeds those steps", () => {
+		const task = "Fix it.\n\n## Steps\n1. reproduce\n2. patch\n3. run the login tests";
+		const composed = composeSeededTask(task, undefined);
+		expect(composed.startsWith(PLAN_SEED_MARKER)).toBe(true);
+		expect(composed).toContain('["reproduce","patch","run the login tests"]');
+		expect(composed.endsWith(task)).toBe(true);
+	});
+
+	it("regression: the old call site's parent-panel labels always seeded the child", () => {
+		const { autoGoal, stepLabel } = buildAutoPlanLabels("scout", "Scout", steplessTask);
+		// Pre-fix expression: buildPlanSeedBlock(params.label?.trim() || autoGoal,
+		// deriveChildPlanSteps(params.task, stepLabel)).
+		const oldSeed = buildPlanSeedBlock(autoGoal, deriveChildPlanSteps(steplessTask, stepLabel));
+		expect(oldSeed).toContain(PLAN_SEED_MARKER); // the bug this gate removes: always injected
+		expect(oldSeed).toContain(`"${stepLabel}"`); // seeded with a machine-derived parent label
+		expect(composeSeededTask(steplessTask, undefined)).toBe(steplessTask); // fix stays effective
 	});
 });
 
