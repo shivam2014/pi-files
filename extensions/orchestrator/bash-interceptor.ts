@@ -6,30 +6,119 @@
 import { basename } from "node:path";
 import { isWriteCommand } from "./bash-classifier";
 
-// ── Dangerous command patterns (regex-based) ──
+// ── Local quote-aware tokenizer ──
+// Mirrors the tokenizer in subagent-tool-guard.ts. Duplicated deliberately:
+// partially-mocked test files replace bash-classifier.ts wholesale, so this
+// module must not gain new cross-module imports.
+
+interface ShellToken { value: string; quoted: boolean }
+
+/** Shell operators that separate commands on a command line. */
+const SHELL_SEPARATORS = new Set(['&&', '||', ';', '|', '&']);
+
+function tokenizeShell(command: string): ShellToken[] {
+  const tokens: ShellToken[] = [];
+  let current = '';
+  let currentQuoted = false;
+  let quote: string | null = null;
+  const flush = () => {
+    if (current) tokens.push({ value: current, quoted: currentQuoted });
+    current = '';
+    currentQuoted = false;
+  };
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else current += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '\\' && i + 1 < command.length && '"\\`$'.includes(command[i + 1])) {
+        current += command[i + 1];
+        i++;
+        continue;
+      }
+      if (ch === '"') quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === '\\' && i + 1 < command.length) {
+      current += command[i + 1];
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; currentQuoted = true; continue; }
+    if (/\s/.test(ch)) { flush(); continue; }
+    if (ch === '&' || ch === '|' || ch === ';') {
+      flush();
+      if ((ch === '&' || ch === '|') && command[i + 1] === ch) {
+        tokens.push({ value: ch + ch, quoted: false });
+        i++;
+      } else {
+        tokens.push({ value: ch, quoted: false });
+      }
+      continue;
+    }
+    current += ch;
+  }
+  flush();
+  return tokens;
+}
+
+function splitShellSegments(tokens: ShellToken[]): ShellToken[][] {
+  const segments: ShellToken[][] = [];
+  let current: ShellToken[] = [];
+  for (const token of tokens) {
+    if (!token.quoted && SHELL_SEPARATORS.has(token.value)) {
+      if (current.length > 0) segments.push(current);
+      current = [];
+    } else {
+      current.push(token);
+    }
+  }
+  if (current.length > 0) segments.push(current);
+  return segments;
+}
+
+// ── Dangerous command patterns (tokenizer-aware) ──
+
+/** Commands whose quoted payload is EXECUTED, so quoted content is scanned too. */
+const EXEC_WRAPPERS = new Set(['bash', 'sh', 'zsh', 'eval', 'python', 'python3', 'perl', 'ruby', 'node']);
+
+function matchesDangerPattern(text: string): boolean {
+  if (/rm\s+-rf\s+[\/~-]/.test(text)) return true;
+  if (/git\s+push\s+(-f|--force)/.test(text)) return true;
+  if (/git\s+reset\s+--hard/.test(text)) return true;
+  if (/sudo\s+rm/.test(text)) return true;
+  if (/dd\s+if=/.test(text)) return true;
+  if (/mkfs/.test(text)) return true;
+  return false;
+}
 
 /**
- * Check if a command is dangerous using proper parsing.
- * Splits on pipes/chains and checks each segment with regex.
+ * Check if a command is dangerous, tokenizer-aware.
+ * Quoted literals are DATA, not execution: `grep -rn "rm -rf /" docs/` or
+ * `echo "rm -rf /"` must not trip the hard block. The exception is exec-wrapper
+ * payloads (bash -c "…", eval "…", sh -c '…', python -c "…"): those execute
+ * their quoted argument, so they are scanned and stay override-proof.
+ * Real unquoted `rm -rf /` still matches and hard-blocks even with override.
  */
 function isDangerousCommand(command: string): boolean {
-  const segments = command.split(/[|;&]+/);
-  for (const segment of segments) {
-    const trimmed = segment.trim();
-    if (!trimmed) continue;
+  for (const segment of splitShellSegments(tokenizeShell(command))) {
+    if (segment.length === 0) continue;
+    // Neutralize quoted tokens so quoted literals cannot trip substring patterns.
+    const neutral = segment.map((t) => (t.quoted ? '""' : t.value)).join(' ');
+    if (matchesDangerPattern(neutral)) return true;
 
-    // Check for dangerous patterns
-    if (/rm\s+-rf\s+[\/~-]/.test(trimmed)) return true;
-    if (/git\s+push\s+(-f|--force)/.test(trimmed)) return true;
-    if (/git\s+reset\s+--hard/.test(trimmed)) return true;
-    if (/sudo\s+rm/.test(trimmed)) return true;
-    if (/dd\s+if=/.test(trimmed)) return true;
-    if (/mkfs/.test(trimmed)) return true;
-
-    // Check for eval/perl/python subshells executing dangerous commands
-    if (/eval\s+/.test(trimmed) && /rm\s+-rf/.test(trimmed)) return true;
-    if (/perl\s+-e\s+/.test(trimmed) && /rm\s+-rf/.test(trimmed)) return true;
-    if (/python[23]?\s+-c\s+/.test(trimmed) && /rm\s+-rf/.test(trimmed)) return true;
+    // Exec-wrapper payloads execute their quoted argument — scan quoted values too.
+    let i = 0;
+    while (i < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[i].value) || segment[i].value === 'export')) i++;
+    const word = segment[i]?.value;
+    if (word && EXEC_WRAPPERS.has(word)) {
+      const payload = segment.slice(i + 1).map((t) => t.value).join(' ');
+      if (/rm\s+-rf/.test(payload) || matchesDangerPattern(payload)) return true;
+    }
   }
   return false;
 }
@@ -64,7 +153,9 @@ export function createBashInterceptor(options: BashInterceptorOptions = {}): Bas
         }
       }
 
-      if (readOnly && isWriteCommand(command)) {
+      // Scoped /tmp scratch writes are exempt (BUG-5): `cat f > /tmp/out.txt` is a
+      // workspace write, not a code mutation. Ordering: exemption before the block.
+      if (readOnly && isWriteCommand(command) && !hasScopedTempWrite(command)) {
         ctx.ui?.notify?.(`🚫 Blocked write command in read-only mode: ${command}`, "warning");
         return { block: true, reason: "Write command blocked in read-only mode" };
       }
@@ -77,15 +168,14 @@ export function createBashInterceptor(options: BashInterceptorOptions = {}): Bas
 // ── getBashToolReplacement helpers ──
 
 function firstCommandName(command: string): { name: string; rest: string } | null {
-  const segment = command.split(/[&|;]+/)[0]?.trim() ?? "";
-  if (!segment) return null;
-  const tokens = segment.split(/\s+/);
+  const first = splitShellSegments(tokenizeShell(command))[0];
+  if (!first || first.length === 0) return null;
   let i = 0;
-  while (i < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]) || tokens[i] === "export")) i++;
-  const raw = tokens[i];
+  while (i < first.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(first[i].value) || first[i].value === "export")) i++;
+  const raw = first[i]?.value;
   if (!raw) return null;
   const name = basename(raw).toLowerCase();
-  return { name, rest: tokens.slice(i + 1).join(" ") };
+  return { name, rest: first.slice(i + 1).map((t) => t.value).join(" ") };
 }
 
 function hasFileWriteIndicator(text: string): boolean {
@@ -127,10 +217,18 @@ const TEMP_PATH_RE = /(?:\/private)?\/tmp(?:\/|$)|\$\{?TMPDIR\}?(?:\/|$)/;
  * True when the command targets a temp scratch dir AND performs a write
  * (redirection or write verb). Pure reads from /tmp still redirect to SDK tools.
  */
-function hasScopedTempWrite(command: string): boolean {
+export function hasScopedTempWrite(command: string): boolean {
   if (!TEMP_PATH_RE.test(command)) return false;
   return /\s>>?\s|\b(mkdir|touch|tee|cp|mv|sed|perl|tar|unzip|gzip|gunzip|bzip2|xz|python|python3|node)\b/.test(command);
 }
+
+/**
+ * Tool suggestions that are ADVISORY only: read/grep/find/ls bash calls pass
+ * through (a specialist may legitimately need bash pipes/flags the native tool
+ * lacks). Mutating replacements (edit/write) remain hard redirects.
+ * Keep in sync with ADVISORY_REPLACEMENT_TOOLS in subagent-tool-guard.ts.
+ */
+export const ADVISORY_REPLACEMENT_TOOLS: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
 
 // ── Tool replacement ──
 

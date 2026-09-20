@@ -3,11 +3,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("./bash-interceptor.ts", () => ({
+vi.mock("./bash-interceptor.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./bash-interceptor.ts")>()),
 	getBashToolReplacement: vi.fn(),
 }));
 
-vi.mock("./bash-classifier.ts", () => ({
+vi.mock("./bash-classifier.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./bash-classifier.ts")>()),
 	isWriteCommand: vi.fn(),
 }));
 
@@ -56,12 +58,15 @@ describe("handleSubagentToolCall", () => {
 	describe("planSteps-first enforcement", () => {
 		const state = () => subagentCtx(false);
 
-		it("allows read when plan not parsed (read-only tools exempt)", () => {
+		it("gates read when plan not parsed (read-only exemption removed)", () => {
 			const result = handleSubagentToolCall({
 				toolName: "read",
 				input: { path: "file.ts" },
 			}, true, undefined, state());
-			expect(result).toBeUndefined();
+			expect(result).toEqual({
+				block: true,
+				reason: "[guard] Framework plan gate: call planSteps({ goal, steps }) before using read. This notice is a framework prerequisite, not a plan step.",
+			});
 		});
 
 		it("blocks bash calls when plan not parsed", () => {
@@ -293,7 +298,7 @@ describe("handleSubagentToolCall", () => {
 			expect(result).toBeUndefined();
 		});
 
-		it("blocks bash when replacement exists", () => {
+		it("does not block bash for an advisory read replacement (nag is advisory)", () => {
 			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true, tool: "read" });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
@@ -301,10 +306,7 @@ describe("handleSubagentToolCall", () => {
 				toolName: "bash",
 				input: { command: "cat file.txt" },
 			});
-			expect(result).toEqual({
-				block: true,
-				reason: "Use read instead of bash (command: cat). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).",
-			});
+			expect(result).toBeUndefined();
 		});
 
 		it("allows bash when no replacement", () => {
@@ -329,7 +331,7 @@ describe("handleSubagentToolCall", () => {
 			expect(getBashToolReplacement).toHaveBeenCalledWith("cat file.txt", true);
 		});
 
-		it("handles non-typed bash event fallback", () => {
+		it("handles non-typed bash event fallback (advisory grep replacement does not block)", () => {
 			vi.mocked(isToolCallEventType).mockReturnValue(false);
 			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true, tool: "grep" });
 
@@ -337,9 +339,20 @@ describe("handleSubagentToolCall", () => {
 				toolName: "bash",
 				input: { command: "grep -r foo ." },
 			});
+			expect(result).toBeUndefined();
+		});
+
+		it("still hard-redirects mutating replacements (sed -i → edit)", () => {
+			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true, tool: "edit" });
+			vi.mocked(isToolCallEventType).mockReturnValue(true);
+
+			const result = handleSubagentToolCall({
+				toolName: "bash",
+				input: { command: "sed -i 's/a/b/' file.txt" },
+			});
 			expect(result).toEqual({
 				block: true,
-				reason: "Use grep instead of bash (command: grep). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).",
+				reason: "Use edit instead of bash (command: sed). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).",
 			});
 		});
 	});
@@ -347,7 +360,7 @@ describe("handleSubagentToolCall", () => {
 	describe("bash command interception (subagent context)", () => {
 		const state = () => subagentCtx(true);
 
-		it("intercepts bash cat command and redirects to read in subagent context", () => {
+		it("does not block bash cat (advisory read replacement) in subagent context", () => {
 			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true, tool: "read" });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);
 
@@ -355,10 +368,7 @@ describe("handleSubagentToolCall", () => {
 				toolName: "bash",
 				input: { command: "cat src/auth.ts" },
 			}, true, undefined, state());
-			expect(result).toEqual({
-				block: true,
-				reason: "Use read instead of bash (command: cat). Set override:true in tool input to force bash — e.g. bash({ command: 'your-cmd', override: true }).",
-			});
+			expect(result).toBeUndefined();
 		});
 
 		it("allows bash with no replacement in subagent context", () => {

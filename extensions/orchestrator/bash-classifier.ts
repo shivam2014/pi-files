@@ -21,6 +21,10 @@ const READ_COMMANDS = new Set([
   "which", "whoami", "hostname", "uname", "env", "printenv",
   "python3", "node", "cd", "sort", "du", "df", "stat", "file", "man", "type",
   "readlink", "realpath", "dirname", "basename", "xargs", "awk", "sed", "jq",
+  // Read-only process/tooling commands (read-only specialist false-positive
+  // relief). Unknown commands still default to WRITE — this allowlist is the
+  // only read allowance; do not blanket-flip the default.
+  "ps", "rg",
 ]);
 
 // Commands that are always write-modifying
@@ -41,47 +45,88 @@ const WRITE_COMMANDS = new Set([
 ]);
 
 /**
+ * True when the command contains an UNQUOTED stdout redirect (>, >>, &>, 1>).
+ * Character-wise scan with quote + backslash-escape tracking:
+ *   - ` > ` inside quotes (e.g. git log --format="%h > %s", grep patterns) is
+ *     data, not a redirect
+ *   - stderr-only 2>/2>> redirects are noise suppression, not writes
+ */
+export function hasUnquotedRedirect(command: string): boolean {
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '\\') { i++; continue; }
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === '\\') { i++; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '>') {
+      // stderr-only: `2>` / `2>>` where the 2 starts a word
+      if (command[i - 1] === '2') {
+        const before = command[i - 2];
+        if (before === undefined || /[\s;&|]/.test(before)) {
+          if (command[i + 1] === '>') i++;
+          continue;
+        }
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Check if a bash command is write-modifying.
  * @param command - The bash command to classify
  * @returns true if the command modifies files, false if read-only
  */
 export function isWriteCommand(command: string): boolean {
   const trimmed = command.trim();
-  
-  // Strip stderr-only redirects (2> or 2>>) before checking for stdout redirects.
-  // These suppress error noise, not redirect output to files.
-  // After stripping, check for remaining stdout redirects (>, >>, &>, 1>) as write indicators.
-  // "cmd > /dev/null 2>&1" → still write (stdout > remains after stripping 2>)
-  // "cmd &> /dev/null" → still write (&> is not a 2> pattern)
-  // "cmd 2>/dev/null" → not write (2> stripped, no stdout redirect remains)
-  const withoutStderrRedirects = trimmed.replace(/\b2>>?/g, '');
-  
-  // Check for output redirection (always write)
-  if (withoutStderrRedirects.includes(" > ") || withoutStderrRedirects.endsWith(">") || 
-      withoutStderrRedirects.includes(" >> ") || withoutStderrRedirects.endsWith(">>") ||
-      withoutStderrRedirects.includes(" &>") || withoutStderrRedirects.includes(" 1>")) {
+
+  // Output redirection (quote-aware): ` > ` inside quotes is data; stderr-only
+  // 2>/2>> redirects stay ignored. "cmd > /dev/null 2>&1" → write;
+  // "cmd 2>/dev/null" → not write; 'git log --format="%h > %s"' → not write.
+  if (hasUnquotedRedirect(trimmed)) {
     return true;
   }
-  
-  // Extract the base command (first word)
-  const baseCommand = trimmed.split(/\s+/)[0];
-  
+
+  const parts = trimmed.split(/\s+/);
+  const baseCommand = parts[0] ?? '';
+
   // Check if base command is a known write command
   if (WRITE_COMMANDS.has(baseCommand)) {
     return true;
   }
-  
+
+  // sed -i edits files in place (incl. combined forms: -ni, -i.bak)
+  if (baseCommand === 'sed' && /(^|\s)-[a-zA-Z]*i(?:[.\s]|$)/.test(trimmed)) return true;
+
+  // Shell wrappers run their payload: classify the wrapped command. `-c`
+  // payloads are opaque (arbitrary code) — fail closed to write.
+  if (baseCommand === 'bash' || baseCommand === 'sh' || baseCommand === 'zsh') {
+    const wrapped = parts.slice(1);
+    if (wrapped.length === 0 || wrapped[0] === '-c') return true;
+    return isWriteCommand(wrapped.join(' '));
+  }
+
   // Check if base command is a known read command
   if (READ_COMMANDS.has(baseCommand)) {
     return false;
   }
-  
+
   // Check for multi-word git subcommands first
   if (trimmed.startsWith("git stash list")) return false;
-  
+
   // Check for git subcommands
   if (baseCommand === "git") {
-    const subcommand = trimmed.split(/\s+/)[1];
+    const subcommand = parts[1];
+    if (subcommand === '--version' || subcommand === 'version') return false;
     if (subcommand) {
       const gitCmd = `git ${subcommand}`;
       if (WRITE_COMMANDS.has(gitCmd)) return true;
@@ -91,7 +136,6 @@ export function isWriteCommand(command: string): boolean {
 
   // Check for gh subcommands (typically 3-word: gh <resource> <action>)
   if (baseCommand === "gh") {
-    const parts = trimmed.split(/\s+/);
     const ghCmd = parts.slice(0, 3).join(" ");
     if (READ_COMMANDS.has(ghCmd)) return false;
     if (WRITE_COMMANDS.has(ghCmd)) return true;
@@ -101,12 +145,12 @@ export function isWriteCommand(command: string): boolean {
 
   // Check for test runner and type-check commands via package managers
   if (baseCommand === 'npx' || baseCommand === 'npm' || baseCommand === 'yarn' || baseCommand === 'pnpm' || baseCommand === 'bun') {
-    const secondWord = trimmed.split(/\s+/)[1];
+    const secondWord = parts[1];
     const readOnlySubcommands = new Set(['test', 'vitest', 'jest', 'mocha', 'cypress', 'playwright', 'tsc', 'typecheck', 'type-check', 'lint', 'eslint', 'prettier', '--version', '-v', '--help', '-h']);
     const readOnlyScripts = new Set(['test', 'test:unit', 'test:integration', 'typecheck', 'type-check', 'lint', 'typecheck:watch']);
     if (readOnlySubcommands.has(secondWord)) return false;
     if ((baseCommand === 'npm' || baseCommand === 'pnpm' || baseCommand === 'yarn') && secondWord === 'run') {
-      const scriptName = trimmed.split(/\s+/)[2];
+      const scriptName = parts[2];
       if (readOnlyScripts.has(scriptName)) return false;
     }
     if (baseCommand === 'yarn' && readOnlyScripts.has(secondWord)) return false;

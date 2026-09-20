@@ -63,3 +63,22 @@ describe("package manager test runners", () => {
   it("blocks npm run build", () => expect(isWriteCommand("npm run build")).toBe(true));
   it("blocks npx some-random-binary", () => expect(isWriteCommand("npx some-binary")).toBe(true));
 });
+
+describe("quote-aware redirects and wrapper classification (guard-hardening)", () => {
+  it('does not treat " > " inside quotes as a redirect', () => {
+    expect(isWriteCommand('git log --format="%h > %s" -n 5')).toBe(false);
+  });
+  it('does not treat a quoted literal in a grep pattern as a redirect', () => {
+    expect(isWriteCommand('grep -rn "rm -rf /" docs/')).toBe(false);
+  });
+  it("keeps unquoted redirects as writes", () => {
+    expect(isWriteCommand("cat src/index.ts > /tmp/out.txt")).toBe(true);
+  });
+  it("classifies ps as read", () => expect(isWriteCommand("ps aux")).toBe(false));
+  it("classifies rg as read", () => expect(isWriteCommand("rg -n pattern src/")).toBe(false));
+  it("classifies git --version as read", () => expect(isWriteCommand("git --version")).toBe(false));
+  it("classifies sed -i as write", () => expect(isWriteCommand("sed -i '' 's/a/b/' src/index.ts")).toBe(true));
+  it("keeps sed without -i as read", () => expect(isWriteCommand("sed -n '1,10p' src/index.ts")).toBe(false));
+  it("classifies `bash ls -la` as read (wrapper recursion)", () => expect(isWriteCommand("bash ls -la")).toBe(false));
+  it("classifies `bash -c …` as write (opaque payload, fail closed)", () => expect(isWriteCommand('bash -c "rm -rf /tmp/x"')).toBe(true));
+});

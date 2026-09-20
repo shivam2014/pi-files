@@ -15,8 +15,12 @@ const DELEGATION_CWD = "/work/root";
 const ScopeGuardMock = vi.hoisted(() => vi.fn() as any);
 
 vi.mock("./scope-guard.ts", () => ({ ScopeGuard: ScopeGuardMock }));
-vi.mock("./bash-interceptor.ts", () => ({ getBashToolReplacement: vi.fn(() => ({ allowed: true })) }));
-vi.mock("./bash-classifier.ts", () => ({ isWriteCommand: vi.fn((cmd: string) => /\bsed\s+-i\b/.test(String(cmd))) }));
+vi.mock("./bash-interceptor.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./bash-interceptor.ts")>()),
+	getBashToolReplacement: vi.fn(() => ({ allowed: true })),
+}));
+// bash-classifier is intentionally NOT mocked: tests exercise the REAL
+// isWriteCommand so write/read classification (e.g. sed -i) is verified end to end.
 vi.mock("@earendil-works/pi-coding-agent", () => ({ isToolCallEventType: vi.fn(() => true) }));
 vi.mock("node:fs", async () => {
 	const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -38,8 +42,8 @@ import type { SubagentState } from "./subagent-sessions";
 function installGuard() {
 	const guard = {
 		isScopeValid: vi.fn(() => true),
-		isPathAllowed: vi.fn((p: string) =>
-			p === SCOPE_DIR || p.startsWith(SCOPE_DIR + "/")
+		isPathAllowed: vi.fn((p: string, op?: string) =>
+			op === "read" || p === SCOPE_DIR || p.startsWith(SCOPE_DIR + "/")
 				? { allowed: true }
 				: { allowed: false, reason: `File not in approved scope: ${p}` },
 		),
