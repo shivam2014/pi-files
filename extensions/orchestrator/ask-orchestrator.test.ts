@@ -6,6 +6,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAskOrchestratorResolver } from "./delegate-tool.ts";
+import { UNANSWERED_SENTINEL } from "./ask-resolver.ts";
 import { createAskOrchestratorTool } from "./subagent-runner.ts";
 import { ActivityFeed } from "./activity-feed.ts";
 
@@ -77,7 +78,8 @@ describe("createAskOrchestratorResolver", () => {
 
 		const answer = await resolver("What is the meaning of life?");
 
-		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
+		expect(answer).not.toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
 		expect(input).not.toHaveBeenCalled();
 	});
 
@@ -90,14 +92,14 @@ describe("createAskOrchestratorResolver", () => {
 
 		const answer = await resolver("What is the meaning of life?");
 
-		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
 		expect(input).not.toHaveBeenCalled();
 	});
 
 	it("returns orchestrator clarification when no UI is available", async () => {
 		const resolver = createAskOrchestratorResolver({ cwd });
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
 	});
 });
 

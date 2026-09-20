@@ -12,6 +12,7 @@ import {
 	buildRecentContext,
 	tryAnswerFromContext,
 	createAskOrchestratorResolver,
+	UNANSWERED_SENTINEL,
 	resolve, hasLiteralSegment,
 } from "./ask-resolver.ts";
 
@@ -292,7 +293,8 @@ describe("createAskOrchestratorResolver", () => {
 		});
 
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
+		expect(answer).not.toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
 		expect(input).not.toHaveBeenCalled();
 	});
 
@@ -304,14 +306,14 @@ describe("createAskOrchestratorResolver", () => {
 		});
 
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
 		expect(input).not.toHaveBeenCalled();
 	});
 
 	it("returns orchestrator clarification when no UI is available", async () => {
 		const resolver = createAskOrchestratorResolver({ cwd });
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
 	});
 
 	it("handles empty question gracefully", async () => {
@@ -322,7 +324,7 @@ describe("createAskOrchestratorResolver", () => {
 		});
 
 		const answer = await resolver("");
-		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
 		expect(input).not.toHaveBeenCalled();
 	});
 
@@ -346,6 +348,77 @@ describe("createAskOrchestratorResolver", () => {
 
 		expect(answer.length).toBeLessThan(12_000);
 		expect(answer).toContain("[file truncated]");
+	});
+});
+
+// ─── createAskOrchestratorResolver — B1/I1 escalation black hole regression ──
+
+describe("createAskOrchestratorResolver — no echo, explicit UNANSWERED sentinel", () => {
+	let cwd: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "ask-resolver-no-echo-"));
+	});
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("never answers with the caller-supplied context (no echo)", async () => {
+		const buf: string[] = [];
+		const resolver = createAskOrchestratorResolver({ cwd }, buf);
+
+		const suppliedContext = "frobnicator widget parsing work happens here";
+		const answer = await resolver("how does frobnicator widget parsing work", suppliedContext);
+
+		expect(answer).not.toMatch(/From the current conversation:/);
+		expect(answer).not.toContain(suppliedContext);
+		expect(answer).toBe(UNANSWERED_SENTINEL);
+	});
+
+	it("returns the UNANSWERED sentinel instead of the old canned fallback on no-match", async () => {
+		const resolver = createAskOrchestratorResolver({ cwd });
+
+		const answer = await resolver("xyzzy plugh foobar quux", "completely unrelated content");
+
+		expect(answer).toMatch(/^UNANSWERED —/);
+		expect(answer).toBe(UNANSWERED_SENTINEL);
+		expect(answer).not.toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
+	});
+
+	it("records an unanswered question in the buffer exactly once", async () => {
+		const buf: string[] = [];
+		const resolver = createAskOrchestratorResolver({ cwd }, buf);
+
+		await resolver("xyzzy plugh foobar quux", "completely unrelated content");
+
+		expect(buf).toHaveLength(1);
+		expect(buf[0]).toBe("xyzzy plugh foobar quux");
+	});
+
+	it("still answers from orchestrator-side recentContext, never from the caller context", async () => {
+		const resolver = createAskOrchestratorResolver({
+			cwd,
+			recentContext: "assistant: The specialist prompts file is stored in specialists.ts.",
+		});
+
+		const answer = await resolver("Which file contains specialist prompts?", "the answer is in foo.txt I think");
+
+		expect(answer).toContain("From the current conversation:");
+		expect(answer).toContain("specialists.ts");
+		expect(answer).not.toContain("foo.txt I think");
+	});
+
+	it("keeps the worker-escalation path verbatim (unchanged behaviour)", async () => {
+		const buf: string[] = [];
+		const resolver = createAskOrchestratorResolver({ cwd }, buf);
+
+		const question = "Requesting investigation — I've hit my exploration budget.";
+		const answer = await resolver(question);
+
+		expect(answer).toBe(`⚠ WORKER ESCALATION (recommend: investigate). The subagent has hit its exploration budget or requested escalation. Orchestrator: escalate the ladder — investigate → spawn scout, plan → call fusion, review → spawn reviewer — do NOT just answer. Original question: ${question}`);
+		expect(buf).toHaveLength(1);
+		expect(buf[0]).toBe(`[escalation: recommend=investigate] ${question}`);
 	});
 });
 

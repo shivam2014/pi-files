@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
 	tryAnswerFromContext,
 	createAskOrchestratorResolver,
+	UNANSWERED_SENTINEL,
 } from "./ask-resolver.ts";
 
 // ─── recentContext is lazy (not frozen at creation time) ─────────────────────
@@ -71,7 +72,7 @@ describe("createAskOrchestratorResolver — lazy recentContext", () => {
 
 		const resolve = createAskOrchestratorResolver(ctx);
 		const answer = await resolve("What is the API endpoint?");
-		expect(answer).toContain("Question recorded for orchestrator");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
 	});
 });
 
@@ -150,7 +151,7 @@ describe("createAskOrchestratorResolver — question buffer", () => {
 
 		const answer = await resolve("What is the meaning of life?");
 
-		expect(answer).toContain("Question recorded for orchestrator");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
 		expect(answer).not.toContain("clarification needed");
 		expect(answer).not.toContain("[orchestrator clarification needed]");
 	});

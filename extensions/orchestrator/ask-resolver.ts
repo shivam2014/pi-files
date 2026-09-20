@@ -7,8 +7,10 @@
  * Resolution order:
  * 1. Files referenced in the question
  * 2. Project docs/ directory
- * 3. Recent conversation context
+ * 3. Recent ORCHESTRATOR-side conversation context (never the caller's own
+ *    supplied `context` — returning the asker's words is an echo, not an answer)
  * 4. Orchestrator escalation
+ * 5. Explicit UNANSWERED sentinel (question recorded for the next delegation)
  */
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
@@ -29,6 +31,15 @@ export const CODE_EXTENSIONS = new Set([
 
 export const MAX_READ_CHARS = 8_000;
 export const MAX_ANSWER_CHARS = 10_000;
+
+/**
+ * Returned when no genuine answer is available. The parent orchestrator is
+ * blocked awaiting this delegation's result, so no synchronous parent
+ * round-trip is possible; this sentinel states that truth instead of
+ * inventing an answer. The question is recorded in the questionBuffer
+ * (exactly once) for the orchestrator to pick up in the next delegation.
+ */
+export const UNANSWERED_SENTINEL = "UNANSWERED — no answer is available from the orchestrator while this delegation runs. Decide with your best judgment, state the assumption explicitly in your report, and continue. The question has been recorded for the orchestrator to address in the next delegation.";
 
 export const CONTEXT_STOP_WORDS = new Set([
 	"what", "which", "where", "when", "who", "how", "does", "is", "are", "was", "were",
@@ -213,6 +224,11 @@ export function buildRecentContext(ctx: any): string {
  * Try to answer the question from the provided conversation context.
  * Simple keyword/fact matching: look for the context line that shares the most
  * significant words with the question.
+ *
+ * Callers must pass ORCHESTRATOR-side context only. `createAskOrchestratorResolver`
+ * feeds it the parent-side `recentContext`; the asker-supplied `context` is
+ * deliberately excluded so the resolver can never quote the asker's own words
+ * back as the answer (B1/I1 escalation black hole).
  */
 export function tryAnswerFromContext(question: string, recentContext: string | undefined): string | undefined {
 	if (!recentContext || recentContext.trim().length === 0) return undefined;
@@ -301,9 +317,12 @@ export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[
 		const docAnswer = tryAnswerFromDocs(question, cwd);
 		if (docAnswer) return docAnswer;
 
-		// 3. Answer from recent conversation context (include any subagent-supplied context)
-		const contextToSearch = [context, recentContext].filter((c) => c && c.trim().length > 0).join("\n\n");
-		const contextAnswer = tryAnswerFromContext(question, contextToSearch);
+		// 3. Answer from the orchestrator-side recent conversation context ONLY.
+		//    The caller-supplied `context` is deliberately NOT searched here: it holds
+		//    the asker's own words, and returning them is an echo, not an answer.
+		//    `context` is still used above (via `combined`) to understand the
+		//    question and resolve file references.
+		const contextAnswer = tryAnswerFromContext(question, recentContext);
 		if (contextAnswer) return contextAnswer;
 
 		// 4. Escalate — surface a worker-initiated escalation as a difficulty signal,
@@ -318,11 +337,13 @@ export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[
 			return `⚠ WORKER ESCALATION (recommend: ${escalation}). The subagent has hit its exploration budget or requested escalation. Orchestrator: escalate the ladder — investigate → spawn scout, plan → call fusion, review → spawn reviewer — do NOT just answer. Original question: ${question}`;
 		}
 
-		// 5. Ordinary question — record it for the orchestrator to handle next delegation.
+		// 5. No genuine answer exists — record the question (exactly once) and return
+		//    an explicit, non-deceptive sentinel. Never imply the orchestrator
+		//    answered; the parent cannot answer while this delegation runs.
 		if (questionBuffer) {
 			questionBuffer.push(question);
 		}
-		return "Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.";
+		return UNANSWERED_SENTINEL;
 	};
 }
 
