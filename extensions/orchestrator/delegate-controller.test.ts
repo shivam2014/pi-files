@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { executeDelegate } from "./delegate-controller.ts";
 
 const mockSpecialists = vi.hoisted(() => ({
@@ -420,6 +422,99 @@ describe("executeDelegate", () => {
       expect(result.content[0].type).toBe("text");
       expect(result.content[0].text).toContain("Clarify");
       expect(result.details).toBeDefined();
+    });
+  });
+
+  describe("child plan — nothing is ever injected into the child task", () => {
+    // Owner decision: the child authors its own goal and steps via its own
+    // planSteps({ goal, steps }) call. Neither an explicit `label` nor a
+    // `## Steps`-looking section in the task text may reach the child.
+    const rawTask = "Fix the flaky login test. Do not touch snapshots.";
+    const structuredTask = "Do the work.\n\n## Steps\n1. read the file\n2. patch it";
+    const acceptanceBlock =
+      "\n\n## Acceptance Tests\nAfter implementing, describe acceptance tests (vitest assertions, plain text) that verify your work:\n" +
+      "- Happy path — confirm feature works as expected\n" +
+      "- Edge cases — boundary conditions are handled\n" +
+      "- Regression (if fixing a bug) — fix stays effective\n\n" +
+      "Include these as plain-text assertions under a ## Acceptance Tests section in your output. Do NOT use the plan() tool.\n";
+
+    it("passes a plain task through byte-identical (no label, no ## Steps)", async () => {
+      await executeDelegate({ specialist: "test", task: rawTask }, createMockCtx(), vi.fn());
+      expect(mockRunSubagent.mock.calls[0][1]).toBe(rawTask);
+    });
+
+    it("passes a ## Steps-looking task through byte-identical", async () => {
+      await executeDelegate({ specialist: "test", task: structuredTask }, createMockCtx(), vi.fn());
+      expect(mockRunSubagent.mock.calls[0][1]).toBe(structuredTask);
+    });
+
+    it("ignores an explicit label when composing the child task (label shapes the parent step only)", async () => {
+      await executeDelegate(
+        { specialist: "test", task: rawTask, label: "Health-check orchestrator" },
+        createMockCtx(),
+        vi.fn(),
+      );
+      expect(mockRunSubagent.mock.calls[0][1]).toBe(rawTask);
+    });
+
+    it("never seeds — even with a ## Steps section AND an explicit label", async () => {
+      await executeDelegate(
+        { specialist: "test", task: structuredTask, label: "delegate to scout: READ-ONLY investigation" },
+        createMockCtx(),
+        vi.fn(),
+      );
+      const composed = mockRunSubagent.mock.calls[0][1] as string;
+      expect(composed).toBe(structuredTask);
+      expect(composed).not.toContain("[framework] Plan seed");
+      expect(composed).not.toContain("planSteps({ goal:");
+    });
+
+    it("coder: raw task + the acceptance-tests block, nothing else", async () => {
+      const scope = {
+        filesToModify: [],
+        filesToCreate: [],
+        directories: [],
+        maxFiles: 10,
+        requiresApprovalBeyondScope: true,
+        changeType: "multi-file" as const,
+        maxLinesPerFile: 400,
+        gateMode: "strict" as const,
+      };
+      await executeDelegate(
+        { specialist: "coder", task: structuredTask, scope, label: "fix login" },
+        createMockCtx(),
+        vi.fn(),
+      );
+      const composed = mockRunSubagent.mock.calls[0][1] as string;
+      expect(composed).not.toContain("[framework] Plan seed");
+      expect(composed).not.toContain("planSteps({ goal:");
+      // Exact pre-a5c61cd shape: the raw task + the acceptance block, nothing before it.
+      expect(composed).toBe(structuredTask + acceptanceBlock);
+    });
+  });
+
+  describe("plan-seed removal — the seed API no longer exists", () => {
+    it("delegate-pipeline.ts no longer exports any seed symbol", async () => {
+      const mod = await import("./delegate-pipeline.ts");
+      for (const name of [
+        "composeSeededTask",
+        "buildPlanSeedBlock",
+        "seedGoalLine",
+        "deriveChildPlanSteps",
+        "extractStepsFromTask",
+        "PLAN_SEED_MARKER",
+        "PARENT_PANEL_GOAL_PREFIX",
+        "isParentPanelLabel",
+      ]) {
+        expect(Object.prototype.hasOwnProperty.call(mod, name), `${name} must be gone`).toBe(false);
+      }
+    });
+
+    it("delegate-pipeline.ts source contains no seed marker or seed call site", () => {
+      const source = readFileSync(resolve(__dirname, "delegate-pipeline.ts"), "utf-8");
+      expect(source).not.toContain("[framework] Plan seed");
+      expect(source).not.toContain("composeSeededTask");
+      expect(source).not.toContain("planSteps({ goal:");
     });
   });
 });
