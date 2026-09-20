@@ -665,6 +665,9 @@ describe("BUG regression loops — runner returns real metrics, status, planStep
 	function toolEnd(toolName: string, toolCallId: string, result: any = "ok") {
 		return { type: "tool_execution_end", toolName, toolCallId, result, isError: false };
 	}
+	function toolUpdate(toolName: string, toolCallId: string, partialResult: any) {
+		return { type: "tool_execution_update", toolName, toolCallId, args: {}, partialResult };
+	}
 	function assistantEnd(stopReason: string, text: string, errorMessage?: string) {
 		return {
 			type: "message_end",
@@ -835,6 +838,98 @@ describe("BUG regression loops — runner returns real metrics, status, planStep
 		// The step was never advanced by the subagent — it was auto-closed by the runner
 		expect(result.planSteps).toHaveLength(1);
 		expect(result.planSteps[0]).toMatchObject({ completed: true, autoCompleted: true });
+	});
+
+	// ── FIX 2: the live substep preview must coerce structured partial results ──
+	// The SDK's tool_execution_update partialResult is `{ content: [{ type: "text", text }], details }`
+	// for structured tools. `.length` is undefined on that object, so the old slicing
+	// stored the raw object and the feed rendered `[object Object]`.
+
+	it("FIX-2: structured partial result stores the extracted text, not [object Object]", { timeout: 15_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createControllableRunner("fix2-structured");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		const partialResult = { content: [{ type: "text", text: "streaming bash output line" }], details: { truncated: false } };
+		ref.subscribeCb!(toolStart("bash", "b1", { command: "npx vitest run" }));
+		ref.subscribeCb!(toolUpdate("bash", "b1", partialResult));
+		// result: null — the tool_end path passes no preview, so the stored value is
+		// exactly what the update path wrote (it would otherwise overwrite the preview).
+		ref.subscribeCb!(toolEnd("bash", "b1", null));
+		ref.subscribeCb!(assistantEnd("end_turn", "done"));
+		resolvePrompt();
+		const result = await resultPromise;
+
+		const entry = result.toolCallTrail.find((t: { tool?: unknown }) => String(t.tool).startsWith("bash:")) as any;
+		expect(entry).toBeDefined();
+		expect(entry.outputPreview).toBe("streaming bash output line");
+		expect(String(entry.outputPreview)).not.toContain("[object Object]");
+	});
+
+	it("FIX-2 edge: plain-string partial result still truncates at 80 with ...", { timeout: 15_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createControllableRunner("fix2-string");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		ref.subscribeCb!(toolStart("bash", "b2", { command: "npx vitest run" }));
+		ref.subscribeCb!(toolUpdate("bash", "b2", "y".repeat(100)));
+		ref.subscribeCb!(toolEnd("bash", "b2", null));
+		ref.subscribeCb!(assistantEnd("end_turn", "done"));
+		resolvePrompt();
+		const result = await resultPromise;
+
+		const entry = result.toolCallTrail.find((t: { tool?: unknown }) => String(t.tool).startsWith("bash:")) as any;
+		expect(entry).toBeDefined();
+		expect(entry.outputPreview).toBe("y".repeat(77) + "...");
+		expect(entry.outputPreview).toHaveLength(80);
+	});
+
+	it("FIX-2 edge: object without a text block falls back to JSON", { timeout: 15_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createControllableRunner("fix2-no-text");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		const partialResult = { details: { accepted: 2 } };
+		ref.subscribeCb!(toolStart("bash", "b3", { command: "npx vitest run" }));
+		ref.subscribeCb!(toolUpdate("bash", "b3", partialResult));
+		ref.subscribeCb!(toolEnd("bash", "b3", null));
+		ref.subscribeCb!(assistantEnd("end_turn", "done"));
+		resolvePrompt();
+		const result = await resultPromise;
+
+		const entry = result.toolCallTrail.find((t: { tool?: unknown }) => String(t.tool).startsWith("bash:")) as any;
+		expect(entry).toBeDefined();
+		expect(entry.outputPreview).toBe(JSON.stringify(partialResult));
+		expect(String(entry.outputPreview)).not.toContain("[object Object]");
+	});
+
+	it("FIX-2 edge: null/undefined partial result performs no update", { timeout: 15_000 }, async () => {
+		// undefined → skipped entirely, nothing stored
+		{
+			const { ref, resolvePrompt, resultPromise } = createControllableRunner("fix2-undefined");
+			await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+			ref.subscribeCb!(toolStart("bash", "b4", { command: "npx vitest run" }));
+			ref.subscribeCb!(toolUpdate("bash", "b4", undefined));
+			ref.subscribeCb!(toolEnd("bash", "b4", null));
+			ref.subscribeCb!(assistantEnd("end_turn", "done"));
+			resolvePrompt();
+			const result = await resultPromise;
+			const entry = result.toolCallTrail.find((t: { tool?: unknown }) => String(t.tool).startsWith("bash:")) as any;
+			expect(entry).toBeDefined();
+			expect(entry.outputPreview).toBeUndefined();
+		}
+		// null → skipped; a preview stored by an earlier update survives untouched
+		{
+			const { ref, resolvePrompt, resultPromise } = createControllableRunner("fix2-null");
+			await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+			ref.subscribeCb!(toolStart("bash", "b5", { command: "npx vitest run" }));
+			ref.subscribeCb!(toolUpdate("bash", "b5", "first preview"));
+			ref.subscribeCb!(toolUpdate("bash", "b5", null));
+			ref.subscribeCb!(toolEnd("bash", "b5", null));
+			ref.subscribeCb!(assistantEnd("end_turn", "done"));
+			resolvePrompt();
+			const result = await resultPromise;
+			const entry = result.toolCallTrail.find((t: { tool?: unknown }) => String(t.tool).startsWith("bash:")) as any;
+			expect(entry).toBeDefined();
+			expect(entry.outputPreview).toBe("first preview");
+		}
 	});
 });
 

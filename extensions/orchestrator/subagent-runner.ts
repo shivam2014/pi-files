@@ -801,6 +801,37 @@ export interface FlightRecorderDumpParams {
 }
 
 /**
+ * Coerce a streaming `tool_execution_update` partialResult into preview text.
+ *
+ * Structured tools emit `{ content: [{ type: "text", text }], details }` whose
+ * `.length` is undefined — slicing it directly stored the raw object and the feed
+ * rendered `[object Object]` in the live substep preview. Mirrors the
+ * tool_execution_end coercion: strings pass through as-is, the first text block
+ * wins, any other object is JSON-encoded. Returns null for null/undefined so the
+ * caller performs no update (same behavior as the existing truthiness guard).
+ */
+function coercePartialResultText(partialResult: unknown): string | null {
+	if (partialResult == null) return null;
+	if (typeof partialResult === "string") return partialResult;
+	if (typeof partialResult === "object") {
+		const content = (partialResult as { content?: unknown }).content;
+		if (Array.isArray(content)) {
+			for (const block of content) {
+				if (block && typeof block === "object" && typeof (block as { text?: unknown }).text === "string") {
+					return (block as { text: string }).text;
+				}
+			}
+		}
+		try {
+			return JSON.stringify(partialResult);
+		} catch {
+			return String(partialResult);
+		}
+	}
+	return String(partialResult);
+}
+
+/**
  * SubagentRunner — creates isolated subagent sessions for specialist delegation.
  *
  * Owns an ActivityFeed instance for the run duration.
@@ -1279,15 +1310,18 @@ export class SubagentRunner {
 							const activeStep = feed.steps[feed.currentStep];
 							if (activeStep && activeStep.substeps.length > 0) {
 								if (!activeStep.substeps[activeStep.substeps.length - 1].completed) {
-									const preview = event.partialResult.length > 80
-										? event.partialResult.slice(0, 77) + "..."
-										: event.partialResult;
-									feed.updateActiveSubstepOutput(preview);
-									const newActiveStep = feed.steps[feed.currentStep];
-									if (newActiveStep) {
-										updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps), orchestratorCtx);
+									const partialText = coercePartialResultText(event.partialResult);
+									if (partialText != null) {
+										const preview = partialText.length > 80
+											? partialText.slice(0, 77) + "..."
+											: partialText;
+										feed.updateActiveSubstepOutput(preview);
+										const newActiveStep = feed.steps[feed.currentStep];
+										if (newActiveStep) {
+											updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps), orchestratorCtx);
+										}
+										progressScheduler.schedule();
 									}
-									progressScheduler.schedule();
 								}
 							}
 						}
