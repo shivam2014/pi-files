@@ -51,6 +51,138 @@ function ghWriteBlockReason(command: string): string {
 	return `\u26D4 gh write command blocked. Specialists have no gh write access — the gh tool (available only to scout/researcher) is read-only (list, view, status; gh api disallowed).\nCommand: ${command}\nHint: route the gh write request through the orchestrator instead.`;
 }
 
+/** One tokenized shell word. `quoted` marks tokens that contained quoted text. */
+interface ShellToken {
+	value: string;
+	quoted: boolean;
+}
+
+/** Shell operators that separate commands on a command line. */
+const SHELL_SEPARATORS = new Set(['&&', '||', ';', '|', '&']);
+
+/**
+ * Quote-aware shell tokenizer (#139). Whitespace splits tokens; characters
+ * inside single/double quotes stay in one token (the quote characters are
+ * dropped); unquoted shell separators (&&, ||, ;, |, &) are emitted as
+ * standalone tokens. Tokens that contained quoted text are flagged so callers
+ * can ignore quoted regions — commit messages, sed scripts, grep patterns —
+ * when scanning for path-like tokens.
+ */
+function tokenizeShell(command: string): ShellToken[] {
+	const tokens: ShellToken[] = [];
+	let current = '';
+	let currentQuoted = false;
+	let quote: string | null = null;
+	const flush = () => {
+		if (current) {
+			tokens.push({ value: current, quoted: currentQuoted });
+			current = '';
+			currentQuoted = false;
+		}
+	};
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i];
+		if (quote) {
+			if (ch === quote) quote = null;
+			else current += ch;
+			continue;
+		}
+		if (ch === '"' || ch === "'") { quote = ch; currentQuoted = true; continue; }
+		if (/\s/.test(ch)) { flush(); continue; }
+		if (ch === '&' || ch === '|' || ch === ';') {
+			flush();
+			if ((ch === '&' || ch === '|') && command[i + 1] === ch) {
+				tokens.push({ value: ch + ch, quoted: false });
+				i++;
+			} else {
+				tokens.push({ value: ch, quoted: false });
+			}
+			continue;
+		}
+		current += ch;
+	}
+	flush();
+	return tokens;
+}
+
+/** Split a tokenized command line into per-command segments at shell separators. */
+function splitShellSegments(tokens: ShellToken[]): ShellToken[][] {
+	const segments: ShellToken[][] = [];
+	let current: ShellToken[] = [];
+	for (const token of tokens) {
+		if (!token.quoted && SHELL_SEPARATORS.has(token.value)) {
+			if (current.length > 0) segments.push(current);
+			current = [];
+		} else {
+			current.push(token);
+		}
+	}
+	if (current.length > 0) segments.push(current);
+	return segments;
+}
+
+/**
+ * #139: the directory relative tokens actually resolve against. Honors a
+ * leading, repeatable `cd <dir> &&` chain and `git -C <dir>` before the
+ * command word; falls back to the delegation cwd when neither is present.
+ * Absolute out-of-scope tokens still resolve (and are still blocked) upstream.
+ */
+function computeEffectiveBaseDir(command: string, fallback: string): string {
+	const tokens = tokenizeShell(command);
+	const at = (idx: number): ShellToken | undefined => tokens[idx];
+	let base = fallback;
+	let i = 0;
+	while (true) {
+		const token = at(i);
+		if (!token) break;
+		// Leading env assignments (VAR=1 …) do not change the base dir
+		if (!token.quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.value)) { i++; continue; }
+		const next = at(i + 1);
+		if (token.value === 'cd' && next && !SHELL_SEPARATORS.has(next.value)) {
+			base = resolve(base, next.value);
+			i += 2;
+			continue;
+		}
+		if (token.value === 'git' && next?.value === '-C' && at(i + 2)) {
+			base = resolve(base, at(i + 2)!.value);
+			i += 3;
+			continue;
+		}
+		if (!token.quoted && SHELL_SEPARATORS.has(token.value)) { i++; continue; }
+		break;
+	}
+	return base;
+}
+
+/**
+ * Locate the git invocation inside one shell segment, tolerating leading env
+ * assignments (`VAR=1 git …`), a leading `cd <dir>`, and git global options
+ * (`-C <dir>`, `-c name=value`). Returns the subcommand and its arguments.
+ */
+function findGitCommand(tokens: ShellToken[]): { subcmd: string; args: string[] } | undefined {
+	const at = (idx: number): ShellToken | undefined => tokens[idx];
+	let i = 0;
+	while (true) {
+		const token = at(i);
+		if (!token) break;
+		if (!token.quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.value)) { i++; continue; }
+		break;
+	}
+	if (at(i)?.value === 'cd' && at(i + 1)) i += 2;
+	if (at(i)?.value !== 'git') return undefined;
+	i++;
+	// Skip git global options; -C/-c/--git-dir/--work-tree/--namespace take a value.
+	while (true) {
+		const flag = at(i);
+		if (!flag || !flag.value.startsWith('-')) break;
+		if (flag.value === '-C' || flag.value === '-c' || flag.value === '--git-dir' || flag.value === '--work-tree' || flag.value === '--namespace') i += 2;
+		else i += 1;
+	}
+	const subcmd = at(i);
+	if (!subcmd || subcmd.quoted || SHELL_SEPARATORS.has(subcmd.value)) return undefined;
+	return { subcmd: subcmd.value, args: tokens.slice(i + 1).map((t) => t.value) };
+}
+
 export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true, ctx?: { cwd?: string; readOnly?: boolean }, subagentState?: SubagentState) {
 	traceToolCallEntry('handleSubagentToolCall', event, ctx);
 	if (!fusionEnabled && event.toolName === 'fusion') {
@@ -96,6 +228,9 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 			if (input.file) filePaths.push(input.file);
 			tracePathsExtracted('scope-guard', input, filePaths);
 
+			// #139: relative tokens resolve against the shell-effective base dir
+			// (leading `cd <dir> &&` chains, `git -C <dir>`), not the raw delegation cwd.
+			let effectiveBaseDir = cwd;
 			if (event.toolName === 'bash' && input.command) {
 				const cmd = input.command.trim();
 
@@ -121,87 +256,104 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					'commit', 'push', 'init', 'clone'
 				]);
 
-				// Check if this is a git command (capture up to 2 subcommands for multi-word like "stash list")
-				const gitMatch = cmd.match(/^git\s+(\w+)(?:\s+(\w+))?/);
-				if (gitMatch) {
-					const subcmd = gitMatch[1];
-					const subcmd2 = gitMatch[2];
+				effectiveBaseDir = computeEffectiveBaseDir(cmd, cwd);
 
-					// Handle multi-word stash subcommands: stash list/show are read-only, rest are writes
-					if (subcmd === 'stash') {
-						const safeStashSubs = new Set(['list', 'show']);
-						// Bare "git stash" defaults to "stash list" (safe)
-						if (subcmd2 && !safeStashSubs.has(subcmd2)) {
-							if (ctx?.readOnly) {
-								return { block: true, reason: `⛔ Git write command blocked for read-only specialist: git stash ${subcmd2}` };
+				// #139: quote-aware, chain-aware segmentation. Quoted regions (commit
+				// messages, sed scripts, grep patterns) are flagged by the tokenizer and
+				// never path-scanned; segments split at &&, ||, ;, | so one command's
+				// tokens can never leak into another's scope check.
+				const TEST_RUNNER_PREFIXES = ['npx vitest', 'npx jest', 'npm test', 'npx playwright', 'npx mocha', 'npx cypress', 'yarn test', 'pnpm test', 'npx tsc', 'node --test'];
+				const pathRegex = /(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g;
+
+				for (const segment of splitShellSegments(tokenizeShell(cmd))) {
+					const gitCmd = findGitCommand(segment);
+					if (gitCmd) {
+						const subcmd = gitCmd.subcmd;
+						const args = gitCmd.args;
+
+						// Handle multi-word stash subcommands: stash list/show are read-only, rest are writes
+						if (subcmd === 'stash') {
+							const safeStashSubs = new Set(['list', 'show']);
+							const stashSub = args.find((arg: string) => !arg.startsWith('-'));
+							// Bare "git stash" defaults to "stash list" (safe)
+							if (stashSub && !safeStashSubs.has(stashSub)) {
+								if (ctx?.readOnly) {
+									return { block: true, reason: `⛔ Git write command blocked for read-only specialist: git stash ${stashSub}` };
+								}
 							}
 						}
-					}
 
-					// Skip path check for commands that don't take file args
-					if (GIT_SKIP_SAFE.has(subcmd)) {
-						// Truly read-only — allow
-					} else if (GIT_SKIP_WRITE.has(subcmd)) {
-						// Mutating but no file args — block in readOnly mode
-						if (ctx?.readOnly) {
-							return { block: true, reason: `⛔ Git write command blocked for read-only specialist: git ${subcmd}` };
-						}
-						// Allow for non-readOnly (coder)
-					} else if (GIT_SAFE_COMMANDS.has(subcmd)) {
-						// Safe read-only commands - allow without path check
-					} else if (GIT_WRITE_COMMANDS.has(subcmd)) {
-						// Read-only specialist: block git write commands
-						if (ctx?.readOnly) {
-							return { block: true, reason: `⛔ Git write command blocked for read-only specialist. Command: git ${subcmd}` };
-						}
-						// Write commands - extract paths from positional args only
-						const args = cmd.split(/\s+/).slice(2);
-						const paths = args.filter((arg: string) => !arg.startsWith('-'));
+						// Skip path check for commands that don't take file args
+						if (GIT_SKIP_SAFE.has(subcmd) || GIT_SAFE_COMMANDS.has(subcmd)) {
+							// Truly read-only — allow
+						} else if (GIT_SKIP_WRITE.has(subcmd)) {
+							// Mutating but no file args — block in readOnly mode. Commit messages
+							// and their quoted -m args are never scanned for path tokens (#139).
+							if (ctx?.readOnly) {
+								return { block: true, reason: `⛔ Git write command blocked for read-only specialist: git ${subcmd}` };
+							}
+							// Allow for non-readOnly (coder)
+						} else if (GIT_WRITE_COMMANDS.has(subcmd)) {
+							// Read-only specialist: block git write commands
+							if (ctx?.readOnly) {
+								return { block: true, reason: `⛔ Git write command blocked for read-only specialist. Command: git ${subcmd}` };
+							}
+							// Write commands — extract paths from positional args only, against
+							// the effective base dir. Staging args are scope-checked but
+							// deliberately NOT size-checked (#139): `git add` of a large
+							// in-scope file is legitimate, while genuine bash writes (sed -i on
+							// a >400-line file) still hit checkFileSize in the loop below.
+							const paths = args.filter((arg: string) => !arg.startsWith('-') && !SHELL_SEPARATORS.has(arg));
 
-						for (const rawPath of paths) {
-							const expandedPath = rawPath.startsWith('~/') ? rawPath.replace(/^~/, os.homedir()) : rawPath;
-							const absolutePath = resolve(cwd, expandedPath);
-							const pathAllowed = guard.isPathAllowed(absolutePath, 'write');
-							if (!pathAllowed.allowed) {
-								if (subagentState) {
-									subagentState.blockedCalls.push({
-										tool: event.toolName || 'unknown',
-										target: rawPath,
-										reason: pathAllowed.reason || 'outside allowed scope',
-										timestamp: Date.now(),
-									});
+							for (const rawPath of paths) {
+								const expandedPath = rawPath.startsWith('~/') ? rawPath.replace(/^~/, os.homedir()) : rawPath;
+								const absolutePath = resolve(effectiveBaseDir, expandedPath);
+								const pathAllowed = guard.isPathAllowed(absolutePath, 'write');
+								if (!pathAllowed.allowed) {
+									if (subagentState) {
+										subagentState.blockedCalls.push({
+											tool: event.toolName || 'unknown',
+											target: rawPath,
+											reason: pathAllowed.reason || 'outside allowed scope',
+											timestamp: Date.now(),
+										});
+									}
+									return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope` };
 								}
-								return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope` };
+							}
+						} else {
+							// Unknown git subcommand — fail-closed for readOnly, fail-open for others
+							if (ctx?.readOnly) {
+								return { block: true, reason: `⛔ Unknown git command blocked for read-only specialist: git ${subcmd}` };
 							}
 						}
 					} else {
-						// Unknown git subcommand — fail-closed for readOnly, fail-open for others
-						if (ctx?.readOnly) {
-							return { block: true, reason: `⛔ Unknown git command blocked for read-only specialist: git ${subcmd}` };
+						// Read-only specialist: block write-modifying non-git bash commands
+						const segmentCmd = segment.map((t) => t.value).join(' ');
+						if (ctx?.readOnly && isWriteCommand(segmentCmd)) {
+							return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
 						}
-					}
-				} else {
-					// Read-only specialist: block write-modifying non-git bash commands
-					if (ctx?.readOnly && isWriteCommand(input.command)) {
-						return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
-					}
-					// Test runner and compiler commands are read-only — skip file path extraction
-					// Strip leading "cd <path> && " before checking test runner prefixes
-					const TEST_RUNNER_PREFIXES = ['npx vitest', 'npx jest', 'npm test', 'npx playwright', 'npx mocha', 'npx cypress', 'yarn test', 'pnpm test', 'npx tsc', 'node --test'];
-					const cmdForCheck = cmd.replace(/^cd\s+\S+\s*&&\s*/, '');
-					const isTestRunner = TEST_RUNNER_PREFIXES.some(prefix => cmdForCheck.startsWith(prefix));
-					if (!isTestRunner) {
-						// Extract file-like paths from command, but skip flag values (e.g., find -name test.ts)
-						const pathRegex = /(?:[\w./-]+\.(?:ts|tsx|js|jsx|json|md|yaml|yml|toml|txt|py|rb|go|rs|java))/g;
-						for (const match of input.command.matchAll(pathRegex)) {
-							const before = input.command.slice(0, match.index).replace(/["']+$/, '').trimEnd();
-							const lastToken = before.split(/\s+/).pop() || '';
-							// Skip if preceded by a flag (e.g., -name, -path) — those are patterns, not file paths
-							if (lastToken.startsWith('-') && lastToken !== '--') continue;
-							// BUG-5: temp-scratch paths are exempt from scope checks — subagents
-							// legitimately write findings/scratch files under /tmp
-							if (match[0].startsWith('/tmp/') || match[0].startsWith('/private/tmp/')) continue;
-							filePaths.push(match[0]);
+						// Test runner and compiler commands are read-only — skip file path extraction
+						const isTestRunner = TEST_RUNNER_PREFIXES.some(prefix => segmentCmd.startsWith(prefix));
+						if (!isTestRunner) {
+							// Extract file-like paths from the segment's tokens. Quoted regions are
+							// never scanned, flag-like tokens are not paths, and values of flags
+							// (e.g., find -name test.ts) are patterns — not file paths.
+							for (let t = 0; t < segment.length; t++) {
+								const token = segment[t];
+								if (!token || token.quoted) continue;
+								const value = token.value;
+								if (value === '--' || value.startsWith('-')) continue;
+								const prev = segment[t - 1];
+								if (prev && prev.value.startsWith('-') && prev.value !== '--') continue;
+								pathRegex.lastIndex = 0;
+								for (const match of value.matchAll(pathRegex)) {
+									// BUG-5: temp-scratch paths are exempt from scope checks — subagents
+									// legitimately write findings/scratch files under /tmp
+									if (match[0].startsWith('/tmp/') || match[0].startsWith('/private/tmp/')) continue;
+									filePaths.push(match[0]);
+								}
+							}
 						}
 					}
 				}
@@ -233,7 +385,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 
 			for (const rawPath of filePaths) {
 				const expandedPath = rawPath.startsWith('~/') ? rawPath.replace(/^~/, os.homedir()) : rawPath;
-				const absolutePath = resolve(cwd, expandedPath);
+				const absolutePath = resolve(effectiveBaseDir, expandedPath);
 				tracePathResolved('scope-guard', rawPath, absolutePath, operation);
 				const pathAllowed = guard.isPathAllowed(absolutePath, operation);
 				traceScopeCheck('scope-guard', absolutePath, pathAllowed.allowed, pathAllowed.reason);
