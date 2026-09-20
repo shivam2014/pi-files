@@ -2,7 +2,7 @@
  * DelegatePipeline — orchestrates specialist subagent delegation end-to-end.
  * Inlined from handle-diagnostics.ts and delegate-result-processor.ts.
  */
-import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext, BatchDelegationEntry } from "./types.ts";
+import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext, BatchDelegationEntry, DiagnosticKind } from "./types.ts";
 import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills, DELIVERABLE_MARKERS, isReadOnlySpecialist } from "./specialists.ts";
 import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
 import { runSubagent, ERROR_MARKER, ABORT_MARKER, PROVIDER_RETRY_MAX_ATTEMPTS, providerBackoffDelayMs, type OrchestratorUi } from "./subagent-runner.ts";
@@ -35,6 +35,40 @@ export const EMPTY_BUDGET_GATE: CalibrationBudgetGate = {
 	finalRecommend: "",
 	banner: "",
 };
+
+/**
+ * Per-kind phrasing for user-facing diagnostic text.
+ *
+ * "failed" is reserved for silent_failure/crash — the kinds where the session
+ * itself failed. tool_errors/blocked_calls describe incidents on a run that may
+ * otherwise be healthy (e.g. a scope-guard block after 8 successful tool
+ * calls), so they use neutral wording. Typed as a Record over DiagnosticKind so
+ * adding a kind is a compile error here rather than a missing phrase.
+ */
+const DIAGNOSTIC_KIND_PHRASES: Record<DiagnosticKind, string> = {
+	silent_failure: "failed",
+	crash: "crashed",
+	tool_errors: "reported tool errors",
+	blocked_calls: "had tool calls blocked",
+};
+
+/**
+ * User-facing body of a diagnostic message (callers add their own prefix/emoji).
+ *
+ * Always interpolates the REAL tool-call count from the diagnostic record — the
+ * previous wording hardcoded "0 tool calls" and branded every kind "failed",
+ * which mislabelled blocked_calls on healthy runs.
+ *
+ * @param diagnostic captured diagnostic record
+ * @param maxLen optional hard cap on the returned string (truncated, no ellipsis)
+ */
+export function formatDiagnosticMessage(diagnostic: SubagentDiagnostic, maxLen?: number): string {
+	const phrase = DIAGNOSTIC_KIND_PHRASES[diagnostic.kind] ?? `reported ${diagnostic.kind}`;
+	const counts = `${diagnostic.toolCalls} tool call(s) in ${diagnostic.turns} turn(s)`;
+	const reason = diagnostic.errorMessage?.trim();
+	const message = `${diagnostic.specialist} ${phrase} — ${counts}${reason ? ` — ${reason}` : ""}`;
+	return maxLen !== undefined && message.length > maxLen ? message.slice(0, maxLen) : message;
+}
 
 /**
  * Merge the calibration record into an existing flight-recorder dump file
@@ -652,7 +686,7 @@ export class DelegatePipeline {
 			// Notify user via SDK
 			try {
 				ctx.ui?.notify?.(
-					`⚠ Diagnostic: ${diagnostic.specialist} failed — ${diagnostic.errorMessage || `0 tool calls in ${diagnostic.turns} turn(s)`}`,
+					`⚠ Diagnostic: ${formatDiagnosticMessage(diagnostic)}`,
 					"warning"
 				);
 			} catch (e) {
@@ -660,9 +694,7 @@ export class DelegatePipeline {
 			}
 
 			// Text-mode visible marker in delegation output
-			const warningMsg = diagnostic.errorMessage
-				? `${diagnostic.specialist} failed: ${diagnostic.errorMessage.slice(0, 150)}`
-				: `${diagnostic.specialist} returned 0 tool calls in ${diagnostic.turns} turn(s). Incident logged to disk.`;
+			const warningMsg = `${formatDiagnosticMessage(diagnostic, 150)}. Incident logged to disk.`;
 			const warningLine = `\n\n⚠️ [Diagnostic] ${warningMsg}\n`;
 			result.output = result.output ? warningLine + result.output : warningLine;
 
