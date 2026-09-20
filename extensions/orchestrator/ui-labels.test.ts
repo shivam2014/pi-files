@@ -150,11 +150,18 @@ describe("FIX 5 — activity-feed omits fake placeholders", () => {
 		expect(toolCallToSubstep("grep", {})).toBe("Searching");
 		expect(toolCallToSubstep("find", {})).toBe("Finding");
 		expect(toolCallToSubstep("lint", {})).toBe("Linting");
+		expect(toolCallToSubstep("lint", { files: [] })).toBe("Linting");
 	});
 
 	it("still prints the real arg when present", () => {
 		expect(toolCallToSubstep("grep", { pattern: "foo" })).toBe("Searching: foo");
 		expect(toolCallToSubstep("find", { pattern: "bar" })).toBe("Finding: bar");
+		// The registered lint tool takes `files`; render the basename, never a full path.
+		expect(toolCallToSubstep("lint", { files: "a.ts" })).toBe("Linting a.ts");
+		expect(toolCallToSubstep("lint", { files: "src/auth.ts" })).toBe("Linting auth.ts");
+		expect(toolCallToSubstep("lint", { files: ["a.ts"] })).toBe("Linting a.ts");
+		expect(toolCallToSubstep("lint", { files: ["a.ts", "b.ts"] })).toBe("Linting a.ts +1 more");
+		// Legacy `path` arg still renders, for compatibility.
 		expect(toolCallToSubstep("lint", { path: "a.ts" })).toBe("Linting a.ts");
 	});
 });

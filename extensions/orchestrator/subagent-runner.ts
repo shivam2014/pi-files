@@ -19,7 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import { join, basename } from "path";
 
 import { subagentSessions } from "./subagent-sessions.ts";
 import { shortenLabel } from "../token-saver.ts";
@@ -1387,7 +1387,7 @@ export class SubagentRunner {
 							editArgs?.path ??
 							(event.toolCallId ? editWritePaths.get(event.toolCallId) : undefined);
 						if (typeof editedPath === "string" && editedPath.length > 0 && isLintableExtension(editedPath)) {
-							feed.addSubstep(`lint: checking ${editedPath}...`);
+							feed.addSubstep(`auto-lint queued: ${basename(editedPath)}`);
 						}
 					}
 					recordTimelineFrame("tool_end", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);

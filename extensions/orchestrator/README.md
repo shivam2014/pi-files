@@ -29,7 +29,7 @@ The entry point (`index.ts`) is a wiring hub: it registers the `delegate` tool, 
 
 - **Plans then delegates.** Every task starts with a plan. Each step is one delegation or one orchestrator-owned action.
 - **Adaptive escalation.** Trivial tasks run as a single coder; harder ones escalate. Workers self-report a `## Difficulty` block (exploration / uncertainty / verification / iteration / recommend) and the orchestrator scales routing to it.
-- **Hard exploration budget.** A worker that crosses 6 exploration calls, 5 files, or 12 turns must escalate via `ask_orchestrator` rather than quietly burn minutes. The budget is counted by the framework, not self-reported.
+- **Hard exploration budget.** A worker that crosses 10 exploration calls, 5 files, or 12 turns must escalate via `ask_orchestrator` rather than quietly burn minutes. The budget is counted by the framework, not self-reported.
 - **Plan panel.** A live TUI widget showing the plan, each step, and subagent progress.
 - **Fusion.** `fusion()` runs a panel of models plus a judge to critique a plan before expensive work begins. Disabled unless configured.
 - **Guards.** `scope-guard` blocks out-of-scope writes at the tool level; `lint-guard` auto-lints every edit after it lands. Both are deterministic (no LLM).

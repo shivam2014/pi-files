@@ -439,8 +439,18 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 			const q = (input?.question || "").trim();
 			return `Clarify: ${q ? q.slice(0, 80) + (q.length > 80 ? "..." : "") : "question"}`;
 		}
-		case "lint":
-			return input?.path ? `Linting ${normalizePath(input.path)}` : "Linting";
+		case "lint": {
+			// The registered `lint` tool takes `files` (string | string[]); accept a
+			// legacy `path` too. Show the basename of the first file — never a full path.
+			const raw = input?.files ?? input?.path;
+			const rawList = Array.isArray(raw)
+				? raw.filter((f: unknown): f is string => typeof f === "string" && f.length > 0)
+				: [];
+			const first = typeof raw === "string" && raw.length > 0 ? raw : rawList[0];
+			if (!first) return "Linting";
+			const base = first.replace(/\\/g, "/").replace(/\/+$/, "").split("/").pop() || first;
+			return rawList.length > 1 ? `Linting ${base} +${rawList.length - 1} more` : `Linting ${base}`;
+		}
 		case "typecheck":
 			return `Type checking...`;
 		case "web_search": {
