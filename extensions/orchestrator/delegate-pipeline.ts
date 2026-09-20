@@ -291,6 +291,81 @@ export function buildBatchStepLabel(specialist: string, task: string, label?: st
 	return buildAutoPlanLabels(specialist, specName, task, label).stepLabel;
 }
 
+// ── Child plan seeding ────────────────────────────────────────────────────────
+// The delegate widget renders the CHILD's own plan feed, which stays empty until
+// the child calls planSteps(). Without a seed, the first visible child entry is
+// the bash guard's plan-gate notice — which reads like "step 1: run planSteps()".
+// The pipeline therefore prepends a plan-seed instruction to the child's task so
+// the child declares its plan as its FIRST action, with deterministic steps.
+
+/** Marker identifying the framework-injected plan-seed block in a child task. */
+export const PLAN_SEED_MARKER = "[framework] Plan seed";
+
+/** Max seeded steps / max chars per seeded step — keeps the seed bounded. */
+const PLAN_SEED_MAX_STEPS = 12;
+const PLAN_SEED_MAX_STEP_CHARS = 160;
+
+/**
+ * Extract an explicit step list already written in the delegation task text.
+ * Recognizes a `Steps` heading (h1–h4) followed by numbered or bulleted list
+ * items (optionally with `[ ]`/`[x]` checkboxes). Returns [] when no such
+ * section exists — callers then fall back to the delegation's own step label.
+ */
+export function extractStepsFromTask(task: string): string[] {
+	if (!task) return [];
+	const heading = task.match(/^[ \t]*#{1,4}[ \t]*steps\b[ \t]*$/im);
+	if (!heading || heading.index === undefined) return [];
+	const steps: string[] = [];
+	for (const rawLine of task.slice(heading.index + heading[0].length).split("\n")) {
+		const line = rawLine.trim();
+		if (!line) {
+			if (steps.length > 0) break;
+			continue;
+		}
+		if (line.startsWith("#")) break; // next heading ends the section
+		const item = line.match(/^(?:\d+[.)]|[-*])\s+(.+)$/);
+		if (!item) {
+			if (steps.length > 0) break;
+			continue;
+		}
+		const text = item[1].replace(/^\[[ xX]\]\s*/, "").trim().slice(0, PLAN_SEED_MAX_STEP_CHARS);
+		if (!text) continue;
+		steps.push(text);
+		if (steps.length >= PLAN_SEED_MAX_STEPS) break;
+	}
+	return steps;
+}
+
+/**
+ * Derive the child's seed plan steps. Precedence:
+ * 1. explicit step list in the task text (`## Steps` section)
+ * 2. the delegation's own step label (delegate `label`, else the framework's
+ *    semantic summary) — the same label shown as the parent's plan step
+ * Returns [] when nothing is derivable → caller keeps today's behaviour
+ * (no seed injection; the child gets no steps beyond the standard prompt).
+ */
+export function deriveChildPlanSteps(task: string, stepLabel?: string): string[] {
+	const fromTask = extractStepsFromTask(task);
+	if (fromTask.length > 0) return fromTask;
+	const label = (stepLabel ?? "").trim();
+	return label ? [label] : [];
+}
+
+/**
+ * Build the framework plan-seed instruction prepended to the child's task.
+ * Returns "" when no steps are derivable so the caller falls back to today's
+ * behaviour (no seed).
+ */
+export function buildPlanSeedBlock(goal: string, steps: string[]): string {
+	if (!steps || steps.length === 0) return "";
+	const goalLine = (goal ?? "").trim() || steps[0];
+	return (
+		`${PLAN_SEED_MARKER}: call planSteps({ goal, steps }) as your FIRST action — before any other tool call — using exactly these steps:\n` +
+		`planSteps({ goal: ${JSON.stringify(goalLine)}, steps: ${JSON.stringify(steps)} })\n` +
+		`Do not invent different steps. Then do the task below.`
+	);
+}
+
 export class DelegatePipeline {
 	/** Live count of concurrent run() invocations on this pipeline (a batch is >1).
 	 * The shared <cwd>/.pi/scope.json is cleared only when the LAST delegation
@@ -519,10 +594,20 @@ export class DelegatePipeline {
 			onAskOrchestrator: createAskOrchestratorResolver(ctx, pendingQuestions),
 		};
 
+		// ── Seed the child's plan at spawn ──
+		// Deterministic steps: explicit step list in the task text, else the
+		// delegation's own step label (delegate label / semantic summary). No
+		// steps derivable → no seed block (today's behaviour).
+		const seedBlock = buildPlanSeedBlock(
+			params.label?.trim() || autoGoal,
+			deriveChildPlanSteps(params.task, stepLabel),
+		);
+		const taskWithSeed = seedBlock ? `${seedBlock}\n\n${params.task}` : params.task;
+
 		// ── Append acceptance test instructions for coder tasks ──
 		const effectiveTask = (params.specialist === "coder" && params.task)
-		    ? params.task + "\n\n## Acceptance Tests\nAfter implementing, describe acceptance tests (vitest assertions, plain text) that verify your work:\n- Happy path — confirm feature works as expected\n- Edge cases — boundary conditions are handled\n- Regression (if fixing a bug) — fix stays effective\n\nInclude these as plain-text assertions under a ## Acceptance Tests section in your output. Do NOT use the plan() tool.\n"
-		    : params.task;
+		    ? taskWithSeed + "\n\n## Acceptance Tests\nAfter implementing, describe acceptance tests (vitest assertions, plain text) that verify your work:\n- Happy path — confirm feature works as expected\n- Edge cases — boundary conditions are handled\n- Regression (if fixing a bug) — fix stays effective\n\nInclude these as plain-text assertions under a ## Acceptance Tests section in your output. Do NOT use the plan() tool.\n"
+		    : taskWithSeed;
 
 		// ── Run subagent with provider-failure retry OUTSIDE the agent loop ──
 		// A stop-reason-level provider fault (5xx, rate-limit, timeout) is retried by

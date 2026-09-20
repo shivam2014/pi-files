@@ -71,7 +71,7 @@ describe("handleSubagentToolCall", () => {
 			}, true, undefined, state());
 			expect(result).toEqual({
 				block: true,
-				reason: "Call planSteps({ goal, steps }) first before using bash.",
+				reason: "[guard] Framework plan gate: call planSteps({ goal, steps }) before using bash. This notice is a framework prerequisite, not a plan step.",
 			});
 		});
 

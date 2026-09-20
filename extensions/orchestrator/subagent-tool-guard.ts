@@ -40,6 +40,17 @@ function checkBashInterception(
 	return undefined;
 }
 
+/**
+ * gh write block reason. Truthful about tool availability: coder/reviewer/writer
+ * have NO gh tool at all, and where gh exists (scout/researcher) it is
+ * read-only (Allowed: list, view, status; `gh api` disallowed). The old wording
+ * ("Use the dedicated gh tool instead") told callers to use a tool they lack
+ * for a write the tool cannot do. gh writes must route through the orchestrator.
+ */
+function ghWriteBlockReason(command: string): string {
+	return `\u26D4 gh write command blocked. Specialists have no gh write access — the gh tool (available only to scout/researcher) is read-only (list, view, status; gh api disallowed).\nCommand: ${command}\nHint: route the gh write request through the orchestrator instead.`;
+}
+
 export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true, ctx?: { cwd?: string; readOnly?: boolean }, subagentState?: SubagentState) {
 	traceToolCallEntry('handleSubagentToolCall', event, ctx);
 	if (!fusionEnabled && event.toolName === 'fusion') {
@@ -47,7 +58,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 	}
 	if (subagentState && !subagentState.planParsed) {
 		if (!readOnlyTools.has(event.toolName)) {
-			return { block: true, reason: `Call planSteps({ goal, steps }) first before using ${event.toolName}.` };
+			return { block: true, reason: `[guard] Framework plan gate: call planSteps({ goal, steps }) before using ${event.toolName}. This notice is a framework prerequisite, not a plan step.` };
 		}
 	}
 	if (subagentState) {
@@ -67,7 +78,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 			const input = event.input || {};
 			const command = input.command;
 			if (command && command.startsWith('gh ') && isWriteCommand(command)) {
-				return { block: true, reason: `\u26D4 gh write command blocked. Use the dedicated gh tool instead.\nCommand: ${command}\nHint: gh write operations (create, merge, delete, push) are not permitted via bash.` };
+				return { block: true, reason: ghWriteBlockReason(command) };
 			}
 		}
 		// FIX 1 (fail-closed): the scope block ALWAYS runs for subagent tool calls.
@@ -262,7 +273,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 	if (event.toolName === 'bash') {
 		const command = isToolCallEventType('bash', event) ? event.input.command : event.input?.command;
 		if (command && command.startsWith('gh ') && isWriteCommand(command)) {
-			const blockResult = { block: true, reason: `⛔ gh write command blocked. Use the dedicated gh tool instead.\nCommand: ${command}\nHint: gh write operations (create, merge, delete, push) are not permitted via bash.` };
+			const blockResult = { block: true, reason: ghWriteBlockReason(command) };
 			traceDecision('handleSubagentToolCall', event, blockResult);
 			return blockResult;
 		}
