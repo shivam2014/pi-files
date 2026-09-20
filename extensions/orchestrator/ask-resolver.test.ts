@@ -11,6 +11,7 @@ import {
 	tryAnswerFromDocs,
 	buildRecentContext,
 	tryAnswerFromContext,
+	stripQuestionRecords,
 	createAskOrchestratorResolver,
 	UNANSWERED_SENTINEL,
 	resolve, hasLiteralSegment,
@@ -232,6 +233,86 @@ describe("tryAnswerFromContext", () => {
 		const result = tryAnswerFromContext("What is this?", context);
 		expect(result).toBeUndefined();
 	});
+
+	it("exclusion: a question-record line is never quotable as an answer", () => {
+		const corpus = [
+			"assistant: ## Pending Questions",
+			"The subagent had questions that needed orchestrator input:",
+			'  1. question "Requesting investigation — I\'ve hit my exploration budget."',
+		].join("\n");
+
+		const result = tryAnswerFromContext("Requesting investigation — I've hit my exploration budget.", corpus);
+
+		expect(result).toBeUndefined();
+	});
+
+	it("exclusion: strips the pending-questions block but still answers from later real content", () => {
+		const corpus = [
+			"## Pending Questions",
+			"The subagent had questions that needed orchestrator input:",
+			"  1. What is the deployment process?",
+			"  2. [escalation: recommend=investigate] I am stuck on deployment",
+			"## Notes",
+			"deployment process is documented in deploy.md",
+		].join("\n");
+
+		const result = tryAnswerFromContext("What is the deployment process?", corpus);
+
+		expect(result).toContain("deploy.md");
+		expect(result).not.toContain("Pending Questions");
+		expect(result).not.toContain("needed orchestrator input");
+	});
+
+	it("exclusion: a `question: \"…\"` record line does not answer", () => {
+		const result = tryAnswerFromContext(
+			"What is the deployment process?",
+			'question: "What is the deployment process?"',
+		);
+		expect(result).toBeUndefined();
+	});
+});
+
+// ─── stripQuestionRecords ────────────────────────────────────────────────────
+
+describe("stripQuestionRecords", () => {
+	it("removes a `## Pending Questions` block through the next heading", () => {
+		const input = [
+			"## Anything",
+			"keep me",
+			"## Pending Questions",
+			"The subagent had questions that needed orchestrator input:",
+			'  1. question "quoted?"',
+			"  2. [escalation: recommend=plan] I am stuck",
+			"## Later",
+			"keep me too",
+		].join("\n");
+
+		const out = stripQuestionRecords(input);
+		expect(out).toContain("keep me");
+		expect(out).toContain("## Later");
+		expect(out).toContain("keep me too");
+		expect(out).not.toContain("Pending Questions");
+		expect(out).not.toContain("quoted?");
+		expect(out).not.toContain("escalation: recommend");
+	});
+
+	it("removes question-record lines outside any block, keeps normal lines", () => {
+		const input = [
+			'question "Requesting investigation — I\'ve hit my exploration budget."',
+			'  3. question: "another recorded question?"',
+			"real answer line",
+		].join("\n");
+
+		const out = stripQuestionRecords(input);
+		expect(out).not.toContain("Requesting investigation");
+		expect(out).not.toContain("another recorded question?");
+		expect(out).toContain("real answer line");
+	});
+
+	it("returns empty string when every line is a question record", () => {
+		const out = stripQuestionRecords('question "Recorded question about deployment?"');
+		expect(out.trim()).toBe("");
+	});
 });
 
 // ─── createAskOrchestratorResolver ───────────────────────────────────────────
@@ -419,6 +500,45 @@ describe("createAskOrchestratorResolver — no echo, explicit UNANSWERED sentine
 		expect(answer).toBe(`⚠ WORKER ESCALATION (recommend: investigate). The subagent has hit its exploration budget or requested escalation. Orchestrator: escalate the ladder — investigate → spawn scout, plan → call fusion, review → spawn reviewer — do NOT just answer. Original question: ${question}`);
 		expect(buf).toHaveLength(1);
 		expect(buf[0]).toBe(`[escalation: recommend=investigate] ${question}`);
+	});
+
+	it("DEFECT (RED→GREEN): explicit escalation must not be preempted by a matching context line", async () => {
+		const buf: string[] = [];
+		const question = "Requesting investigation — I've hit my exploration budget.";
+		// Observed live: the parent-side context carried a question-record line of this
+		// exact shape (delegation results embed worker output / pending questions verbatim).
+		const recentContext = [
+			"## Pending Questions",
+			"The subagent had questions that needed orchestrator input:",
+			`  1. question "${question}"`,
+		].join("\n");
+		const resolver = createAskOrchestratorResolver({ cwd, recentContext }, buf);
+
+		const answer = await resolver(question);
+
+		// Fault 1: the fuzzy context matcher ran before escalation and answered with
+		// `From the current conversation:\nquestion "…"` — the escalation branch never ran.
+		expect(answer).toContain("⚠ WORKER ESCALATION");
+		// Regression: the escalation string must be returned verbatim, context hit or not.
+		expect(answer).toBe(`⚠ WORKER ESCALATION (recommend: investigate). The subagent has hit its exploration budget or requested escalation. Orchestrator: escalate the ladder — investigate → spawn scout, plan → call fusion, review → spawn reviewer — do NOT just answer. Original question: ${question}`);
+		expect(buf).toHaveLength(1);
+		expect(buf[0]).toBe(`[escalation: recommend=investigate] ${question}`);
+	});
+
+	it("question-as-answer: a recorded question in recentContext cannot be echoed back", async () => {
+		const question = "What is the deployment process?";
+		const recentContext = [
+			"## Pending Questions",
+			"The subagent had questions that needed orchestrator input:",
+			`  1. question "${question}"`,
+		].join("\n");
+		const resolver = createAskOrchestratorResolver({ cwd, recentContext });
+
+		const answer = await resolver(question);
+
+		expect(answer).not.toMatch(/From the current conversation:/);
+		expect(answer).not.toContain(`question "${question}"`);
+		expect(answer).toBe(UNANSWERED_SENTINEL);
 	});
 });
 

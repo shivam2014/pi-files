@@ -7,9 +7,10 @@
  * Resolution order:
  * 1. Files referenced in the question
  * 2. Project docs/ directory
- * 3. Recent ORCHESTRATOR-side conversation context (never the caller's own
+ * 3. Orchestrator escalation — an explicit "I am stuck, escalate" signal must
+ *    not be answerable by a fuzzy context match
+ * 4. Recent ORCHESTRATOR-side conversation context (never the caller's own
  *    supplied `context` — returning the asker's words is an echo, not an answer)
- * 4. Orchestrator escalation
  * 5. Explicit UNANSWERED sentinel (question recorded for the next delegation)
  */
 
@@ -221,9 +222,53 @@ export function buildRecentContext(ctx: any): string {
 }
 
 /**
+ * Remove question records from a parent-side answer corpus.
+ *
+ * The corpus embeds delegation-result text verbatim, including:
+ * - the `## Pending Questions` block appended by delegate-pipeline.ts
+ *   (`  1. <question>` lines, escalation entries tagged
+ *   `[escalation: recommend=...] <question>`), and
+ * - question-record lines of the shape `question "<…>"` / `question: "<…>"`
+ *   (observed live: a previous ask_orchestrator question echoed inside a
+ *   delegation result).
+ *
+ * A recorded question can never be an answer, and the raw context may still be
+ * used for *understanding* (path extraction); only the answer corpus is filtered.
+ */
+export function stripQuestionRecords(context: string): string {
+	if (!context) return context;
+	const kept: string[] = [];
+	let inPendingBlock = false;
+	for (const line of context.split(/\n/)) {
+		const trimmed = line.trim();
+		// A `## Pending Questions` block runs until the next markdown heading.
+		if (/^#{1,6}\s+Pending Questions\b/i.test(trimmed)) {
+			inPendingBlock = true;
+			continue;
+		}
+		if (inPendingBlock) {
+			if (/^#{1,6}\s/.test(trimmed)) {
+				inPendingBlock = false;
+			} else {
+				continue;
+			}
+		}
+		// Question-record lines: `question "…"`, `question: "…"`, numbered variants.
+		if (/^\s*(?:\d+[.)]\s*)?question\s*:?\s*["“][\s\S]*["”]\s*$/i.test(line)) continue;
+		// Escalation-tagged records: `[escalation: recommend=investigate] <question>`.
+		if (/\[escalation:\s*recommend\s*=\s*(?:investigate|plan|review)\]/i.test(line)) continue;
+		kept.push(line);
+	}
+	return kept.join("\n");
+}
+
+/**
  * Try to answer the question from the provided conversation context.
  * Simple keyword/fact matching: look for the context line that shares the most
  * significant words with the question.
+ *
+ * Question records are stripped first (see `stripQuestionRecords`): a recorded
+ * question must never come back as an answer.
  *
  * Callers must pass ORCHESTRATOR-side context only. `createAskOrchestratorResolver`
  * feeds it the parent-side `recentContext`; the asker-supplied `context` is
@@ -233,12 +278,15 @@ export function buildRecentContext(ctx: any): string {
 export function tryAnswerFromContext(question: string, recentContext: string | undefined): string | undefined {
 	if (!recentContext || recentContext.trim().length === 0) return undefined;
 
+	const answerCorpus = stripQuestionRecords(recentContext);
+	if (!answerCorpus.trim()) return undefined;
+
 	const q = question.toLowerCase();
 	const qWords = [...new Set(q.split(/[^a-z0-9]+/))]
 		.filter((w) => w.length > 3 && !CONTEXT_STOP_WORDS.has(w));
 	if (qWords.length < 2) return undefined;
 
-	const lines = recentContext.split(/\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+	const lines = answerCorpus.split(/\n/).map((l) => l.trim()).filter((l) => l.length > 0);
 	let bestLine: string | undefined;
 	let bestScore = 0;
 
@@ -294,8 +342,11 @@ export function detectEscalationSignal(text: string): EscalationRecommend | null
  * Resolution order:
  * 1. Files explicitly referenced in the question/context
  * 2. Project docs/
- * 3. Recent orchestrator conversation context
- * 4. Orchestrator escalation
+ * 3. Orchestrator escalation (explicit "escalate" signal outranks the fuzzy
+ *    context matcher — an explicit escalation must not be preempted by a
+ *    keyword hit)
+ * 4. Recent orchestrator conversation context (question records excluded)
+ * 5. UNANSWERED sentinel
  */
 export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[]): (question: string, context?: string) => Promise<string> {
 	const cwd = ctx?.cwd ?? process.cwd();
@@ -317,16 +368,8 @@ export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[
 		const docAnswer = tryAnswerFromDocs(question, cwd);
 		if (docAnswer) return docAnswer;
 
-		// 3. Answer from the orchestrator-side recent conversation context ONLY.
-		//    The caller-supplied `context` is deliberately NOT searched here: it holds
-		//    the asker's own words, and returning them is an echo, not an answer.
-		//    `context` is still used above (via `combined`) to understand the
-		//    question and resolve file references.
-		const contextAnswer = tryAnswerFromContext(question, recentContext);
-		if (contextAnswer) return contextAnswer;
-
-		// 4. Escalate — surface a worker-initiated escalation as a difficulty signal,
-		//    so the orchestrator escalates the ladder instead of silently buffering it.
+		// 3. Escalate BEFORE the fuzzy context matcher — an explicit worker escalation
+		//    signal must not be answerable by a keyword hit in the parent context.
 		const escalation = detectEscalationSignal(combined);
 		if (escalation) {
 			if (questionBuffer) {
@@ -336,6 +379,15 @@ export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[
 			}
 			return `⚠ WORKER ESCALATION (recommend: ${escalation}). The subagent has hit its exploration budget or requested escalation. Orchestrator: escalate the ladder — investigate → spawn scout, plan → call fusion, review → spawn reviewer — do NOT just answer. Original question: ${question}`;
 		}
+
+		// 4. Answer from the orchestrator-side recent conversation context ONLY.
+		//    The caller-supplied `context` is deliberately NOT searched here: it holds
+		//    the asker's own words, and returning them is an echo, not an answer.
+		//    `context` is still used above (via `combined`) to understand the
+		//    question and resolve file references. Question records (pending-questions
+		//    blocks, `question "…"` lines) are stripped inside tryAnswerFromContext.
+		const contextAnswer = tryAnswerFromContext(question, recentContext);
+		if (contextAnswer) return contextAnswer;
 
 		// 5. No genuine answer exists — record the question (exactly once) and return
 		//    an explicit, non-deceptive sentinel. Never imply the orchestrator
