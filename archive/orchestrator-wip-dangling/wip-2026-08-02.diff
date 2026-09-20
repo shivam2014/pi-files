@@ -1,0 +1,1762 @@
+diff --git a/delegate-controller.test.ts b/delegate-controller.test.ts
+index 47ca6f7..a4cece8 100644
+--- a/delegate-controller.test.ts
++++ b/delegate-controller.test.ts
+@@ -22,6 +22,10 @@ vi.mock("./specialists.ts", () => ({
+     writer: 'Writing',
+   },
+   getSpecialistSkills: (_name: string, override?: string[]) => override !== undefined ? override : [],
++  DELIVERABLE_MARKERS: ["## Completed", "## Findings", "## Files Changed"],
++  isReadOnlySpecialist: (name: string) => (mockSpecialists as any)[name]?.tools?.includes('edit') === false && (mockSpecialists as any)[name]?.tools?.includes('write') === false,
++  canUseBash: (name: string) => (mockSpecialists as any)[name]?.tools?.includes('bash') === true,
++  hasGitTools: (name: string) => false,
+ }));
+ 
+ const mockRunSubagent = vi.hoisted(() => vi.fn());
+diff --git a/delegate-pipeline.ts b/delegate-pipeline.ts
+index d844b12..4c870d2 100644
+--- a/delegate-pipeline.ts
++++ b/delegate-pipeline.ts
+@@ -3,9 +3,9 @@
+  * Inlined from handle-diagnostics.ts and delegate-result-processor.ts.
+  */
+ import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext, BatchDelegationEntry } from "./types.ts";
+-import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills } from "./specialists.ts";
++import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills, DELIVERABLE_MARKERS, isReadOnlySpecialist } from "./specialists.ts";
+ import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
+-import { runSubagent, type OrchestratorUi } from "./subagent-runner.ts";
++import { runSubagent, ERROR_MARKER, ABORT_MARKER, type OrchestratorUi } from "./subagent-runner.ts";
+ import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
+ import { debugLog } from "./debug.ts";
+ import { hidePeek, clearViewerState } from "./peek-overlay.ts";
+@@ -17,6 +17,23 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
+ import os from "os";
+ import { statusIcon, styledSymbol, getTheme } from "./orchestrator-theme.ts";
+ import { getSessionMode, loadOrchestratorConfig } from "./orchestrator-config";
++import { sanitizeOutputForOrchestrator as sanitizeOutputShared } from "./activity-feed.ts";
++
++
++/**
++ * Extract the `## Findings` section from subagent output.
++ * Returns everything from `## Findings` to the next `##` heading or end of string.
++ */
++function extractFindingsText(output: string | undefined): string | undefined {
++	if (!output) return undefined;
++	const idx = output.indexOf('## Findings');
++	if (idx === -1) return undefined;
++	const afterHeading = output.indexOf('\n', idx);
++	if (afterHeading === -1) return output.slice(idx).trim();
++	const nextHeading = output.indexOf('\n## ', afterHeading + 1);
++	if (nextHeading === -1) return output.slice(idx).trim();
++	return output.slice(idx, nextHeading).trim();
++}
+ 
+ /** Result type returned by executeDelegate */
+ export interface ExecuteDelegateResult {
+@@ -40,7 +57,7 @@ export class DelegatePipeline {
+ 	 * @returns Result with content and details
+ 	 */
+ 	async run(
+-		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal; parallel?: boolean },
++		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal; parallel?: boolean; skipStepTracking?: boolean },
+ 		ctx: DelegateControllerContext,
+ 		onUpdate: (update: any) => void,
+ 	): Promise<ExecuteDelegateResult> {
+@@ -70,8 +87,9 @@ export class DelegatePipeline {
+ 			throw new Error(`Unknown specialist: "${params.specialist}". Available: ${available}. Use one of the listed specialist names.`);
+ 		}
+ 
+-		// Read-only specialists (no edit/write tools) don't need strict scope validation
+-		const isReadOnly = !specialist.tools.includes('edit') && !specialist.tools.includes('write');
++		// Read-only specialists (no edit/write tools) don't need strict scope validation.
++		// SSOT (V5): use the registry's declared flag, not a re-derivation from tools.
++		const isReadOnly = isReadOnlySpecialist(specialist.name);
+ 
+ 		// Normalize specialist name for case-insensitive comparison downstream
+ 		params = { ...params, specialist: specialist.name };
+@@ -171,7 +189,9 @@ export class DelegatePipeline {
+ 			debugLog('[delegate-pipeline] auto-created plan:', autoGoal);
+ 		}
+ 
+-		startDelegationStep(stepLabel, ctx);
++		if (!params.skipStepTracking) {
++			startDelegationStep(stepLabel, ctx);
++		}
+ 
+ 		onUpdate?.({
+ 			content: [{ type: "text", text: `${currentFrame()} ${specialist.name}...` }],
+@@ -190,7 +210,10 @@ export class DelegatePipeline {
+ 		incrementDelegationCount(ctx);
+ 
+ 		// ── Metrics tracking ──
+-		const metrics: DelegationMetrics = {
++		// BUG-1: counters were previously fed from update.details.tool, which the
++		// runner never emits — they stayed 0 forever. Metrics now come from the
++		// runner's real tool-call counts (derived from SDK tool events).
++		const EMPTY_METRICS: DelegationMetrics = {
+ 			readCalls: 0,
+ 			grepCalls: 0,
+ 			findCalls: 0,
+@@ -199,18 +222,8 @@ export class DelegatePipeline {
+ 			bashCalls: 0,
+ 			lsCalls: 0,
+ 		};
++		let metrics: DelegationMetrics = { ...EMPTY_METRICS };
+ 		const wrappedOnUpdate = (update: any) => {
+-			if (update.details?.tool) {
+-				switch (update.details.tool) {
+-					case "read": metrics.readCalls++; break;
+-					case "grep": metrics.grepCalls++; break;
+-					case "find": metrics.findCalls++; break;
+-					case "edit": metrics.editCalls++; break;
+-					case "write": metrics.writeCalls++; break;
+-					case "bash": metrics.bashCalls++; break;
+-					case "ls": metrics.lsCalls++; break;
+-				}
+-			}
+ 			onUpdate?.(update);
+ 		};
+ 
+@@ -231,8 +244,13 @@ export class DelegatePipeline {
+ 			onAskOrchestrator: createAskOrchestratorResolver(ctx, pendingQuestions),
+ 		};
+ 
++		// ── Append acceptance test instructions for coder tasks ──
++		const effectiveTask = (params.specialist === "coder" && params.task)
++		    ? params.task + "\n\n## Acceptance Tests\nAfter implementing, describe acceptance tests (vitest assertions, plain text) that verify your work:\n- Happy path — confirm feature works as expected\n- Edge cases — boundary conditions are handled\n- Regression (if fixing a bug) — fix stays effective\n\nInclude these as plain-text assertions under a ## Acceptance Tests section in your output. Do NOT use the plan() tool.\n"
++		    : params.task;
++
+ 		const result = await runSubagent(
+-			specialist, params.task, ctx.cwd,
++			specialist, effectiveTask, ctx.cwd,
+ 			parentCtx,
+ 			effectiveSignal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
+ 			ctx, // orchestratorCtx: thread session context to plan-panel calls
+@@ -251,6 +269,12 @@ export class DelegatePipeline {
+ 			metrics.scopeNotes = result.scopeNotes;
+ 		}
+ 
++		// Real metrics derived from the runner's tool-call trail (BUG-1)
++		metrics = { ...EMPTY_METRICS, ...(result?.metrics ?? {}) };
++		if (result?.scopeNotes) {
++			metrics.scopeNotes = result.scopeNotes;
++		}
++
+ 		const rawSubagentOutput = result?.output;
+ 
+ 		// Dynamic status: subagent completed
+@@ -261,12 +285,33 @@ export class DelegatePipeline {
+ 		} catch {}
+ 
+ 		// ── Check for errors/abort ──
+-		const isAborted = (effectiveSignal?.aborted || false) || (result?.output?.startsWith("[aborted]") ?? false);
+-		let isError = !result || !result.output || result.output.startsWith("[error]") || result.output.startsWith("[aborted]");
+-		if (!isError && result?.stopReason === "error") {
++		// BUG-4: single source of truth — the runner's finalStatus, not output sniffing
++		const isAborted = (effectiveSignal?.aborted || false) || result?.status === "aborted" || (result?.output?.startsWith(ABORT_MARKER) ?? false);
++		let isError = !result || !result.output || result.output.startsWith(ERROR_MARKER) || result.output.startsWith(ABORT_MARKER)
++			|| result?.status === "error" || result?.stopReason === "error";
++		let hasError = isAborted || isError;
++
++		// ── No-work detection for coder/writer ──
++		// BUG-2: heuristic reads REAL metrics + trail, so a coder that did 11 bash
++		// calls (backup cp, curl, tar) is no longer falsely failed for lacking
++		// `## Completed` deliverable markers.
++		const isCodeSpecialist = specialist.name === 'coder' || specialist.name === 'writer';
++		const hasMutatingCalls = metrics.editCalls > 0 || metrics.writeCalls > 0 || metrics.bashCalls > 0;
++		const hasAnyToolCalls = (result?.toolCallTrail?.length ?? 0) > 0;
++		const hasDeliverable = rawSubagentOutput && (
++			DELIVERABLE_MARKERS.some(marker => rawSubagentOutput.includes(marker))
++		);
++		const isNoWork = isCodeSpecialist && !hasMutatingCalls && !hasAnyToolCalls && !hasDeliverable && !hasError;
++
++		if (isNoWork) {
++			hasError = true;
+ 			isError = true;
++			// BUG-4: no-work must carry a real errorMessage so the failure banner is not
++			// "status:unknown — no error message"
++			result.errorMessage = `no-work completion — ${specialist.name} returned ok with zero tool calls and no deliverable.`;
++			result.stopReason = result.stopReason ?? "no-work";
++			result.output = `⚠ ${result.errorMessage} Plan step NOT advanced.`;
+ 		}
+-		const hasError = isAborted || isError;
+ 
+ 		// ── Handle diagnostics (capture + persist, no UI) ──
+ 		const diagnostic = this.handleDiagnostics(result, specialist.name, params.task, ctx, metrics, startTime);
+@@ -302,7 +347,33 @@ export class DelegatePipeline {
+ 			}
+ 		}
+ 
++		// ── Findings salvage: if output is empty/short, check disk ──
++		let salvagedFindings = '';
++		if (!rawSubagentOutput || rawSubagentOutput.trim().length < 50) {
++			try {
++				const fs = await import('node:fs');
++				const path = await import('node:path');
++				const osMod = await import('node:os');
++				const findingsPath = path.join(osMod.tmpdir(), 'orchestrator-debug', `findings-${ctx.sessionId}.md`);
++				if (fs.existsSync(findingsPath)) {
++					salvagedFindings = fs.readFileSync(findingsPath, 'utf-8');
++				}
++			} catch {}
++		}
++
++		// Apply salvaged findings to result.output before formatting
++		if (salvagedFindings) {
++			if (!result?.output || result.output.trim().length < 50) {
++				// Output empty/short — replace entirely with salvaged findings
++				result.output = `⚠ PARTIAL — salvaged from disk\n\n${salvagedFindings}`;
++			} else if (salvagedFindings.length > (result.output.length - (result.output.length - rawSubagentOutput?.length || 0))) {
++				// Output exists but salvaged is longer — append
++				result.output += `\n\n---\n⚠ SALVAGED FINDINGS (additional context from disk)\n\n${salvagedFindings}`;
++			}
++		}
++
+ 		// ── Format result output ──
++		let autoAdvancedStep: string | undefined;
+ 		try {
+ 			if (!hasError && result?.output) {
+ 				// Dynamic status: processing result
+@@ -333,10 +404,12 @@ export class DelegatePipeline {
+ 			}
+ 
+ 			// Mark plan step
+-			if (hasError) {
+-				errorPlanStep(ctx, isAborted, result?.errorMessage);
+-			} else {
+-				finalizePlanStep(ctx);
++			if (!params.skipStepTracking) {
++				if (hasError) {
++					errorPlanStep(ctx, isAborted, result?.errorMessage);
++				} else {
++					autoAdvancedStep = finalizePlanStep(ctx);
++				}
+ 			}
+ 		} finally {
+ 			decrementDelegationCount(ctx);
+@@ -379,7 +452,14 @@ export class DelegatePipeline {
+ 			elapsedMs,
+ 			stopReason: result?.stopReason,
+ 			errorMessage: result?.errorMessage,
+-			partialResults: hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith("[error]") && !rawSubagentOutput.startsWith("[aborted]"),
++			toolCalls: result?.toolCallTrail?.length ?? 0,
++			lastAssistantMessage: result?.lastAssistantMessage ? result.lastAssistantMessage.slice(0, 500) : undefined,
++			planSteps: result?.planSteps,
++			autoCompletedSteps: (result?.planSteps ?? []).filter(p => p.autoCompleted).length,
++			metrics: result?.metrics,
++			partialResults: hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith(ERROR_MARKER) && !rawSubagentOutput.startsWith(ABORT_MARKER),
++			partialMarker: (hasError && !!rawSubagentOutput && !rawSubagentOutput.startsWith(ERROR_MARKER) && !rawSubagentOutput.startsWith(ABORT_MARKER)) ? "⚠ PARTIAL" : undefined,
++			autoAdvancedStep: autoAdvancedStep || undefined,
+ 			// Model info for UI display badge
+ 			model: (() => {
+ 				const m = (ctx as any)?.model;
+@@ -428,8 +508,18 @@ export class DelegatePipeline {
+ 
+ 		for (let i = 0; i < entries.length; i += maxConcurrent) {
+ 			const chunk = entries.slice(i, i + maxConcurrent);
++
++			// PRE-CREATE steps for each batch entry (sequential, not concurrent)
++			const stepIndices: number[] = [];
++			for (const entry of chunk) {
++				const stepLabel = `${entry.specialist}: ${entry.task.substring(0, 60)}`;
++				const idx = startDelegationStep(stepLabel, ctx, { isBatch: true });
++				stepIndices.push(idx);
++			}
++
++			// Run all concurrently, suppressing inner step tracking
+ 			const chunkResults = await Promise.allSettled(
+-				chunk.map(async (entry) => {
++				chunk.map(async (entry, i) => {
+ 					const entryStart = Date.now();
+ 					try {
+ 						const result = await this.run(
+@@ -440,6 +530,7 @@ export class DelegatePipeline {
+ 								scope: entry.scope,
+ 								signal,
+ 								parallel: true,
++								skipStepTracking: true,
+ 							},
+ 							ctx,
+ 							onUpdate,
+@@ -449,6 +540,7 @@ export class DelegatePipeline {
+ 							specialist: entry.specialist,
+ 							success: true,
+ 							output,
++							stepIndex: stepIndices[i],
+ 							elapsed_ms: Date.now() - entryStart,
+ 						};
+ 					} catch (e) {
+@@ -457,23 +549,31 @@ export class DelegatePipeline {
+ 							success: false,
+ 							output: "",
+ 							error: String(e),
++							stepIndex: stepIndices[i],
+ 							elapsed_ms: Date.now() - entryStart,
+ 						};
+ 					}
+ 			})
+ 			);
+ 
+-			for (const r of chunkResults) {
+-				if (r.status === "fulfilled") {
+-					allResults.push(r.value);
++			// Finalize each entry's pre-created step and collect results
++			for (const settled of chunkResults) {
++				if (settled.status === 'fulfilled') {
++					const { stepIndex, ...rest } = settled.value;
++					allResults.push(rest);
++					if (rest.success) {
++						finalizePlanStep(ctx, stepIndex);
++					} else {
++						errorPlanStep(ctx, false, rest.error);
++					}
+ 				} else {
+-					// Promise rejected — shouldn't happen since run() errors are caught, but defensive
+ 					allResults.push({
+-						specialist: "unknown",
++						specialist: 'unknown',
+ 						success: false,
+-						output: "",
+-						error: r.status === "rejected" ? String(r.reason) : "Unknown error",
++						output: '',
++						error: String(settled.reason),
+ 					});
++					errorPlanStep(ctx, false, String(settled.reason));
+ 				}
+ 			}
+ 		}
+@@ -502,8 +602,8 @@ export class DelegatePipeline {
+ 				total: allResults.length,
+ 				succeeded: allResults.filter(r => r.success).length,
+ 				failed: allResults.filter(r => !r.success).length,
+-				totalElapsed_ms: totalElapsed,
+-				maxConcurrent,
++				partialResults: false,
++				partialMarker: undefined,
+ 			},
+ 		};
+ 	}
+@@ -524,10 +624,11 @@ export class DelegatePipeline {
+ 	): SubagentDiagnostic | null {
+ 		if (!isDiagnosticsEnabled()) return null;
+ 
+-		const diagnostic = captureDiagnostic({
++		let diagnostic = captureDiagnostic({
+ 			output: result?.output || '',
+ 			turns: result?.turns || 0,
+ 			toolCallTrail: result?.toolCallTrail || [],
++			blockedCalls: result?.scopeNotes?.blockedTools,
+ 			elapsedMs: Date.now() - startTime,
+ 			specialist: specialistName,
+ 			task,
+@@ -537,8 +638,28 @@ export class DelegatePipeline {
+ 			model: result?.model,
+ 			stopReason: result?.stopReason,
+ 			errorMessage: result?.errorMessage,
++			findingsText: extractFindingsText(result?.output),
+ 		});
+ 
++		// Always capture diagnostic on abort, even if captureDiagnostic returned null
++		if (!diagnostic && result?.output?.startsWith('[aborted]')) {
++			diagnostic = captureDiagnostic({
++				output: result?.output || '',
++				turns: result?.turns || 0,
++				toolCallTrail: [],
++				elapsedMs: Date.now() - startTime,
++				specialist: specialistName,
++				task,
++				sessionId: ctx.sessionId || 'unknown',
++				metrics,
++				agentDir: getAgentDir(),
++				model: result?.model,
++				stopReason: result?.stopReason,
++				errorMessage: result?.errorMessage || 'Aborted by user',
++				findingsText: extractFindingsText(result?.output),
++			});
++		}
++
+ 		if (!diagnostic) return null;
+ 
+ 		debugLog('[diagnostic]', diagnostic.specialist, diagnostic.turns, diagnostic.toolCalls);
+@@ -580,7 +701,9 @@ export class DelegatePipeline {
+ 		if (isAborted || isError) {
+ 			return DelegatePipeline.formatErrorAbort(output, toolCallTrail, turns, isAborted, errorMessage, stopReason);
+ 		}
+-		return DelegatePipeline.formatSuccess(output, metrics, elapsedMs, toolCallTrail, turns);
++		// Output hygiene: strip raw JSON tool-result blocks when report exists
++		const cleaned = DelegatePipeline.sanitizeOutputForOrchestrator(output);
++		return DelegatePipeline.formatSuccess(cleaned, metrics, elapsedMs, toolCallTrail, turns);
+ 	}
+ 
+ 	/**
+@@ -606,7 +729,7 @@ export class DelegatePipeline {
+ 		}
+ 
+ 		// Prepend execution metadata
+-		const execStatus = result?.startsWith("[error]") ? "error" : "ok";
++		const execStatus = result?.startsWith(ERROR_MARKER) ? "error" : "ok";
+ 		const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${turns}, status=${execStatus}]`];
+ 		if (execStatus === "error") {
+ 			execMeta.push(`[Error: ${result.slice(0, 200)}]`);
+@@ -700,6 +823,14 @@ export class DelegatePipeline {
+ 		};
+ 	}
+ 
++	/**
++	 * Output hygiene: when a structured report exists in the output, strip raw
++	 * JSON tool-result blocks and `[tool result]` markers that burn context tokens.
++	 * When no report exists, leave output as-is (already diagnostic/salvaged).
++	 */
++	static sanitizeOutputForOrchestrator(output: string): string {
++		return sanitizeOutputShared(output);
++	}
+ 
+ }
+ 
+@@ -742,7 +873,7 @@ export function formatResult(params: FormatResultParams): {
+ 		statusLine = `${statusIcon('error')} Error (${turns} ${turns === 1 ? 'turn' : 'turns'}, ${toolCalls} ${toolCalls === 1 ? 'tool call' : 'tool calls'})`;
+ 	}
+ 
+-	const metricsLine = `[Metrics: read=${metrics.readCalls}, grep=${metrics.grepCalls}, find=${metrics.findCalls}, edit=${metrics.editCalls}, write=${metrics.writeCalls}, bash=${metrics.bashCalls}, ls=${metrics.lsCalls}]`;
++	const metricsLine = formatMetricsLine(metrics);
+ 
+ 	let trailStr = '';
+ 	if (toolCallTrail && toolCallTrail.length > 0) {
+@@ -774,3 +905,7 @@ export function formatResult(params: FormatResultParams): {
+ 
+ 	return { formatted, findings, audit };
+ }
++
++export function sanitizeOutputForOrchestrator(output: string) {
++	return sanitizeOutputShared(output);
++}
+diff --git a/delegate-tool.ts b/delegate-tool.ts
+index ab18a9c..36ecfeb 100644
+--- a/delegate-tool.ts
++++ b/delegate-tool.ts
+@@ -113,6 +113,10 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
+ 			const details = result.details as any;
+ 			const text = result?.content?.[0]?.type === "text" ? result.content[0].text : "";
+ 
++		// Dedup: skip if content text unchanged since last render
++		if (text && text === state.lastRenderedText && isPartial) return context.lastComponent ?? new Text("", 0, 0);
++		if (text) state.lastRenderedText = text;
++
+ 			if (isPartial && !state.interval) {
+ 					context.invalidate(); // first paint so spinner shows before ✓
+ 					state.interval = setInterval(() => {
+@@ -137,7 +141,6 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
+ 				: "";
+ 			const prefix = name
+ 				? theme.fg("toolTitle", theme.bold(`delegate ${name}`)) +
+-				  (task ? theme.fg("dim", `: ${task}`) : "") +
+ 				  modelBadge
+ 				: "";
+ 
+@@ -148,7 +151,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
+ 					: statusIcon("running") + " working...";
+ 				const inTokens = details?.tokenInput ? `↑${formatTokens(details.tokenInput)}` : "";
+ 				const outTokens = details?.tokenOutput ? `↓${formatTokens(details.tokenOutput)}` : "";
+-				const cacheTokens = details?.tokenCached ? `◎${formatTokens(details.tokenCached)}` : "";
++				const cacheTokens = details?.tokenCached ? `⇄${formatTokens(details.tokenCached)}` : "";
+ 				const liveTokens = [inTokens, outTokens, cacheTokens].filter(Boolean).join(" ");
+ 				const liveElapsed = details?.elapsedMs ? formatDuration(details.elapsedMs) : (details?.elapsed ? formatDuration(details.elapsed) : "");
+ 				const liveSuffix = [liveTokens, liveElapsed].filter(Boolean).join(" ");
+@@ -158,7 +161,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
+ 				// Build suffix with token and elapsed info
+ 				const tokenParts: string[] = [];
+ 				if (details?.tokenUsage?.input) tokenParts.push(`↑${formatTokens(details.tokenUsage.input)}`);
+-				if (details?.tokenUsage?.cached) tokenParts.push(`◎${formatTokens(details.tokenUsage.cached)}`);
++				if (details?.tokenUsage?.cached) tokenParts.push(`⇄${formatTokens(details.tokenUsage.cached)}`);
+ 				if (details?.tokenUsage?.output) tokenParts.push(`↓${formatTokens(details.tokenUsage.output)}`);
+ 				const elapsed = details?.elapsedMs ? formatDuration(details.elapsedMs) : "";
+ 				const suffix = [...tokenParts, elapsed].filter(Boolean).join(" ");
+diff --git a/loop-engine.ts b/loop-engine.ts
+index b300f21..684d531 100644
+--- a/loop-engine.ts
++++ b/loop-engine.ts
+@@ -98,6 +98,17 @@ export function classifyTrajectory(
+     const firstVal = history[0];
+     const lastVal = history[history.length - 1];
+ 
++    // STALLING: last 3 values within 5% of each other and not near target
++    {
++      const max3 = Math.max(...last3);
++      const min3 = Math.min(...last3);
++      const mean3 = (max3 + min3) / 2;
++      const rangePct = mean3 === 0 ? Math.abs(max3 - min3) : Math.abs(max3 - min3) / Math.abs(mean3);
++      if (rangePct <= 0.05 && !isNearTarget(last3[last3.length - 1], target)) {
++        return 'STALLING';
++      }
++    }
++
+     // CONVERGING: last 2 values improve toward target, or within 5% of target
+     const secondLast = history[history.length - 2];
+     const improving =
+@@ -118,6 +129,17 @@ export function classifyTrajectory(
+     const firstVal = history[0];
+     const secondLast = history[history.length - 2];
+ 
++    // STALLING: last 3 values within 5% of each other
++    {
++      const max3 = Math.max(...last3);
++      const min3 = Math.min(...last3);
++      const mean3 = (max3 + min3) / 2;
++      const rangePct = mean3 === 0 ? Math.abs(max3 - min3) : Math.abs(max3 - min3) / Math.abs(mean3);
++      if (rangePct <= 0.05) {
++        return 'STALLING';
++      }
++    }
++
+     const improving =
+       direction === 'higher-better'
+         ? lastVal > secondLast
+@@ -132,15 +154,6 @@ export function classifyTrajectory(
+     if (worsening) return 'DIVERGING';
+   }
+ 
+-  // STALLING: last 3 values within 2% of each other
+-  const max3 = Math.max(...last3);
+-  const min3 = Math.min(...last3);
+-  const mean3 = (max3 + min3) / 2;
+-  const rangePct = mean3 === 0 ? Math.abs(max3 - min3) : Math.abs(max3 - min3) / Math.abs(mean3);
+-  if (rangePct <= 0.02 && !isNearTarget(last3[last3.length - 1], target)) {
+-    return 'STALLING';
+-  }
+-
+   return 'CONVERGING'; // optimistic default
+ }
+ 
+diff --git a/prompt-builder.test.ts b/prompt-builder.test.ts
+index 131c4c6..aa73898 100644
+--- a/prompt-builder.test.ts
++++ b/prompt-builder.test.ts
+@@ -2,20 +2,45 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
+ 
+ // ── Mock specialists module ──────────────────────────────────────────────
+ vi.mock('./specialists', () => ({
+-	listSpecialists: vi.fn(() => ['scout', 'coder']),
++	listSpecialists: vi.fn(() => ['scout', 'coder', 'reviewer', 'researcher', 'writer']),
+ 	SPECIALISTS: {
+ 		scout: {
+ 			name: 'scout',
+-			description: 'Read-only investigator',
++			description: 'Read-only investigator.',
+ 			tools: ['read', 'grep', 'find'],
++			routingLabel: 'Investigate codebase / find files',
++			suggestedSkills: ['diagnosing-bugs'],
+ 		},
+ 		coder: {
+ 			name: 'coder',
+-			description: 'Implementation specialist',
++			description: 'Implementation specialist.',
+ 			tools: ['read', 'edit', 'write'],
++			routingLabel: 'Implement features / fix bugs',
++			suggestedSkills: ['implement', 'tdd'],
++		},
++		reviewer: {
++			name: 'reviewer',
++			description: 'Read-only code reviewer with bash access.',
++			tools: ['read', 'bash', 'grep'],
++			routingLabel: 'Review code changes / run bash diagnostics',
++			suggestedSkills: ['code-review'],
++		},
++		researcher: {
++			name: 'researcher',
++			description: 'Read-only research specialist with web search.',
++			tools: ['read', 'web_search', 'grep'],
++			routingLabel: 'Research docs / web',
++			suggestedSkills: ['domain-modeling'],
++		},
++		writer: {
++			name: 'writer',
++			description: 'Documentation specialist with read/write access.',
++			tools: ['read', 'write', 'edit'],
++			routingLabel: 'Create/edit docs',
++			suggestedSkills: ['agents-md-writer'],
+ 		},
+ 	},
+-	TERSE_INSTRUCTION: '\n\nRespond with completeness but without verbosity (caveman). All technical substance stay. Only fluff die.\n\n## Auto-Clarity\nDrop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.\n',
++	COMMUNICATION_INSTRUCTION: '\n\nRespond with completeness but without verbosity (caveman). All technical substance stay. Only fluff die.\n\n## Auto-Clarity\nDrop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.\n',
+ }));
+ 
+ import { buildOrchestratorPrompt } from './prompt-builder';
+@@ -136,7 +161,7 @@ describe("appendix slimming (#39)", () => {
+ 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
+ 		// The appended part should be reasonable (< 7500 chars — includes routing table + caveman instruction + orchestrator intro)
+ 		const appendix = systemPrompt.replace(basePrompt, "").trim();
+-		expect(appendix.length).toBeLessThan(13000);
++		expect(appendix.length).toBeLessThan(13500);
+ 	});
+ });
+ describe("clarification deduplication (#40)", () => {
+@@ -177,7 +202,7 @@ describe("routing table (#43)", () => {
+ 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt: "base", fusionEnabled: false });
+ 		expect(systemPrompt).toContain("diagnosing-bugs");
+ 		expect(systemPrompt).toContain("agents-md-writer");
+-		expect(systemPrompt).toContain("review");
++		expect(systemPrompt).toContain("code-review");
+ 	});
+ });
+ 
+diff --git a/prompt-builder.ts b/prompt-builder.ts
+index 2c306e3..b16dbad 100644
+--- a/prompt-builder.ts
++++ b/prompt-builder.ts
+@@ -6,29 +6,19 @@
+  * fusion section, and delegation-specific instructions for orchestrator mode.
+  */
+ 
+-import { listSpecialists, SPECIALISTS, TERSE_INSTRUCTION } from "./specialists.ts";
++import { listSpecialists, SPECIALISTS, COMMUNICATION_INSTRUCTION } from "./specialists.ts";
+ import { generateScopeDocumentation } from "./scope-manager.ts";
+ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+ import { getReadmePath, getDocsPath, getExamplesPath } from "@earendil-works/pi-coding-agent";
+ 
+-const ROUTING_TABLE = `
+-### Task Routing
+-| Task type | Specialist | Default skills |
+-|-----------|------------|----------------|
+-| Investigate codebase / find files | scout | diagnosing-bugs |
+-| Implement feature / fix bug | coder | implement, tdd |
+-| Review code / diff / run bash diagnostics | reviewer | review |
+-| Research docs / web | researcher | domain-modeling |
+-| Create/edit docs | writer | agents-md-writer |
+-`;
+-
+ /**
+  * Generate tool documentation table dynamically from pi SDK tool registry.
+- * Filters to orchestrator-level tools only (plan, delegate, read_skill, fusion).
++ * Filters to orchestrator-level tools only (plan, delegate, read_skill, fusion, interactive_shell).
++ * Adds hardcoded entries for tools not in the SDK registry.
+  */
+ function generateToolDocumentation(pi: ExtensionAPI): string {
+ 	const allTools = pi.getAllTools();
+-	const orchestratorToolNames = ["plan", "delegate", "read_skill", "fusion"];
++	const orchestratorToolNames = ["plan", "delegate", "read_skill", "fusion", "interactive_shell"];
+ 	const tools = allTools.filter((t: any) => orchestratorToolNames.includes(t.name));
+ 
+ 	const toolRows = tools.map((t: any) => {
+@@ -38,18 +28,26 @@ function generateToolDocumentation(pi: ExtensionAPI): string {
+ 		return `| \`${t.name}\` | \`${t.name}(${params})\` | ${t.description} |`;
+ 	}).join("\n");
+ 
++	// Hardcoded entries for tools not in SDK registry
++	const hardcodedTools = [
++		{ name: "interactive_shell", syntax: "interactive_shell(query, images?)", description: "Route questions with optional base64 images through configured vision model. Also launches interactive CLI coding agents (Claude Code, Cursor CLI, Gemini CLI, Codex) via overlay. Use for image analysis, diagrams, screenshots, and delegating to interactive TUI agents." },
++	];
++	const missingHardcoded = hardcodedTools.filter(ht => !tools.some((t: any) => t.name === ht.name));
++	const hardcodedRows = missingHardcoded.map(ht =>
++		`| \`${ht.name}\` | \`${ht.syntax}\` | ${ht.description} |`
++	).join("\n");
++
+ 	return `
+ ### Tools
+ 
+ | Tool | Syntax | Output |
+ |------|--------|--------|
+-${toolRows}
++${toolRows}${hardcodedRows ? "\n" + hardcodedRows : ""}
+ `;
+ }
+ 
+ /**
+  * Generate routing table dynamically from SPECIALISTS dict.
+- * Falls back to ROUTING_TABLE constant when SPECIALISTS is unavailable.
+  */
+ function generateRoutingFromSpecialists(): string {
+ 	const specialists = listSpecialists();
+@@ -57,7 +55,7 @@ function generateRoutingFromSpecialists(): string {
+ 		const spec = SPECIALISTS[name];
+ 		const skills = spec.suggestedSkills?.length
+ 			? spec.suggestedSkills.join(", ")
+-			: "—";
++			: "\u2014";
+ 		const taskType = spec.routingLabel || spec.description?.split('.')[0] || name;
+ 		return `| ${taskType} | ${name} | ${skills} |`;
+ 	}).join("\n");
+@@ -70,9 +68,20 @@ ${rows}
+ `;
+ }
+ 
+-const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error — defined as: destructive operations (rm, schema migrations, auth changes), touching >5 files, or architectural decisions that are hard to reverse\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n\nNote: If some panel models fail, fusion returns partial results with a "### Failed" section. Check for this and adjust trust accordingly.\n`;
++const FUSION_INSTRUCTION = `### Fusion Tool\nAfter scout/researcher return findings, call:\nfusion({ context: findings, task: "create execution plan", draft_plan: "your preliminary plan" })\nfor multi-model advice. The panel (2-3 different models) critiques your plan, a judge identifies contradictions and blind spots. Use this before delegating to coder for complex, high-stakes decisions.\n\nWhen to use fusion:\n- After gathering research findings, before writing the final plan\n- When the plan has high cost of error \u2014 defined as: destructive operations (rm, schema migrations, auth changes), touching >5 files, or architectural decisions that are hard to reverse\n- When you need multiple perspectives on architectural decisions\n\nWhen to skip fusion:\n- Simple, tactical tasks with clear solutions\n- After delegation results that are straightforward\n\nNote: If some panel models fail, fusion returns partial results with a "### Failed" section. Check for this and adjust trust accordingly.\n`;
+ 
+ const DELEGATION_INSTRUCTIONS_TEMPLATE = `
++## Session-Start Protocol
++
++When this session starts, BEFORE responding to the user:
++1. Read docs/MASTER-PLAN.md (use the read tool)
++2. Find the first unchecked ticket (\`- [ ]\`) that has no blocked dependencies
++3. Declare a plan using plan() with that ticket's goal and steps
++4. Begin delegating the first step
++
++If no unchecked tickets remain, inform the user all tickets are complete.
++If the user provides a specific task, follow their instruction instead of the master plan.
++
+ ## Capabilities
+ | Tool | Purpose |
+ |------|---------|
+@@ -86,7 +95,6 @@ const DELEGATION_INSTRUCTIONS_TEMPLATE = `
+ | list_skills | List available skills |
+ | list_tools | List available tools |
+ 
+-
+ ### Workflow:
+ 1. FIRST: Call plan(goal, steps) to declare the overall plan. The goal is a one-line summary. Step items MUST be one-line descriptions (5-10 words each). Full task specs go in delegate() task parameter. Examples:
+    plan("Fix login bug", ["diagnose", "implement fix", "test"])
+@@ -94,116 +102,64 @@ const DELEGATION_INSTRUCTIONS_TEMPLATE = `
+    plan("Write API docs", ["read source", "draft", "review"])
+ 
+ Step input format:
+-- String: "do something" → step label. Orchestrator decides at runtime whether to delegate() or handle it as an orchestrator task.
+-- Object: { label, kind, ... } → structured step with explicit kind
+-  - kind: "delegation" → forces delegate() call
+-  - kind: "orchestrator" → forces self-owned task (analysis, synthesis, decision)
+-  - kind: "loop_until" → repeats until criterion met (requires loopUntil config)
+-
+-Example (loop — for iterative tasks with checkable criteria):
+-  plan("Fix all lint errors", [{
+-    label: "Fix until clean",
+-    kind: "loop_until",
+-    loopUntil: {
+-      criterion: "Zero lint errors",
+-      evaluator: "reviewer",
+-      maxIterations: 5,
+-      mode: "satisficing",
+-      satisficingPasses: 1,
+-      iterationTemplate: { specialist: "coder", task: "Fix lint errors" }
+-    }
+-  }])
+-
+-Example (mixed — single steps + loop):
+-  plan("Resolve all issues", [
+-    "Read all open issues",
+-    { label: "Fix each issue", kind: "loop_until", loopUntil: { ... } },
+-    "Summarize results"
+-  ])
+-
+-Loop vs single-pass — confirm ALL THREE before using loop_until:
+-- Criterion is checkable by an evaluator (not subjective like "looks good")
+-- Endpoint is NOT known upfront (if you know the exact file, single-pass)
+-- Iterations produce measurably different output (not just shuffling)
+-
+-DON'T use loop for:
+-- Single deliverables ("write the README", "add a logout button")
+-- Known endpoints ("fix bug in auth.ts line 42")
+-- Subjective completion ("make it look good", "clean up the docs")
+-
+-If uncertain whether to use loop_until, ask the user:
+-"This looks like it might need iteration. Want me to loop until the criterion is met, or do a single pass?"
+-The user can also explicitly request a loop: "keep fixing until clean"
+-
+-2. SECOND: For each step, execute it — either by delegating or doing orchestrator work.
++- String: "do something" \u2192 step label. Orchestrator decides at runtime whether to delegate() or handle it as an orchestrator task.
++- Object: { label, kind, ... } \u2192 structured step with explicit kind
++  - kind: "delegation" \u2192 forces delegate() call
++  - kind: "orchestrator" \u2192 forces self-owned task (analysis, synthesis, decision)
++  - kind: "loop_until" \u2192 repeats until criterion met. Load "loop-until" skill for full syntax, behavior docs, and examples.
++
++2. SECOND: For each step, execute it \u2014 either by delegating or doing orchestrator work.
+ 
+ Plan-step rules:
+ - Each step = ONE action: a single delegate() call, OR an orchestrator task (analysis, synthesis, decision, writing).
+-- Exception: a loop_until step is ONE plan step that internally executes multiple delegate/evaluate cycles. Do not decompose a loop into multiple plan steps — the loop mechanism owns the iteration lifecycle.
+ - If multiple tasks go to the SAME specialist in ONE delegation, consolidate them into ONE step. Don't over-split.
+ - If tasks go to DIFFERENT specialists, or mix delegation + orchestrator work, they MUST be separate steps.
+-- Never declare steps you intend to batch into one delegation — that orphans the unused steps.
++- Never declare steps you intend to batch into one delegation \u2014 that orphans the unused steps.
+ - modify_step: update label/kind. remove_step: delete step.
+ 
+-Loop step behavior:
+-- loop_until steps execute internally — the plan panel runs iterations automatically. You do NOT manually delegate for each iteration.
+-- The loop handles: iteration counting, evaluation, feedback, stopping.
+-- After each iteration, the loop updates the rolling summary (visible in plan panel) and checks the criterion.
+-- If criterion met → loop completes, step marked done.
+-- If maxIterations exhausts → loop surfaces last evaluation to you with a ⚠️ message. You decide: escalate to user, refine criteria, or add follow-up steps.
+-- If oscillation detected (2 consecutive iterations with net-zero progress) → loop exits early with diagnostic.
+-
+-Loop output — when a loop step returns:
+-- If satisfied: read the final iteration's output and proceed.
+-- If exhausted: output contains per-iteration delta. If net progress was made, consider plan_add_steps([follow-up loop]). If no progress, report ⚠️ to user.
+-
+ Adding steps mid-workflow:
+ - If a delegation reveals new work, call plan_add_steps({ steps: ['new step 1', 'new step 2'] }) to append steps to the current plan.
+-- plan_add_steps is idempotent — duplicate step labels are automatically skipped.
++- plan_add_steps is idempotent \u2014 duplicate step labels are automatically skipped.
+ - Use this instead of creating a new plan when the current plan is still relevant.
+ 
+ Examples:
+   plan("Fix auth bug", ["Diagnose root cause", "Analyze findings", "Implement fix", "Review fix"])
+-    → step 1: delegate("scout", ...), step 2: orchestrator analyzes, step 3: delegate("coder", ...), step 4: delegate("reviewer", ...)
++    \u2192 step 1: delegate("scout", ...), step 2: orchestrator analyzes, step 3: delegate("coder", ...), step 4: delegate("reviewer", ...)
+   plan("Sync and commit", ["Sync files to repo"])
+-    → 1 step: delegate("coder", "copy, stage, commit, push") — all work to one specialist
++    \u2192 1 step: delegate("coder", "copy, stage, commit, push") \u2014 all work to one specialist
+ 
+ 3. THIRD: Synthesize results.
+ 
+-After a loop step completes:
+-- If satisfied: proceed with next step.
+-- If exhausted with progress: consider follow-up loop with refined criterion.
+-- If exhausted without progress: report ⚠️ to user with diagnostic.
+-
+ delegate() auto-creates a minimal plan if none exists, but calling plan() first gives better structure and multi-step visibility.
+ 
+ ### Step Advancement (dual path):
+ Plan steps advance differently depending on their kind:
+ 
+ - **Delegation steps** (kind="delegation" or string steps delegated via delegate()): The delegate() pipeline automatically advances the step after the specialist completes. Do NOT call advance_plan_step() for these.
+-- **Orchestrator steps** (kind="orchestrator"): You own these — analysis, synthesis, decision, writing. When you finish the work, call advance_plan_step() to mark the step complete and activate the next pending step. Without this call, the plan stalls.
+-- **Loop steps** (kind="loop_until"): The loop mechanism manages the entire iteration lifecycle — counting iterations, evaluating, feeding back, and stopping. The loop auto-advances the plan step when the criterion is met or maxIterations is exhausted. Do NOT call advance_plan_step() for loop steps.
++- **Orchestrator steps** (kind="orchestrator"): You own these \u2014 analysis, synthesis, decision, writing. When you finish the work, call advance_plan_step() to mark the step complete and activate the next pending step. Without this call, the plan stalls.
++- **Loop steps** (kind="loop_until"): Managed entirely by the loop mechanism. Do NOT call advance_plan_step() for loop steps.
+ 
+ Summary: only call advance_plan_step() for orchestrator-owned steps.
+ 
+ {{FUSION}}
+ 
+ ### Scope requirement:
+-When calling delegate(coder|writer, ...), include \`scope\`: { filesToModify, filesToCreate, directories, maxFiles, maxLinesPerFile, changeType, boundaries, requiresApprovalBeyondScope }.
++When calling delegate(coder|writer, ...), include a \`scope\` object matching this shape:
++{{SCOPE_SHAPE}}
+ Get scope from scout's or researcher's \`## Scope\` output. Reuse cached scope across delegations for the same task.
+ Writers: default to doc-friendly scope (only mentioned docs, minimal edits, preserve structure).
+ 
+-Include ALL file paths the specialist will touch — not just repo files. If the task involves writing to /tmp, temp directories, or any non-repo path, include those paths in filesToModify or filesToCreate. Scope is a safety net, not a repo-only filter.
++Include ALL file paths the specialist will touch \u2014 not just repo files. If the task involves writing to /tmp, temp directories, or any non-repo path, include those paths in filesToModify or filesToCreate. Scope is a safety net, not a repo-only filter.
+ 
+ ### Routing bash diagnostics:
+-- Read-only bash diagnostics (curl, lsof, cat, run CLIs, check ports) → use **reviewer** (has bash + auto-defaulted read-only scope)
+-- Code modification tasks (fix, implement, create, edit, write) → use **coder** (requires explicit scope)
+-- Do NOT send read-only diagnostic tasks to coder — it will fail with "scope required" even though no files are modified
++- Read-only bash diagnostics (curl, lsof, cat, run CLIs, check ports) \u2192 use **reviewer** (has bash + auto-defaulted read-only scope)
++- Code modification tasks (fix, implement, create, edit, write) \u2192 use **coder** (requires explicit scope)
++- Do NOT send read-only diagnostic tasks to coder \u2014 it will fail with "scope required" even though no files are modified
+ 
+ You decide next step AFTER seeing previous result. NOT before.
+ 
+ ### Specialist roster:
+-When delegating, CHECK each specialist's ⚠ CANNOT field against task requirements.
++When delegating, CHECK each specialist's \u26a0 CANNOT field against task requirements.
+ A task needing a tool a specialist CANNOT use will fail at runtime.
+ 
+ ## Delegation Mode: {{DELEGATION_MODE}}
+@@ -229,16 +185,16 @@ After each delegation returns:
+ 
+ Can: add steps mid-workflow, skip unnecessary steps, re-order based on findings.
+ 
+-Loop steps manage their own iteration cycle. Do not try to advance or recalibrate a running loop step — it handles evaluation and feedback internally. After a loop completes, assess its output during recalibration like any other delegation result.
++Loop steps manage their own iteration cycle. Do not try to advance or recalibrate a running loop step \u2014 it handles evaluation and feedback internally. After a loop completes, assess its output during recalibration like any other delegation result.
+ 
+ # Execution Monitoring
+ 
+ Each delegation returns [Execution: elapsed=Xs, turns=Y, status=ok|error] at top.
+ 
+ Use this to decide:
+-- status=error: read error, decide — retry with modified task, change approach, or escalate to user
++- status=error: read error, decide \u2014 retry with modified task, change approach, or escalate to user
+ - elapsed > 120s: subagent may be stuck. Consider aborting and retrying simpler
+-- turns=1: subagent did one turn — check if completed or stuck early
++- turns=1: subagent did one turn \u2014 check if completed or stuck early
+ - turns > 10: subagent may be looping. Review output carefully
+ 
+ No automatic retries. Each retry uses modified task based on what failed.
+@@ -247,8 +203,8 @@ No automatic retries. Each retry uses modified task based on what failed.
+ 
+ When a delegation returns with status=error in details:
+ 
+-1. **Stop and assess** — do NOT silently continue with partial results
+-2. **Check the error banner**: \`⚠ DELEGATION FAILED — status:... — ...\`
++1. **Stop and assess** \u2014 do NOT silently continue with partial results
++2. **Check the error banner**: \`⚠ DELEGATION FAILED \u2014 status:... \u2014 ...\`
+ 3. **Categorize the error**:
+    - **Model error** (stopReason=error): subagent's model failed. Re-delegate with simpler task or different specialist.
+    - **Aborted** (status=aborted): subagent was interrupted. User or timeout. Check if partial results exist and whether they're useful.
+@@ -275,7 +231,7 @@ STOP, fix reported issues, then proceed. Do not continue until resolved.
+ 
+ After each delegation returns, check for **\`\`## Issues\`\`** (under \`\`## Findings\`\`) and **scopeNotes** in the delegation result details.
+ 
+-Every problem must be surfaced to the user — even if the subagent found a workaround:
++Every problem must be surfaced to the user \u2014 even if the subagent found a workaround:
+ 
+ - **problems found in Issues or Audit?** Report as a dedicated message:
+   \`\`\`
+@@ -314,11 +270,11 @@ export function buildOrchestratorPrompt(options: {
+ 
+ 	// Build new intro replacing pi's hardcoded "You are an expert coding assistant..."
+ 	const ORCHESTRATOR_INTRO = `You are an orchestrator. Delegate only.
+-Available tools: plan(), plan_add_steps(), insert_step(), delegate(), fusion(), read_skill(), list_skills, list_tools, vision_query.
++Available tools: plan(), plan_add_steps(), insert_step(), delegate(), fusion(), read_skill(), list_skills, list_tools, vision_query, interactive_shell.
+ Use fusion() for multi-model advice before high-cost decisions.
+-You do NOT have read/bash/grep/find/edit/write for code — use delegate() to access those via specialists.
++You do NOT have read/bash/grep/find/edit/write for code \u2014 use delegate() to access those via specialists.
+ 
+-Pi SDK docs (for reference — delegate to specialists who can read these):
++Pi SDK docs (for reference \u2014 delegate to specialists who can read these):
+ - Main: ${getReadmePath()}
+ - Docs: ${getDocsPath()}
+ - Examples: ${getExamplesPath()}`;
+@@ -331,13 +287,13 @@ Pi SDK docs (for reference — delegate to specialists who can read these):
+ 	if (oldIntroPattern.test(basePrompt)) {
+ 		baseWithNewIntro = basePrompt.replace(oldIntroPattern, ORCHESTRATOR_INTRO + "\n\n");
+ 	} else if (basePrompt.includes(OLD_INTRO_MARKER)) {
+-		// Pattern failed but marker exists — try simpler replacement (start to first blank line after docs)
++		// Pattern failed but marker exists \u2014 try simpler replacement (start to first blank line after docs)
+ 		const simplePattern = new RegExp(`[\\s\\S]*?${OLD_INTRO_MARKER}[\\s\\S]*?\\n\\n`, "m");
+ 		baseWithNewIntro = simplePattern.test(basePrompt)
+ 			? basePrompt.replace(simplePattern, ORCHESTRATOR_INTRO + "\n\n")
+ 			: basePrompt; // fallback: don't double-intro
+ 	} else {
+-		// No old intro at all — prepend orchestrator intro so the model knows its role
++		// No old intro at all \u2014 prepend orchestrator intro so the model knows its role
+ 		baseWithNewIntro = basePrompt
+ 			? basePrompt
+ 			: ORCHESTRATOR_INTRO;
+@@ -351,9 +307,9 @@ Pi SDK docs (for reference — delegate to specialists who can read these):
+ 		const tools = spec.tools.join(", ");
+ 		const missing = allTools.filter(t => !spec.tools.includes(t));
+ 		const gapLine = missing.length > 0
+-			? `\n    ⚠ CANNOT: ${missing.join(", ")}`
++			? `\n    \u26a0 CANNOT: ${missing.join(", ")}`
+ 			: "";
+-		return `  - **${name}** — ${desc}\n    tools: ${tools}${gapLine}`;
++		return `  - **${name}** \u2014 ${desc}\n    tools: ${tools}${gapLine}`;
+ 	}).join("\n\n");
+ 
+ 	// Build skills summary
+@@ -368,10 +324,8 @@ Pi SDK docs (for reference — delegate to specialists who can read these):
+ 		? generateToolDocumentation(options.pi)
+ 		: "";
+ 
+-	// Dynamic routing: use SPECIALISTS dict when available, ROUTING_TABLE as fallback for tests
+-	const routingSection = options.pi
+-		? generateRoutingFromSpecialists()
+-		: ROUTING_TABLE;
++	// Dynamic routing: always use SPECIALISTS dict
++	const routingSection = generateRoutingFromSpecialists();
+ 
+ 	// Build mode section
+ 	const modeSection = mode === "parallel"
+@@ -388,9 +342,9 @@ Pi SDK docs (for reference — delegate to specialists who can read these):
+ 		.replace("{{DELEGATION_MODE}}", modeSection);
+ 
+ 	// Token measurement: added ~500 chars (tool docs, scope shape), removed ~2300 chars
+-	// (TERSE_INSTRUCTION trimmed from ~700 to ~280 × 5 specialists, bash sections removed).
++	// (COMMUNICATION_INSTRUCTION trimmed from ~700 to ~280 x 5 specialists, bash sections removed).
+ 	// Net: approximately -1800 chars (token-negative).
+ 	return {
+-		systemPrompt: baseWithNewIntro + "\n\n" + instructions + toolsSection + TERSE_INSTRUCTION,
++		systemPrompt: baseWithNewIntro + "\n\n" + instructions + toolsSection + COMMUNICATION_INSTRUCTION,
+ 	};
+ }
+diff --git a/subagent-runner.ts b/subagent-runner.ts
+index 5f01308..64f17c4 100644
+--- a/subagent-runner.ts
++++ b/subagent-runner.ts
+@@ -23,10 +23,10 @@ import { join } from "path";
+ 
+ import { subagentSessions } from "./subagent-sessions.ts";
+ import { shortenLabel } from "../token-saver.ts";
+-import type { Specialist, SubagentContext, Substep, DelegateControllerContext } from "./types.ts";
++import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics } from "./types.ts";
+ import { resolveSpecialistModel, DEFAULTS } from "./orchestrator-config.ts";
+ import type { Scope } from "./scope-manager.ts";
+-import { buildSkillSection } from "./specialists.ts";
++import { buildSkillSection, canUseBash, hasGitTools } from "./specialists.ts";
+ import {
+ 	ActivityFeed,
+ 	toolCallToSubstep,
+@@ -34,18 +34,68 @@ import {
+ 	renderSubstepLines,
+ 	appendWebSearchResults,
+ 	compressOutput,
++	sanitizeOutputForOrchestrator,
++	CLARIFIED_PREFIX,
+ } from "./activity-feed.ts";
+-import { statusIcon } from "./orchestrator-theme.ts";
++import { statusIcon, formatTokens } from "./orchestrator-theme.ts";
+ 
+ import { currentFrame, SPINNER_INTERVAL_MS, resetSpinner } from "./spinner-state.ts";
+ 
+ import { updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
+ 
+ import { debugLog } from "./debug.ts";
+-import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearViewerState, pushStreamingText } from "./peek-overlay.ts";
++import { LoopWatchdog, pushPhase, popPhase, resetPhaseTracker } from "./loop-watchdog.ts";
++import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearViewerState, pushStreamingText, setViewerTokens } from "./peek-overlay.ts";
+ import { gitReadTool, ghTool } from "./scout-tools.ts";
+ import { createReadSkillTool } from "./read-skill-tool.ts";
+ 
++/**
++ * Timer-based progress emission coalescer.
++ *
++ * Instead of checking Date.now() - lastEmit >= threshold (which still emits
++ * immediately when threshold has passed), this uses a deferred emission model:
++ * 1. When any event wants to emit progress, call schedule()
++ * 2. If a timer is already armed, do nothing (pending emit will include this update)
++ * 3. If no timer armed, schedule one for coalesceMs ahead
++ * 4. When timer fires: call the actual emit function, clear the timer
++ * 5. Naturally batches bursts: 9 calls in 10ms -> 1 emission 150ms later
++ */
++class ProgressScheduler {
++	private timer: ReturnType<typeof setTimeout> | null = null;
++	private readonly coalesceMs: number;
++	private readonly emit: () => void;
++
++	constructor(emit: () => void, coalesceMs: number = 150) {
++		this.emit = emit;
++		this.coalesceMs = coalesceMs;
++	}
++
++	schedule(): void {
++		if (this.timer !== null) return; // Already armed - pending emit will cover this
++		this.timer = setTimeout(() => {
++			this.timer = null;
++			this.emit();
++		}, this.coalesceMs);
++	}
++
++	/** Force an immediate emission, canceling any pending timer. */
++	flush(): void {
++		if (this.timer !== null) {
++			clearTimeout(this.timer);
++			this.timer = null;
++		}
++		this.emit();
++	}
++
++	/** Cancel any pending timer without emitting. */
++	dispose(): void {
++		if (this.timer !== null) {
++			clearTimeout(this.timer);
++			this.timer = null;
++		}
++	}
++}
++
+ /** Optional orchestrator UI for dynamic status messages */
+ export interface OrchestratorUi {
+ 	setWorkingMessage: (msg?: string) => void;
+@@ -56,6 +106,14 @@ export interface OrchestratorUi {
+ /** @deprecated Use SubagentRunner.SUBAGENT_ENV_KEY internally. Kept for backward-compat. */
+ export const SUBAGENT_ENV_KEY = "PI_ORCHESTRATOR_SUBAGENT";
+ 
++/**
++ * Output-prefix markers for subagent terminal states (SSOT: V6).
++ * Produced here in subagent-runner, sniffed in delegate-pipeline — shared
++ * so the protocol can't drift.
++ */
++export const ERROR_MARKER = "[error]";
++export const ABORT_MARKER = "[aborted]";
++
+ /**
+  * Resolve skill names to existing SKILL.md paths under agentDir.
+  * Filters out skills whose SKILL.md doesn't exist on disk.
+@@ -120,8 +178,14 @@ export function truncateSubagentOutput(output: string, cap = OUTPUT_CAP): string
+ 	return cleanHead + "\n\n" + markerText + tailBlock;
+ }
+ 
+-
+-
++/**
++ * Determine whether a subagent that stopped early should be nudged to continue.
++ * Returns true only when the stop is non-error, steps remain incomplete,
++ * and we haven't already nudged this session.
++ */
++export function shouldNudge(lastStopReason: string, stepsIncomplete: boolean, alreadyNudged: boolean): boolean {
++	return lastStopReason === "stop" && stepsIncomplete && !alreadyNudged;
++}
+ 
+ /**
+  * Build the flight recorder dump object for post-hoc debugging.
+@@ -140,6 +204,13 @@ export function createFlightRecorderDump(params: FlightRecorderDumpParams): Reco
+ 		finalStatus: params.finalStatus,
+ 		messages: params.messages,
+ 		scope: params.scope,
++		toolCallTrail: params.toolCallTrail ?? [],
++		blockedCalls: params.blockedCalls ?? [],
++		planSteps: params.planSteps ?? [],
++		metrics: params.metrics ?? {},
++		tokenSummary: params.tokenSummary ?? { totalInput: 0, totalOutput: 0, totalCached: 0, cacheWrite: 0, ctxTokensFinal: 0 },
++		systemPrompt: params.systemPrompt,
++		activityFeed: params.activityFeed,
+ 	};
+ }
+ 
+@@ -179,7 +250,7 @@ export function createAskOrchestratorTool(
+ 			const answer = await resolve(params.question, params.context);
+ 			const answerPreview = answer.slice(0, 80);
+ 
+-			feed.completeActiveSubstepWithLabel(`Clarified: ${answerPreview}`, answerPreview, false, true);
++			feed.completeActiveSubstepWithLabel(`${CLARIFIED_PREFIX} ${answerPreview}`, answerPreview, false, true);
+ 			const text = feed.render(specialistName);
+ 			onUpdate?.({
+ 				content: [{ type: "text", text }],
+@@ -233,6 +304,7 @@ export interface SubagentRunnerConfig {
+ 	agentDir: string;
+ 	signal?: AbortSignal;
+ 	onUpdate?: (update: any) => void;
++	metrics?: Record<string, number>;
+ 	agentSessionFactory?: (options: {
+ 		cwd: string;
+ 		model: any;
+@@ -252,9 +324,23 @@ export type SubagentResult = {
+ 	toolCallTrail?: { tool: string; outputPreview?: string; completed: boolean }[];
+ 	stopReason?: string;
+ 	errorMessage?: string;
++	/** Single source of truth for terminal state (BUG-4). */
++	status?: 'completed' | 'error' | 'aborted';
++	/** Real per-tool call counts derived from tool_execution_start events (BUG-1). */
++	metrics?: DelegationMetrics;
++	/** Plan steps with genuine vs auto-closed completion flags (reporting gap). */
++	planSteps?: Array<{ label: string; completed: boolean; autoCompleted: boolean; durationMs: number }>;
++	/** Text of the last assistant message, trimmed to 500 chars (reporting gap). */
++	lastAssistantMessage?: string;
++	/**
++	 * Real tool-call count — prefers the SDK's AgentSession.getSessionStats()
++	 * (counts toolCall blocks in assistant messages); falls back to trail length.
++	 */
++	toolCalls?: number;
+ 	model?: string;
+ 	scopeNotes?: import('./types.ts').ScopeNotes;
+ 	tokenUsage?: { input: number; output: number; cached: number };
++	hasLintFailures?: boolean;
+ };
+ 
+ /** Parameters for createFlightRecorderDump */
+@@ -270,6 +356,13 @@ export interface FlightRecorderDumpParams {
+ 	finalStatus: string;
+ 	messages: any[];
+ 	scope?: Scope;
++	systemPrompt?: string;
++	activityFeed?: any;
++	toolCallTrail?: Array<{ tool: string; label: string; input: any; output: string; isError: boolean; durationMs: number }>;
++	blockedCalls?: Array<{ tool: string; target: string; reason: string; timestamp: number }>;
++	planSteps?: Array<{ label: string; durationMs: number; completed: boolean }>;
++	metrics?: Record<string, number>;
++	tokenSummary?: { totalInput: number; totalOutput: number; totalCached: number; cacheWrite: number; ctxTokensFinal: number };
+ }
+ 
+ /**
+@@ -347,7 +440,7 @@ export class SubagentRunner {
+ 			}
+ 
+ 			if (!model) {
+-				return { output: "[error] No model available for subagent. Check API key configuration.", turns: 0 };
++				return { output: "[error] No model available for subagent. Check API key configuration.", turns: 0, status: "error" as const };
+ 			}
+ 
+ 			// Resolve model info for onUpdate metadata
+@@ -394,6 +487,10 @@ export class SubagentRunner {
+ 						if (suggestedSkills && suggestedSkills.length > 0) {
+ 							prompt += buildSkillSection(specialist.name, suggestedSkills);
+ 						}
++						// Replace {sessionId} placeholder with actual session ID
++						if (sessionId) {
++							prompt = prompt.replace(/\{sessionId\}/g, sessionId);
++						}
+ 						return prompt;
+ 					},
+ 					noContextFiles: true,
+@@ -402,9 +499,7 @@ export class SubagentRunner {
+ 			} finally {
+ 			}
+ 
+-			const excludeTools = (specialist.name === "writer" || specialist.name === "researcher" || specialist.name === "scout")
+-				? ["bash"]
+-				: undefined;
++			const excludeTools = canUseBash(specialist.name) ? undefined : ["bash"];
+ 
+ 			let output = "";
+ 			let turns = 0;
+@@ -455,7 +550,7 @@ export class SubagentRunner {
+ 				label: "Advance Step",
+ 				description: "Mark the current step as complete and advance to the next step. Call this after each step finishes.",
+ 				parameters: Type.Object({}),
+-				execute: async (_toolCallId: string, _params: Record<string, never>) => {
++				execute: async (_toolCallId: string, _params: Record<string, never>): Promise<{ content: { type: "text"; text: string }[]; details: { nextStep?: string; totalSteps?: number; allComplete?: boolean; status?: string } }> => {
+ 					if (!feed.planParsed) {
+ 						return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
+ 					}
+@@ -526,7 +621,7 @@ export class SubagentRunner {
+ 					reportFindingTool,
+ 					askOrchestratorTool,
+ 					createReadSkillTool(),
+-					...(["scout", "researcher"].includes(specialist.name) ? [gitReadTool, ghTool] : []),
++					...((hasGitTools(specialist.name) ? [gitReadTool, ghTool] : []) as any[]),
+ 				],
+ 				excludeTools,
+ 				resourceLoader: loader!,
+@@ -546,44 +641,80 @@ export class SubagentRunner {
+ 			signal?.addEventListener("abort", () => peekAbort.abort(), { once: true });
+ 			peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
+ 
++			let hasLintFailures = false;
+ 			let lastStopReason: string | undefined;
+ 			let lastErrorMessage: string | undefined;
+-			let accInput = 0, accOutput = 0, accCached = 0;
++			let lastAssistantMessage: string | undefined;
++			// Real per-tool call counts fed by tool_execution_start events (BUG-1)
++			const toolCallCounts: Record<string, number> = {};
++			let accInput = 0, accOutput = 0, accCached = 0, accCacheWrite = 0;
++			let ctxTokens = 0;
++			let ctxWindow: number | undefined;
++			const PROGRESS_COALESCE_MS = 150;
++
++			// Timer-based progress coalescer — batches rapid emissions into one per window
++			const progressScheduler = new ProgressScheduler(() => {
++				const elapsed = Date.now() - startTime;
++				feed.feedState = { ...feed.feedState, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, ctxWindow };
++				const text = feed.render(specialist.name);
++				config.onUpdate?.({
++					content: [{ type: "text", text }],
++					details: { specialist: specialist.name, status: "running", turns, model: modelLabel, provider, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, ctxTokens, ctxWindow, elapsedMs: elapsed },
++				});
++				setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
++			}, PROGRESS_COALESCE_MS);
++
++			const watchdog = new LoopWatchdog({
++				onStall: (info) => { debugLog("[watchdog] loop-blocked:", info); },
++			});
++			resetPhaseTracker();
+ 
+ 			const unsubscribe = session.subscribe((event: any) => {
+ 				if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+-					output += event.assistantMessageEvent.delta;
+-					const snapshot = JSON.stringify(feed.inspectState());
+-					if (snapshot !== _lastFeedSnapshot) {
+-						_lastFeedSnapshot = snapshot;
+-						resetSpinner();
+-						updatePlanStepDetail(feed.goal || "", orchestratorCtx);
+-						recordTimelineFrame("step_started", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
++					pushPhase("message_update");
++					try {
++						output += event.assistantMessageEvent.delta;
++						const snapshot = JSON.stringify(feed.inspectState());
++						if (snapshot !== _lastFeedSnapshot) {
++							_lastFeedSnapshot = snapshot;
++							resetSpinner();
++							updatePlanStepDetail(feed.goal || "", orchestratorCtx);
++							recordTimelineFrame("step_started", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
++						}
++						pushStreamingText(event.assistantMessageEvent.delta);
++						progressScheduler.schedule();
++					} finally {
++						popPhase();
+ 					}
+-					pushStreamingText(event.assistantMessageEvent.delta);
+-					const textDelta = feed.render(specialist.name);
+-					config.onUpdate?.({
+-						content: [{ type: "text", text: textDelta }],
+-						details: { status: "running", streaming: true, model: modelLabel, provider },
+-					});
+ 				}
+ 
+ 				if (event.type === "message_end") {
++					pushPhase("message_end");
++					try {
+ 					if (event.message?.role === "assistant") {
+ 						turns++;
+-						// Check maxTurns budget — abort if exceeded
+-						const maxTurns = DEFAULTS.delegation.maxTurns ?? 30;
+-						if (turns >= maxTurns) {
+-							session.abort();
+-						}
+ 						const assistantMsg = event.message as any;
+ 						lastStopReason = assistantMsg.stopReason;
+ 						lastErrorMessage = assistantMsg.errorMessage;
+-						const text = feed.render(specialist.name);
+-						config.onUpdate?.({
+-							content: [{ type: "text", text }],
+-							details: { specialist: specialist.name, status: "running", turns, model: modelLabel, provider },
+-						});
++						// Capture last assistant text (reporting gap: terminal state visibility)
++						if (Array.isArray(assistantMsg.content)) {
++							const text = assistantMsg.content
++								.filter((b: any) => b.type === "text" && typeof b.text === "string")
++								.map((b: any) => b.text)
++								.join("");
++							if (text) lastAssistantMessage = text.slice(0, 500);
++						}
++						// C1: Accumulate per-turn token usage
++						const usage = (event.message as any).usage;
++						if (usage) {
++							accInput += usage.input || 0;
++							accOutput += usage.output || 0;
++							accCached += usage.cacheRead || 0;
++							accCacheWrite += usage.cacheWrite || 0;
++							ctxTokens = usage.totalTokens || (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
++							if (!ctxWindow && model?.contextWindow) ctxWindow = model.contextWindow;
++							progressScheduler.schedule();
++						}
+ 					}
+ 
+ 					const lintMsg = (event as any).message;
+@@ -601,10 +732,16 @@ export class SubagentRunner {
+ 							details: { specialist: specialist.name, status: "lint", model: modelLabel, provider, ...(lintMsg.details ?? {}) },
+ 						});
+ 					}
++					} finally {
++						popPhase();
++					}
+ 				}
+ 
+ 				if (event.type === "tool_execution_start") {
+-					if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") return;
++					pushPhase("tool_start:" + event.toolName);
++					try {
++						if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") return;
++					toolCallCounts[event.toolName] = (toolCallCounts[event.toolName] ?? 0) + 1;
+ 					const substepLabel = toolCallToSubstep(event.toolName, event.args);
+ 					feed.addSubstep(substepLabel, event.toolCallId);
+ 					const extraDetail = substepToolDetail(event.toolName, event.args);
+@@ -618,14 +755,15 @@ export class SubagentRunner {
+ 					} else {
+ 						updatePlanStepDetail(substepLabel, orchestratorCtx);
+ 					}
+-					const text = feed.render(specialist.name);
+-					config.onUpdate?.({
+-						content: [{ type: "text", text }],
+-						details: { specialist: specialist.name, status: "running", tool: event.toolName, model: modelLabel, provider },
+-					});
++					progressScheduler.schedule();
++					} finally {
++						popPhase();
++					}
+ 				}
+ 
+ 				if (event.type === "tool_execution_update") {
++					pushPhase("tool_update");
++					try {
+ 					try {
+ 						if (event.partialResult && feed.steps.length > 0) {
+ 							const activeStep = feed.steps[feed.currentStep];
+@@ -639,15 +777,19 @@ export class SubagentRunner {
+ 									if (newActiveStep) {
+ 										updatePlanStepDetail(renderSubstepLines(newActiveStep.substeps), orchestratorCtx);
+ 									}
+-									const text = feed.render(specialist.name);
+-									config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", tool: event.toolName, model: modelLabel, provider } })
++									progressScheduler.schedule();
+ 								}
+ 							}
+ 						}
+ 					} catch (e) { debugLog("[subagent] update failed:", e); }
++					} finally {
++						popPhase();
++					}
+ 				}
+ 
+ 				if (event.type === "tool_execution_end") {
++					pushPhase("tool_end:" + event.toolName);
++					try {
+ 					if (event.toolName === "planSteps" || event.toolName === "advanceStep" || event.toolName === "reportFinding") {
+ 						const text = feed.render(specialist.name);
+ 						config.onUpdate?.({ content: [{ type: "text", text }], details: { specialist: specialist.name, status: "running", model: modelLabel, provider } });
+@@ -707,63 +849,49 @@ export class SubagentRunner {
+ 					if (activeStep && activeStep.substeps.length > 0) {
+ 						updatePlanStepDetail(renderSubstepLines(activeStep.substeps), orchestratorCtx);
+ 					}
+-					const text = feed.render(specialist.name);
+-					config.onUpdate?.({
+-						content: [{ type: "text", text }],
+-						details: { specialist: specialist.name, status: "running", model: modelLabel, provider },
+-					});
++					progressScheduler.schedule();
++					} finally {
++						popPhase();
++					}
+ 				}
+ 
+-				// Track token usage from agent_end/done events (TokenUsage has inputTokens/outputTokens/cachedTokens)
+-				if ((event.type === "agent_end" || event.type === "done") && event.usage) {
+-					const u = event.usage;
+-					accInput = u.inputTokens || 0;
+-					accOutput = u.outputTokens || 0;
+-					accCached = u.cachedTokens || 0;
++				// agent_end has no event.usage — message_end already accumulated usage;
++				// here we just refresh ctxTokens from the last assistant message.
++				if (event.type === "agent_end" && event.messages) {
++					pushPhase("agent_end");
++					try {
++					const messages = event.messages as any[];
++					for (let i = messages.length - 1; i >= 0; i--) {
++						if (messages[i].role === "assistant" && messages[i].usage) {
++							const u = messages[i].usage;
++							ctxTokens = (u.totalTokens || ((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0))) || ctxTokens;
++							break;
++						}
++					}
+ 					const total = accInput + accOutput + accCached;
+-					updatePlanStepDetail(`tokens: ↑${accInput} ↓${accOutput} ◎${accCached}`, orchestratorCtx);
+-					config.onUpdate?.({
+-						content: [{ type: "text", text: feed.render(specialist.name) }],
+-						details: { specialist: specialist.name, status: "running", tokens: total, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, elapsedMs: Date.now() - startTime, model: modelLabel, provider },
+-					});
++					const cachePart = accCached > 0 ? ` \u21C4${formatTokens(accCached)}` : "";
++					updatePlanStepDetail([`tokens: \u2191${formatTokens(accInput)}${cachePart} \u2193${formatTokens(accOutput)}`], orchestratorCtx);
++					setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
++					progressScheduler.schedule();
++					} finally {
++						popPhase();
++					}
+ 				}
+ 
+ 				if (event.type === "turn_end") {
++					pushPhase("turn_end");
++					try {
+ 					// No-op: turn_end handler kept for future use
++					} finally {
++						popPhase();
++					}
+ 				}
+ 			});
+ 
+-			// Periodic re-render timer
+-			let renderTimer: ReturnType<typeof setInterval> | null = null;
++			// Periodic elapsed-time timer (1s) — uses flush for forced immediate emission
+ 			let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+-			let _lastRenderText: string | null = null;
+-			let _lastFrame: string = "";
+-
+-			const startRenderTimer = () => {
+-				renderTimer = setInterval(() => {
+-					if (feed.steps.length > 0 || output.length > 0) {
+-						const text = feed.render(specialist.name);
+-						const frame = currentFrame();
+-						if (frame !== _lastFrame || text !== _lastRenderText) {
+-							_lastRenderText = text;
+-							_lastFrame = frame;
+-							config.onUpdate?.({
+-								content: [{ type: "text", text }],
+-								details: { specialist: specialist.name, status: "running", model: modelLabel, provider },
+-							});
+-						}
+-					}
+-				}, SPINNER_INTERVAL_MS);
+-			};
+-			startRenderTimer();
+-
+-			// Periodic elapsed-time timer (1s)
+ 			elapsedTimer = setInterval(() => {
+-				const elapsed = Date.now() - startTime;
+-				config.onUpdate?.({
+-					content: [{ type: "text", text: feed.render(specialist.name) }],
+-					details: { specialist: specialist.name, status: "running", elapsedMs: elapsed, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, model: modelLabel, provider },
+-				});
++				progressScheduler.flush();
+ 			}, 1000);
+ 
+ 			// Abort handler
+@@ -775,6 +903,9 @@ export class SubagentRunner {
+ 
+ 			let finalStatus = "completed";
+ 
++			let nudged = false;
++
++			watchdog.start();
+ 			try {
+ 				await session.prompt(task);
+ 
+@@ -789,6 +920,11 @@ export class SubagentRunner {
+ 						details: { specialist: specialist.name, status: "error", error: errorMsg, model: modelLabel, provider },
+ 					});
+ 				} else {
++					const stepsIncomplete = feed.planParsed && feed.currentStep < feed.steps.length;
++					if (shouldNudge(lastStopReason ?? "", stepsIncomplete, nudged)) {
++						nudged = true;
++						await session.prompt("You stopped before completing the task. Continue: finish all remaining steps, then report the final result.");
++					}
+ 					finalStatus = "completed";
+ 				}
+ 			} catch (error) {
+@@ -803,29 +939,104 @@ export class SubagentRunner {
+ 				config.onUpdate?.({content: [{ type: "text", text: errorText }],
+ 					details: { specialist: specialist.name, status: isAborted ? "aborted" : "error", error: errorMsg, model: modelLabel, provider },
+ 				});
+-				output = isAborted
+-					? `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`
+-					: `[error] ${errorMsg}`;
++				const prevOutput = output;
++				if (isAborted) {
++					const marker = `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`;
++					output = marker + (prevOutput ? "\n\n--- Partial output before abort: ---\n\n" + prevOutput : "");
++				} else {
++					const marker = `[error] ${errorMsg}`;
++					output = marker + (prevOutput ? "\n\n--- Partial output before error: ---\n\n" + prevOutput : "");
++				}
+ 			} finally {
++				watchdog.stop();
+ 				unsubscribe();
+-				if (renderTimer) {
+-					clearInterval(renderTimer);
+-					renderTimer = null;
+-				}
++				progressScheduler.dispose();
+ 				if (elapsedTimer) {
+ 					clearInterval(elapsedTimer);
+ 					elapsedTimer = null;
+ 				}
+ 				delete process.env[SubagentRunner.SUBAGENT_ENV_KEY];
+-				_lastRenderText = null;
+ 				if (signal) signal.removeEventListener("abort", abortHandler);
+ 
+-				// ── Flight Recorder: dump full session conversation for post-hoc debugging ──
++				// Auto-complete remaining steps BEFORE the flight-recorder snapshot so the
++				// dump reflects the final rendered state (BUG-3). Steps closed here are
++				// flagged autoCompleted so the UI can distinguish them from steps the
++				// subagent genuinely advanced (reporting gap).
++				if (finalStatus !== "error" && finalStatus !== "aborted") {
++					while (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
++						feed.completeCurrentStep(true);
++					}
++				}
++
++				// -- Flight Recorder: dump full session conversation for post-hoc debugging --
+ 				try {
+ 					const debugDir = '/tmp/orchestrator-debug';
+ 					try { mkdirSync(debugDir, { recursive: true }); } catch {}
+ 					const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+ 					const filename = `delegation-${timestamp}-${specialist.name}.json`;
++					const toolCallTrailDump: Array<{ tool: string; label: string; input: any; output: string; isError: boolean; durationMs: number }> = [];
++					const messages = session.messages as any[];
++					if (messages && messages.length > 0) {
++						// Collect toolCall blocks from assistant messages
++						const toolCallsById = new Map<string, { id: string; name: string; arguments: any }>();
++						for (const msg of messages) {
++							if (msg.role === "assistant" && Array.isArray(msg.content)) {
++								for (const block of msg.content) {
++									if (block.type === "toolCall") {
++										toolCallsById.set(block.id, { id: block.id, name: block.name, arguments: block.arguments });
++									}
++								}
++							}
++						}
++						// Match each toolCall with its toolResult
++						for (const msg of messages) {
++							if (msg.role === "tool" && msg.toolCallId) {
++								const tc = toolCallsById.get(msg.toolCallId);
++								if (!tc) continue;
++								const isError = msg.isError === true;
++								const outputParts: string[] = [];
++								if (Array.isArray(msg.content)) {
++									for (const part of msg.content) {
++										if (part.type === "text" && typeof part.text === "string") outputParts.push(part.text);
++									}
++								}
++								let output = outputParts.join("");
++								if (output.length > 50000) output = output.slice(0, 49950) + "\n...[truncated at 50KB]";
++								const label = toolCallToSubstep(tc.name, tc.arguments);
++								let durationMs = 0;
++								for (const step of feed.steps) {
++									for (const sub of step.substeps) {
++										if ((sub as any).toolCallId === msg.toolCallId && sub.endTime && sub.startTime) {
++											durationMs = sub.endTime - sub.startTime;
++										}
++									}
++								}
++								toolCallTrailDump.push({
++									tool: tc.name,
++									label,
++									input: tc.arguments,
++									output,
++									isError,
++									durationMs,
++								});
++							}
++						}
++					}
++					if (toolCallTrailDump.length === 0) {
++						// Fallback: build from feed.steps with truncated values
++						for (const step of feed.steps) {
++							for (const sub of step.substeps) {
++								toolCallTrailDump.push({
++									tool: sub.label,
++									label: sub.label,
++									input: sub.label.slice(0, 100),
++									output: (sub.outputPreview ?? "").slice(0, 100),
++									isError: sub.errored ?? false,
++									durationMs: (sub.endTime ?? 0) - (sub.startTime ?? 0),
++								});
++							}
++						}
++					}
+ 					const dump = createFlightRecorderDump({
+ 						specialist: specialist.name,
+ 						task,
+@@ -838,6 +1049,26 @@ export class SubagentRunner {
+ 						finalStatus,
+ 						messages: session.messages,
+ 						scope,
++						toolCallTrail: toolCallTrailDump,
++						blockedCalls: subagentSessions.get(sessionId!)?.blockedCalls ?? [],
++						planSteps: feed.steps.map(s => ({
++							label: s.label,
++							durationMs: (s.endTime ?? Date.now()) - (s.startTime ?? Date.now()),
++							completed: s.completed,
++							autoCompleted: s.autoCompleted ?? false,
++						})),
++						metrics: {
++							readCalls: toolCallCounts.read ?? 0,
++							grepCalls: toolCallCounts.grep ?? 0,
++							findCalls: toolCallCounts.find ?? 0,
++							editCalls: toolCallCounts.edit ?? 0,
++							writeCalls: toolCallCounts.write ?? 0,
++							bashCalls: toolCallCounts.bash ?? 0,
++							lsCalls: toolCallCounts.ls ?? 0,
++						},
++						tokenSummary: { totalInput: accInput, totalOutput: accOutput, totalCached: accCached, cacheWrite: accCacheWrite, ctxTokensFinal: ctxTokens },
++						systemPrompt: specialist.systemPrompt,
++						activityFeed: { ...feed.feedState },
+ 					});
+ 					writeFileSync(join(debugDir, filename), JSON.stringify(dump, null, 2));
+ 				} catch (e) {
+@@ -848,17 +1079,17 @@ export class SubagentRunner {
+ 				clearViewerState();
+ 			}
+ 
+-			if (finalStatus !== "error" && finalStatus !== "aborted") {
+-				while (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
+-					feed.completeCurrentStep();
+-				}
+-			}
+-
++			// Flush any pending coalesced progress before sending final status
++			progressScheduler.flush();
++			// Freeze tokens so they persist in the final render
++			feed.feedState = { ...feed.feedState, tokensFrozen: true };
+ 			const finalText = feed.render(specialist.name);
+-			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached } });
++			config.onUpdate?.({ content: [{ type: "text", text: finalText }], details: { specialist: specialist.name, status: finalStatus, model: modelLabel, provider, elapsed: Date.now() - startTime, tokens: accInput + accOutput + accCached, tokenInput: accInput, tokenOutput: accOutput, tokenCached: accCached, tokenCacheWrite: accCacheWrite } });
++			setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
+ 			recordTimelineFrame("step_finalized", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
+ 
+-			const finalOutput = truncateSubagentOutput(compressOutput(output || "(no output)"), OUTPUT_CAP);
++			const cleaned = sanitizeOutputForOrchestrator(compressOutput(output || "(no output)"));
++			const finalOutput = truncateSubagentOutput(cleaned, OUTPUT_CAP);
+ 
+ 			setViewerOutput(output);
+ 
+@@ -885,7 +1116,7 @@ export class SubagentRunner {
+ 					scopeNotes = {
+ 						blockedTools,
+ 						assessment,
+-						summary: `${blockedTools.length} tool call(s) blocked — ${blockedTools.map(b => `${b.tool}(${b.target})`).join(', ')}`,
++						summary: `${blockedTools.length} tool call(s) blocked \u2014 ${blockedTools.map(b => `${b.tool}(${b.target})`).join(', ')}`,
+ 					};
+ 				}
+ 			}
+@@ -897,9 +1128,28 @@ export class SubagentRunner {
+ 				toolCallTrail,
+ 				stopReason: lastStopReason,
+ 				errorMessage: lastErrorMessage,
++				status: finalStatus as 'completed' | 'error' | 'aborted',
++				metrics: {
++					readCalls: toolCallCounts.read ?? 0,
++					grepCalls: toolCallCounts.grep ?? 0,
++					findCalls: toolCallCounts.find ?? 0,
++					editCalls: toolCallCounts.edit ?? 0,
++					writeCalls: toolCallCounts.write ?? 0,
++					bashCalls: toolCallCounts.bash ?? 0,
++					lsCalls: toolCallCounts.ls ?? 0,
++				},
++				planSteps: feed.steps.map(s => ({
++					label: s.label,
++					completed: s.completed,
++					autoCompleted: s.autoCompleted ?? false,
++					durationMs: (s.endTime ?? Date.now()) - (s.startTime ?? Date.now()),
++				})),
++				lastAssistantMessage,
++				toolCalls: (session as any).getSessionStats?.().toolCalls ?? toolCallTrail.length,
+ 				model: (model as any)?.id ?? (model as any)?.model ?? undefined,
+ 				scopeNotes,
+ 				tokenUsage: { input: accInput, output: accOutput, cached: accCached },
++				hasLintFailures,
+ 			};
+ 		} catch (error) {
+ 			const msg = error instanceof Error ? error.message : String(error);
+@@ -907,6 +1157,7 @@ export class SubagentRunner {
+ 			return {
+ 				output: `[error] Subagent init failed: ${msg}${stack ? "\n" + stack.split("\n").slice(0, 5).join("\n") : ""}`,
+ 				turns: 0,
++				status: "error" as const,
+ 			};
+ 		} finally {
+ 			subagentSessions.delete(sessionId!);
+diff --git a/types.ts b/types.ts
+index ecf2f67..8bb0a5e 100644
+--- a/types.ts
++++ b/types.ts
+@@ -63,6 +63,8 @@ export interface ActivityFeedState {
+ 	tokenOutput?: number;
+ 	/** Latest turn's cacheRead tokens (per-turn, not cumulative) */
+ 	tokenCached?: number;
++	/** Accumulated cache write tokens */
++	tokenCacheWrite?: number;
+ 	/** Current context token count */
+ 	ctxTokens?: number;
+ 	/** Context window size */
+@@ -118,14 +120,14 @@ export interface LoopUntilConfig {
+ 	evaluator: string;
+ 	/** Hard cap on iterations (default: 10) */
+ 	maxIterations: number;
+-	/** Token budget for entire loop (optional) */
+-	maxTokens?: number;
+ 	/** Evaluation mode (default: 'satisficing') */
+ 	mode: 'single-pass' | 'satisficing';
+ 	/** Consecutive passes required in satisficing mode (default: 2) */
+ 	satisficingPasses: number;
+ 	/** Optional metric config for automated quality evaluation */
+ 	metric?: MetricConfig;
++	/** Token budget for the entire loop (stops when exhausted) */
++	tokenBudget?: number;
+ 	/** Consecutive stall classifications before stopping (default: 2) */
+ 	patience?: number;
+ 	/** The delegation spec to run each iteration */
+@@ -148,6 +150,10 @@ export interface LoopUntilState {
+ 	bestIteration?: number;
+ 	/** Best score achieved */
+ 	bestMetricValue?: number;
++	/** Tokens used by operational (worker) delegations */
++	operationalTokens?: number;
++	/** Tokens used by evaluator delegations */
++	evaluationTokens?: number;
+ }
+ 
+ /** Record of a single loop iteration */
+@@ -314,6 +320,14 @@ export interface DelegateControllerContext {
+ 	};
+ }
+ 
++/**
++ * All diagnostic kinds (SSOT: V7).
++ * SubagentDiagnostic.kind derives from this; producers must use the const
++ * so adding a kind is a single-file change.
++ */
++export const DIAGNOSTIC_KINDS = ['silent_failure', 'crash', 'tool_errors', 'blocked_calls'] as const;
++export type DiagnosticKind = typeof DIAGNOSTIC_KINDS[number];
++
+ /** Diagnostic metrics for a subagent session (issue #68) */
+ export interface SubagentDiagnostic {
+ 	schemaVersion: number;
+@@ -326,17 +340,8 @@ export interface SubagentDiagnostic {
+ 	elapsedMs: number;
+ 	crashed: boolean;
+ 	outputPreview: string;
+-	metrics: {
+-		readCalls: number;
+-		grepCalls: number;
+-		findCalls: number;
+-		bashCalls: number;
+-		editCalls: number;
+-		writeCalls: number;
+-		lsCalls: number;
+-		scopeNotes?: ScopeNotes;
+-	};
+-	kind: 'silent_failure' | 'crash' | 'tool_errors' | 'blocked_calls';
++	metrics: DelegationMetrics;
++	kind: DiagnosticKind;
+ 	diagnosticId: string;
+ 	agentDir?: string;
+ 	model?: string;
