@@ -159,7 +159,7 @@ describe('formatResult', () => {
   describe('execution metadata', () => {
     it('includes elapsed, turns, and status', () => {
       expect(fmt({ elapsed: 5.2, turns: 3, toolCalls: 4 }).formatted)
-        .toContain('[Execution: elapsed=5.2s, turns=3, status=ok]');
+        .toMatch(/\[Execution: elapsed=5\.2s, turns=3, status=ok, at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\]/);
     });
 
     it('shows error status when status is error', () => {

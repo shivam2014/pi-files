@@ -1059,7 +1059,8 @@ export class DelegatePipeline {
 
 		// Prepend execution metadata
 		const execStatus = result?.startsWith(ERROR_MARKER) ? "error" : "ok";
-		const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${turns}, status=${execStatus}]`];
+		const execAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+		const execMeta = [`[Execution: elapsed=${(elapsedMs / 1000).toFixed(1)}s, turns=${turns}, status=${execStatus}, at=${execAt}]`];
 		if (execStatus === "error") {
 			execMeta.push(`[Error: ${result.slice(0, 200)}]`);
 		}
@@ -1247,7 +1248,8 @@ export function formatResult(params: FormatResultParams): {
 		trailStr = `\n\n[Tool Calls (${toolCallTrail.length}):\n${trailItems}]`;
 	}
 
-	const execStr = `\n\n[Execution: elapsed=${elapsed}s, turns=${turns}, status=${status}]`;
+	const execAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+	const execStr = `\n\n[Execution: elapsed=${elapsed}s, turns=${turns}, status=${status}, at=${execAt}]`;
 
 	let findingsStr = '';
 	const findings = extractFindingsFromOutput(output);

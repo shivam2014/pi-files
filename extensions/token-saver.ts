@@ -382,10 +382,9 @@ export default function (pi: ExtensionAPI) {
 			const existing = readFingerprints.get(path as string);
 
 			if (existing && existing.hash === hash) {
-				const lines = text.split("\n").length;
 				return {
 					...result,
-					content: [{ type: "text", text: `[already read: ${path} — ${lines} lines, ${text.length} bytes, unchanged]` }],
+					content: [...(result.content ?? []), { type: "text" as const, text: "[note: unchanged since your last read of this file]" }],
 				};
 			}
 
