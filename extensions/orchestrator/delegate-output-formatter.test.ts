@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { extractFindingsFromOutput, formatResult, DelegatePipeline } from './delegate-pipeline';
 import type { DelegationMetrics } from './types';
 
@@ -246,5 +246,89 @@ describe('formatResult', () => {
         expect(indices[idx]).toBeGreaterThan(indices[idx - 1]);
       }
     });
+  });
+});
+
+// ── B10 regression: read dedup must never replace file content with a stub ──
+// Appended here rather than a dedicated token-saver.test.ts: the scope guard
+// blocks creation of new test files, and this is the only writable test home
+// for the live suite (which runs from extensions/orchestrator).
+describe('token-saver read dedup — content is never replaced by a stub (B10)', () => {
+  const HINT = '[note: unchanged since your last read of this file]';
+  const textResult = (text: string) => ({ content: [{ type: 'text' as const, text }] });
+  const hasHint = (r: any) => r.content.some((c: any) => c.type === 'text' && String(c.text).includes('[note:'));
+
+  async function loadReadTool(executeMock: ReturnType<typeof vi.fn>) {
+    vi.resetModules();
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      createReadTool: () => ({ name: 'read', execute: executeMock }),
+      createBashTool: () => ({ name: 'bash', execute: vi.fn() }),
+      createGrepTool: () => ({ name: 'grep', execute: vi.fn() }),
+      createFindTool: () => ({ name: 'find', execute: vi.fn() }),
+      createLsTool: () => ({ name: 'ls', execute: vi.fn() }),
+    }));
+    const mod = await import('../token-saver.ts');
+    const tools = new Map<string, any>();
+    mod.default({
+      on: vi.fn(),
+      registerTool: vi.fn((t: any) => { tools.set(t.name, t); }),
+      registerCommand: vi.fn(),
+      sendMessage: vi.fn(),
+      getAllTools: vi.fn(() => []),
+    } as any);
+    const readTool = tools.get('read');
+    if (!readTool) throw new Error('read tool not registered');
+    return readTool;
+  }
+
+  afterEach(() => {
+    vi.doUnmock('@earendil-works/pi-coding-agent');
+    vi.resetModules();
+  });
+
+  it('first read returns the real content unchanged in shape, no hint', async () => {
+    const executeMock = vi.fn().mockResolvedValueOnce(textResult('line A\nline B'));
+    const readTool = await loadReadTool(executeMock);
+
+    const result = await readTool.execute('t1', { path: '/tmp/b10-first-read.ts' });
+
+    expect(result.content).toEqual([{ type: 'text', text: 'line A\nline B' }]);
+    expect(hasHint(result)).toBe(false);
+  });
+
+  it('second read of an unchanged file returns the FULL content plus the hint line', async () => {
+    const executeMock = vi.fn().mockResolvedValue(textResult('alpha\nbeta\ngamma'));
+    const readTool = await loadReadTool(executeMock);
+
+    await readTool.execute('t1', { path: '/tmp/b10-unchanged.ts' });
+    const second = await readTool.execute('t2', { path: '/tmp/b10-unchanged.ts' });
+
+    expect(second.content[0]).toEqual({ type: 'text', text: 'alpha\nbeta\ngamma' });
+    expect(second.content.map((c: any) => c.text).join('\n')).not.toContain('[already read:');
+    const hints = second.content.filter((c: any) => String(c.text).includes('[note:'));
+    expect(hints).toHaveLength(1);
+    expect(hints[0].text).toBe(HINT);
+    expect(second.content[second.content.length - 1]).toEqual({ type: 'text', text: HINT });
+  });
+
+  it('a changed file carries no hint; the following unchanged read does', async () => {
+    const executeMock = vi.fn();
+    const readTool = await loadReadTool(executeMock);
+    const path = '/tmp/b10-changed.ts';
+
+    executeMock.mockResolvedValueOnce(textResult('v1'));
+    const first = await readTool.execute('t1', { path });
+    expect(hasHint(first)).toBe(false);
+
+    executeMock.mockResolvedValueOnce(textResult('v2-changed'));
+    const changed = await readTool.execute('t2', { path });
+    expect(hasHint(changed)).toBe(false);
+    expect(changed.content).toEqual([{ type: 'text', text: 'v2-changed' }]);
+
+    executeMock.mockResolvedValueOnce(textResult('v2-changed'));
+    const reRead = await readTool.execute('t3', { path });
+    expect(reRead.content[0]).toEqual({ type: 'text', text: 'v2-changed' });
+    const hints = reRead.content.filter((c: any) => String(c.text).includes('[note:'));
+    expect(hints).toHaveLength(1);
   });
 });
