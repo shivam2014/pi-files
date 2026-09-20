@@ -7,7 +7,6 @@
       "extensions/orchestrator/index.ts",
       "extensions/token-saver.ts",
       "extensions/lint-guard.ts",
-      "extensions/scope-guard.ts",
       "extensions/vision-router.ts",
       "extensions/local-latex/index.ts",
       "extensions/diagram.ts",
