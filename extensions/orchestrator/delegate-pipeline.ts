@@ -642,8 +642,8 @@ export class DelegatePipeline {
 
 		// ── Seed the child's plan at spawn ──
 		// Seeded ONLY from explicit structure: a `## Steps` section in the task,
-	// or an explicit `label`. The framework's parent-panel labels (autoGoal /
-	// stepLabel) are never seeded — the child authors its own plan instead.
+		// or an explicit `label`. The framework's parent-panel labels (autoGoal /
+		// stepLabel) are never seeded — the child authors its own plan instead.
 		const taskWithSeed = composeSeededTask(params.task, params.label);
 
 		// ── Append acceptance test instructions for coder tasks ──
