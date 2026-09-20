@@ -4,8 +4,8 @@
  * Regression tests for the budget-gate reporting/calibration/no-op frictions:
  *   FIX 3(a) — the escalation banner names the axis/axes that ACTUALLY caused a
  *              forced escalation (the gross one), not a non-gross axis that latched first.
- *   FIX 3(b) — raised defaults (exploration 10, files 12, turns 20) and `find`/`ls`
- *              excluded from the exploration cap (they are orientation calls).
+ *   budget calibration — pre-change defaults (exploration 10, files 5, turns 12) with
+ *              `find`/`ls` COUNTED in the exploration cap (locating a file is exploration).
  *   FIX 3(c) — a turns-only breach (which forces nothing) prints NO banner.
  */
 import { describe, it, expect, vi } from "vitest";
@@ -48,25 +48,25 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 	};
 });
 
-// ── FIX 3(b): raised defaults + find/ls excluded from the exploration cap ────
-describe("FIX 3(b) — budget calibration", () => {
-	it("defaults are exploration=10, files=12, turns=20", () => {
+// ── budget calibration: pre-change caps + find/ls counted in the cap ────────
+describe("budget calibration", () => {
+	it("defaults are exploration=10, files=5, turns=12", () => {
 		expect(ESCALATION_MAX_EXPLORATION_CALLS).toBe(10);
-		expect(ESCALATION_MAX_FILES_TOUCHED).toBe(12);
-		expect(ESCALATION_MAX_TURNS).toBe(20);
+		expect(ESCALATION_MAX_FILES_TOUCHED).toBe(5);
+		expect(ESCALATION_MAX_TURNS).toBe(12);
 	});
 
-	it("EXPLORATION_TOOLS is read+grep only (find/ls are orientation)", () => {
-		expect([...EXPLORATION_TOOLS]).toEqual(["read", "grep"]);
+	it("EXPLORATION_TOOLS is read+grep+find+ls (find/ls count toward the cap)", () => {
+		expect([...EXPLORATION_TOOLS]).toEqual(["read", "grep", "find", "ls"]);
 	});
 
-	it("find/ls counts do NOT contribute to the exploration total", () => {
+	it("find/ls counts DO contribute to the exploration total", () => {
 		const s = computeBudgetStatus({ read: 3, grep: 1, find: 30, ls: 30 }, 0, 0);
-		expect(s.explorationCalls).toBe(4);
-		expect(s.exceeded).toBe(false);
+		expect(s.explorationCalls).toBe(64); // read 3 + grep 1 + find 30 + ls 30
+		expect(s.exceeded).toBe(true); // 64 > 10
 	});
 
-	it("3 orientation files (dir + git copy + assets) no longer breach the file cap", () => {
+	it("a 3-file orientation footprint stays within the file cap", () => {
 		const s = computeBudgetStatus({ read: 3 }, 3, 3);
 		expect(s.exceeded).toBe(false);
 	});
@@ -75,11 +75,11 @@ describe("FIX 3(b) — budget calibration", () => {
 // ── FIX 3(a): the banner reports the gross forcing axis, not a latched one ──
 describe("FIX 3(a) — banner reports the actual forcing axis", () => {
 	it("gross exploration breach names exploration as the trigger and not files", () => {
-		// explorationCalls 48 (gross), files 6 (< 12, not even breached), turns 13 (< 20).
-		const status = computeBudgetStatus({ read: 48 }, 6, 13);
+		// explorationCalls 48 (gross), files 3 (< 5, not even breached), turns 3 (< 12).
+		const status = computeBudgetStatus({ read: 48 }, 3, 3);
 		expect(status.explorationCalls).toBe(48);
-		expect(status.distinctFiles).toBe(6);
-		expect(status.turns).toBe(13);
+		expect(status.distinctFiles).toBe(3);
+		expect(status.turns).toBe(3);
 		expect(isGrossBreach(status)).toBe(true);
 
 		const banner = buildBudgetGateBanner(status, { force: true, grossBreach: true });
@@ -92,8 +92,8 @@ describe("FIX 3(a) — banner reports the actual forcing axis", () => {
 	});
 
 	it("when exploration is gross and files is breached-but-not-gross, files is listed but not as the trigger", () => {
-		// exploration 48 (gross), files 13 (breached, but < 24 so not gross).
-		const status = computeBudgetStatus({ read: 48 }, 13, 1);
+		// exploration 48 (gross), files 7 (breached 7>5, but < 10 so not gross).
+		const status = computeBudgetStatus({ read: 48 }, 7, 1);
 		const grossAxes = grossBreachAxisLabels(status);
 		expect(grossAxes).toEqual(["exploration calls 48 ≥ 2× cap 10"]);
 		expect(grossAxes.some(a => a.includes("distinct files"))).toBe(false);
@@ -101,7 +101,7 @@ describe("FIX 3(a) — banner reports the actual forcing axis", () => {
 		const banner = buildBudgetGateBanner(status, { force: true, grossBreach: true });
 		// All breached axes are listed...
 		expect(banner).toContain("exploration calls 48");
-		expect(banner).toContain("distinct files 13");
+		expect(banner).toContain("distinct files 7");
 		// ...but the gross (forcing) note names only exploration.
 		const grossNote = banner.slice(banner.indexOf("gross breach"));
 		expect(grossNote).toContain("exploration calls 48");

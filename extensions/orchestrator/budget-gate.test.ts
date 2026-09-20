@@ -20,7 +20,7 @@ import {
 	BUDGET_WRAPUP_MESSAGE,
 } from "./subagent-runner.ts";
 import { extractDifficultyFromOutput, formatResult } from "./delegate-pipeline.ts";
-import { createAskOrchestratorResolver, detectEscalationSignal } from "./ask-resolver.ts";
+import { createAskOrchestratorResolver, detectEscalationSignal, UNANSWERED_SENTINEL } from "./ask-resolver.ts";
 import {
 	ESCALATION_MAX_EXPLORATION_CALLS,
 	ESCALATION_MAX_FILES_TOUCHED,
@@ -90,12 +90,12 @@ describe("computeBudgetStatus (pure counted budget)", () => {
 		expect(s.reason).toContain("turns");
 	});
 
-	it("exploration tools are read+grep only (find/ls are orientation; bash/edit are not exploration)", () => {
-		// FIX 3(b): find/ls were removed from the exploration cap — a cross-repo scout
-		// legitimately spends them on orientation. Only read+grep count now.
-		const s = computeBudgetStatus({ read: 3, grep: 1, find: 99, ls: 99, bash: 99, edit: 99 }, 0, 0);
-		expect(s.explorationCalls).toBe(4);
-		expect(s.exceeded).toBe(false); // 4 is well under the exploration budget
+	it("exploration tools are read+grep+find+ls (find/ls count; bash/edit are not exploration)", () => {
+		// Reverted: find/ls contribute to the exploration cap — locating a file is
+		// exploration just like reading it. bash/edit are not exploration tools.
+		const s = computeBudgetStatus({ read: 3, grep: 1, find: 2, ls: 1, bash: 99, edit: 99 }, 0, 0);
+		expect(s.explorationCalls).toBe(7); // read 3 + grep 1 + find 2 + ls 1
+		expect(s.exceeded).toBe(false); // 7 is still under the exploration budget (10)
 	});
 });
 
@@ -339,7 +339,7 @@ describe("PART B — createAskOrchestratorResolver surfaces escalation", () => {
 		const resolver = createAskOrchestratorResolver({ cwd: "/tmp", sessionManager: { getEntries: () => [] } }, buffer);
 
 		const answer = await resolver("What is the meaning of life?");
-		expect(answer).toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
+		expect(answer).toBe(UNANSWERED_SENTINEL);
 		expect(buffer).toEqual(["What is the meaning of life?"]);
 	});
 });

@@ -81,8 +81,8 @@ If you have read more than 3 files without narrowing the question, STOP and call
 // The worker cannot bias these: they are counted by the framework/tool-call log,
 // not self-reported (AG2 Escalation Pattern; avoids unreliable self-reported difficulty).
 export const ESCALATION_MAX_EXPLORATION_CALLS = 10;
-export const ESCALATION_MAX_FILES_TOUCHED = 12;
-export const ESCALATION_MAX_TURNS = 20;
+export const ESCALATION_MAX_FILES_TOUCHED = 5;
+export const ESCALATION_MAX_TURNS = 12;
 
 /**
  * Hard budget escalation rule — injected into coder/scout prompts.
@@ -91,7 +91,7 @@ export const ESCALATION_MAX_TURNS = 20;
  * escalate the ladder (spawn a scout) rather than just answer.
  */
 export const WORKER_ESCALATION_RULE = `## Hard Exploration Budget
-You have an exploration budget that is COUNTED and ENFORCED by the framework — crossing it forces escalation in code, regardless of what you report. If you cross MORE THAN ${ESCALATION_MAX_EXPLORATION_CALLS} exploration calls (read/grep), or MORE THAN ${ESCALATION_MAX_FILES_TOUCHED} distinct files, or MORE THAN ${ESCALATION_MAX_TURNS} turns, STOP now and call ask_orchestrator to request a scout/investigation. This is a hard rule — do not silently keep exploring past the budget.
+You have an exploration budget that is COUNTED and ENFORCED by the framework — crossing it forces escalation in code, regardless of what you report. If you cross MORE THAN ${ESCALATION_MAX_EXPLORATION_CALLS} exploration calls (read/grep/find/ls), or MORE THAN ${ESCALATION_MAX_FILES_TOUCHED} distinct files, or MORE THAN ${ESCALATION_MAX_TURNS} turns, STOP now and call ask_orchestrator to request a scout/investigation. This is a hard rule — do not silently keep exploring past the budget.
 
 Start by escalating: when you cross the budget, do NOT just answer in prose. Call ask_orchestrator directly with a structured escalation request carrying \`recommend: investigate\` so the orchestrator knows to escalate:
 \`\`\`

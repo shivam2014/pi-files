@@ -129,13 +129,13 @@ export const ABORT_MARKER = "[aborted]";
 /**
  * Exploration tool names counted against the exploration budget.
  *
- * Only `read` and `grep` count. `find`/`ls` are ORIENTATION calls: a delegate
- * often needs them just to locate the repo/dirs before any real reading, so
- * counting them inflated the cap and forced spurious escalation (a cross-repo
- * scout can burn the whole budget on orientation alone). They stay in the
- * tool-call metrics but no longer contribute to the exploration cap.
+ * `read`, `grep`, `find`, and `ls` all count: locating a file (`find`/`ls`) is
+ * exploration just like reading it, and an audit showed the delegations the gate
+ * flagged genuinely consumed that budget. Excluding find/ls under-counted the
+ * exploration axis and silenced an accurate signal — every orientation call now
+ * contributes to the exploration cap.
  */
-export const EXPLORATION_TOOLS = ["read", "grep"] as const;
+export const EXPLORATION_TOOLS = ["read", "grep", "find", "ls"] as const;
 
 /**
  * Kind of budget breach, classified by which threshold(s) were crossed (strict `>`):
