@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { isFileWriteCommand } from "./lint-guard/lib/lint-guard-core";
+import { isFileWriteCommand } from "../lib/lint-guard-core";
 
 describe("isFileWriteCommand — read-only commands pass", () => {
 	it("allows `sed -n '1,5p' file.txt` (handoff §4.1 false positive)", () => {
