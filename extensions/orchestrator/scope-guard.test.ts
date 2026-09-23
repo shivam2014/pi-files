@@ -657,3 +657,83 @@ describe('ScopeGuard', () => {
     });
   });
 });
+
+describe('ScopeGuard — absolute-base pattern/dir matching (audit ITEM 1)', () => {
+  let tmpDir: string;
+  let guard: ScopeGuard;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'scope-guard-abs-base-'));
+    guard = new ScopeGuard(tmpDir);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeScope(scope: Record<string, unknown>) {
+    mkdirSync(join(tmpDir, '.pi'), { recursive: true });
+    writeFileSync(
+      join(tmpDir, '.pi', 'scope.json'),
+      JSON.stringify({
+        version: 1,
+        schema: 'scope-file-contract-v1',
+        scope: {
+          filesToModify: [],
+          filesToCreate: [],
+          directories: [],
+          maxFiles: 10,
+          requiresApprovalBeyondScope: true,
+          changeType: 'multi-file',
+          maxLinesPerFile: 400,
+          gateMode: 'strict',
+          ...scope,
+        },
+      })
+    );
+  }
+
+  // Repo-style absolute paths OUTSIDE cwd and outside /tmp, so neither the
+  // cwd-relative base nor the universal /tmp scratch exemption can make these
+  // assertions vacuously green.
+  const REPO = '/Users/testuser/work/pi-files/extensions/orchestrator';
+
+  it('absolute glob entry matches files in that directory', () => {
+    writeScope({ filesToCreate: [`${REPO}/*.test.ts`] });
+    expect(guard.isPathAllowed(`${REPO}/activity-feed.test.ts`, 'write').allowed).toBe(true);
+    // single-star does not cross a segment boundary
+    expect(guard.isPathAllowed(`${REPO}/nested/activity-feed.test.ts`, 'write').allowed).toBe(false);
+  });
+
+  it('nested absolute glob (**) matches deep files under the directory', () => {
+    writeScope({ filesToModify: [`${REPO}/**/*.test.ts`] });
+    expect(guard.isPathAllowed(`${REPO}/nested/deep/thing.test.ts`, 'edit').allowed).toBe(true);
+  });
+
+  it('bare glob matches the basename of deep files regardless of cwd', () => {
+    writeScope({ filesToModify: ['*.test.ts'] });
+    expect(guard.isPathAllowed(`${REPO}/diagnostic-wording.test.ts`, 'edit').allowed).toBe(true);
+  });
+
+  it('absolute directory entry authorizes files inside it', () => {
+    writeScope({ directories: [REPO] });
+    expect(guard.isPathAllowed(`${REPO}/bash-interceptor.ts`, 'write').allowed).toBe(true);
+    expect(guard.isPathAllowed(`${REPO}/nested/deep/file.ts`, 'write').allowed).toBe(true);
+  });
+
+  it('absolute directory entry with trailing slash authorizes files inside it', () => {
+    writeScope({ directories: [`${REPO}/`] });
+    expect(guard.isPathAllowed(`${REPO}/scope-guard.ts`, 'write').allowed).toBe(true);
+  });
+
+  it('directory entry does NOT authorize a partial-segment sibling (/dir must not grant /dirfoo)', () => {
+    writeScope({ directories: [REPO] });
+    expect(guard.isPathAllowed(`${REPO}foo/evil.ts`, 'write').allowed).toBe(false);
+    expect(guard.isPathAllowed(`${REPO}-backup/evil.ts`, 'write').allowed).toBe(false);
+  });
+
+  it('still rejects .. traversal in glob patterns (unchanged)', () => {
+    writeScope({ filesToModify: ['../etc/**'] });
+    expect(guard.isPathAllowed('etc/passwd', 'edit').allowed).toBe(false);
+  });
+});

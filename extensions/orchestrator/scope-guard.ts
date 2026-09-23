@@ -27,6 +27,22 @@ export function normalizePath(filePath: string, cwd: string): string {
   return posix.normalize(rel);
 }
 
+/** Expand a leading `~/` to the user's home directory (no-op otherwise). */
+function expandTilde(p: string): string {
+  return p.startsWith('~/') ? p.replace(/^~/, os.homedir()) : p;
+}
+
+/**
+ * Absolute form of a path or scope entry, resolved against cwd.
+ * Tilde entries are expanded first. Unlike normalizePath (which returns a
+ * cwd-relative form for paths inside cwd), this always yields an absolute
+ * path so that absolute entries (absolute globs, absolute dirs) and entries
+ * written relative to the delegation cwd compare on the same base.
+ */
+function toAbsolutePath(filePath: string, cwd: string): string {
+  return resolve(cwd, expandTilde(filePath));
+}
+
 /** True if string contains glob metacharacters */
 function hasGlobChars(s: string): boolean {
   return /[*?[!{]/.test(s);
@@ -188,24 +204,43 @@ export class ScopeGuard {
       if (approvedRel === normalized) return { allowed: true };
     }
 
+    // Absolute form of the candidate — both sides of every pattern/directory
+    // comparison are normalized to an absolute base so that entries written
+    // relative to the delegation cwd (bare globs, relative dirs) and absolute
+    // entries (absolute globs, absolute dirs) compare on equal footing.
+    const candidateAbs = toAbsolutePath(filePath, this.cwd);
+    const candidateBase = posix.basename(candidateAbs);
+
     // 2. Glob pattern match — check both lists regardless of operation
     const allGlobs = [...filesToModify, ...filesToCreate];
     for (const pattern of allGlobs) {
       if (hasGlobChars(pattern)) {
         // Block .. traversal in glob patterns
         if (pattern.split('/').includes('..')) continue;
-        if (picomatch(pattern)(normalized)) {
+        const expanded = expandTilde(pattern);
+        // Absolute patterns match against the candidate's absolute path.
+        // Relative/bare patterns match against join(cwd, pattern) OR against
+        // the candidate's basename (basename semantics: `*.test.ts` matches
+        // any matching basename anywhere, regardless of nesting depth).
+        const matched = isAbsolute(expanded)
+          ? picomatch(expanded, { dot: true })(candidateAbs)
+          : picomatch(join(this.cwd, expanded), { dot: true })(candidateAbs) ||
+            picomatch(expanded, { dot: true })(candidateBase);
+        if (matched) {
           return { allowed: true };
         }
       }
     }
 
-    // Check directory-level allowlist
+    // Check directory-level allowlist.
+    // The entry is resolved against cwd (so relative dirs still work), the
+    // trailing slash is optional, and matching requires a segment boundary:
+    // `/abs/dir` must NOT authorize `/abs/dirfoo`.
     const directories = Array.isArray(scope.directories) ? scope.directories : [];
-    for (let dir of directories) {
-      if (dir.startsWith('~/')) dir = dir.replace(/^~/, os.homedir());
-      const normalizedDir = dir.replace(/\/$/, '') + '/';
-      if (normalized.startsWith(normalizedDir) || normalized === dir) {
+    for (const dir of directories) {
+      if (!dir) continue;
+      const dirAbs = toAbsolutePath(dir, this.cwd).replace(/\/+$/, '');
+      if (candidateAbs === dirAbs || candidateAbs.startsWith(dirAbs + '/')) {
         return { allowed: true };
       }
     }
