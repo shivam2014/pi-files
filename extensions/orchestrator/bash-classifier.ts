@@ -25,6 +25,9 @@ const READ_COMMANDS = new Set([
   // relief). Unknown commands still default to WRITE — this allowlist is the
   // only read allowance; do not blanket-flip the default.
   "ps", "rg",
+  // Round 3: read-only inspection tools that were missing from the allowlist
+  // (blocked as writes for read-only specialists): hashing, file comparison.
+  "shasum", "diff", "cmp",
 ]);
 
 // Commands that are always write-modifying

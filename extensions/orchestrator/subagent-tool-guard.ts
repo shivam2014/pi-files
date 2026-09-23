@@ -570,14 +570,60 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						// prefixes (`env X=1 rm …`) cannot mask a write behind the read-listed
 						// `env`; (b) any command substitution is opaque write-class.
 						const classifierSegment = classifierText(segment);
-						const anchoredText = cmdIdx > 0 && cmdIdx < segment.length ? classifierText(segment.slice(cmdIdx)) : undefined;
 						const substitutionInners = extractCommandSubstitutions(segment.map((t) => t.value).join(' '));
-						const segmentWrite =
-							isWriteCommand(classifierSegment)
-							|| (anchoredText !== undefined && isWriteCommand(anchoredText))
-							|| wrapperWrites(segment, cmdIdx)
-							|| substitutionInners.length > 0;
+
+						// Round 3: split "write due to VERB" from "write due to REDIRECT".
+						// Scanning redirects FIRST yields both the target tokens and the
+						// redirect-free base command, so a read-classified command's operands keep
+						// read-op while only the redirect target becomes write-op:
+						//   `cat <out-of-scope> > /tmp/x` → source read (allowed), /tmp/x write
+						//   `cat <in-scope> > /outside/x`  → /outside/x write (blocked)
+						//   `mv <in-scope> /tmp/x`         → verb write, operands stay write (blocked)
+						const redirectTargets: string[] = [];
+						// tokenIndex → cleaned target path: attached forms (`>/f`, `>>/f`) carry the
+						// operator inside the token, and the operator must not leak into the path
+						// (raw `>>/tmp/x` failed isTmpPath and resolved to `<cwd>/>>/tmp/x`).
+						const redirectTargetAt = new Map<number, string>();
+						const baseTokens: ShellToken[] = [];
+						for (let t = 0; t < segment.length; t++) {
+							const token = segment[t];
+							if (!token) continue;
+							if (!token.quoted && (token.value === '>' || token.value === '>>')) {
+								const next = segment[t + 1];
+								if (next && !SHELL_SEPARATORS.has(next.value)) {
+									redirectTargets.push(next.value);
+									redirectTargetAt.set(t + 1, next.value);
+									t++;
+								}
+								continue;
+							}
+							if (!token.quoted && token.value.startsWith('>') && token.value.length > 1) {
+								const target = token.value.startsWith('>>') ? token.value.slice(2) : token.value.slice(1);
+								redirectTargets.push(target);
+								redirectTargetAt.set(t, target);
+								continue;
+							}
+							baseTokens.push(token);
+						}
+						const baseCmdIdx = firstCommandIndex(baseTokens);
+						const baseAnchored = baseCmdIdx > 0 && baseCmdIdx < baseTokens.length ? classifierText(baseTokens.slice(baseCmdIdx)) : undefined;
+						// Write due to the COMMAND itself (redirects excluded): write-listed verb,
+						// wrapper payload (python3 -c, xargs rm, find -exec). Opaque command
+						// substitutions are write-class by construction.
+						const verbWrite =
+							isWriteCommand(classifierText(baseTokens))
+							|| (baseAnchored !== undefined && isWriteCommand(baseAnchored))
+							|| wrapperWrites(baseTokens, baseCmdIdx);
+						const commandWrite = verbWrite || substitutionInners.length > 0;
+						const hasRedirect = redirectTargets.length > 0;
+						const segmentWrite = commandWrite || hasRedirect;
 						if (segmentWrite) bashWriteOp = true;
+						// Op for NON-redirect tokens. A redirect-only write leaves the command's
+						// operands as reads; a write-classified command keeps write-op on its
+						// operands (`mv <in-scope> /tmp/x` still mutates the source).
+						const operandOp: 'read' | 'write' = hasRedirect
+							? (commandWrite ? 'write' : 'read')
+							: (segmentWrite ? 'write' : 'read');
 
 						// Path extraction happens BEFORE the readOnly gate: the /tmp
 						// scratch exemption (W-d, round 2) is target-aware and needs the
@@ -595,7 +641,10 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 							for (let t = 0; t < segment.length; t++) {
 								const token = segment[t];
 								if (!token) continue;
-								const value = token.value;
+								// Redirect operator tokens name no path of their own; the target token
+								// (separate or attached form) supplies the cleaned path below.
+								if (!token.quoted && (token.value === '>' || token.value === '>>')) continue;
+								const value = redirectTargetAt.get(t) ?? token.value;
 								if (value === '' || value === '--') continue;
 								const prev = segment[t - 1];
 								if (prev && !prev.quoted && valueFlags.has(prev.value)) continue;
@@ -625,7 +674,9 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 										matches.push(candidate);
 									}
 									for (const match of matches) {
-										segEntries.push({ raw: match, op: segmentWrite ? 'write' : 'read' });
+										// Round 3: redirect TARGETS are write-op even when the command is
+										// read-classified; every other operand follows operandOp.
+										segEntries.push({ raw: match, op: redirectTargetAt.has(t) ? 'write' : operandOp });
 									}
 								}
 							}
@@ -641,36 +692,19 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						// scratch. For a pure-redirect write (`cat src > /tmp/x`) only the
 						// redirect target decides; when the command itself is write-class
 						// (`mv <in-scope-src> /tmp/x`) its non-tmp path operands are
-						// mutations and must not be waved through.
-						const redirectTargets: string[] = [];
-						const baseTokens: ShellToken[] = [];
-						for (let t = 0; t < segment.length; t++) {
-							const token = segment[t];
-							if (!token) continue;
-							if (!token.quoted && (token.value === '>' || token.value === '>>')) {
-								const next = segment[t + 1];
-								if (next && !SHELL_SEPARATORS.has(next.value)) {
-									redirectTargets.push(next.value);
-									t++;
-								}
-								continue;
-							}
-							if (!token.quoted && token.value.startsWith('>') && token.value.length > 1) {
-								redirectTargets.push(token.value.startsWith('>>') ? token.value.slice(2) : token.value.slice(1));
-								continue;
-							}
-							baseTokens.push(token);
-						}
-						const baseCmdIdx = firstCommandIndex(baseTokens);
-						const baseAnchored = baseCmdIdx > 0 && baseCmdIdx < baseTokens.length ? classifierText(baseTokens.slice(baseCmdIdx)) : undefined;
-						const baseWrite =
-							redirectTargets.length > 0
-								? isWriteCommand(classifierText(baseTokens)) || (baseAnchored !== undefined && isWriteCommand(baseAnchored)) || wrapperWrites(baseTokens, baseCmdIdx)
-								: segmentWrite;
-						const nonTmpWriteSeen = baseWrite
+						// mutations and must not be waved through. Round 3: the redirect scan
+						// above already separated the two, so `verbWrite` is the verb part.
+						const nonTmpWriteSeen = verbWrite
 							? segEntries.some((e) => e.op === 'write' && !isTmpPath(e.raw))
 							: redirectTargets.some((t) => !isTmpPath(t));
-						if (ctx?.readOnly && segmentWrite && !(isScopedTempWrite(classifierSegment) && !nonTmpWriteSeen)) {
+						// Round 3: the scratch exemption must also recognise ATTACHED redirect forms
+						// (`>>/tmp/x`, `>/tmp/x`), which isScopedTempWrite's `\s>>?\s` pattern misses
+						// (no whitespace between operator and target). Target-aware, so
+						// `cat f >>/outside/x` still blocks via nonTmpWriteSeen.
+						const scratchTargetWrite =
+							isScopedTempWrite(classifierSegment)
+							|| (hasRedirect && redirectTargets.every((t) => isTmpPath(t)));
+						if (ctx?.readOnly && segmentWrite && !(scratchTargetWrite && !nonTmpWriteSeen)) {
 							return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
 						}
 						// Commit entries; /tmp scratch paths stay exempt from scope checks.

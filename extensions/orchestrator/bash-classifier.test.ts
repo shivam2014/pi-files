@@ -82,3 +82,24 @@ describe("quote-aware redirects and wrapper classification (guard-hardening)", (
   it("classifies `bash ls -la` as read (wrapper recursion)", () => expect(isWriteCommand("bash ls -la")).toBe(false));
   it("classifies `bash -c …` as write (opaque payload, fail closed)", () => expect(isWriteCommand('bash -c "rm -rf /tmp/x"')).toBe(true));
 });
+
+describe("round 3 — read-only tool allowlist (read-only specialist false positives)", () => {
+  it("classifies shasum as read", () => expect(isWriteCommand("shasum -a 256 /work/root/repo/src/index.ts")).toBe(false));
+  it("classifies diff as read", () => expect(isWriteCommand("diff -q a.ts b.ts")).toBe(false));
+  it("classifies cmp as read", () => expect(isWriteCommand("cmp a.ts b.ts")).toBe(false));
+  it("classifies tail -40 as read", () => expect(isWriteCommand("tail -40 /work/root/repo/build.log")).toBe(false));
+  it("classifies wc -l as read", () => expect(isWriteCommand("wc -l /work/root/repo/src/index.ts")).toBe(false));
+  it("classifies stat as read", () => expect(isWriteCommand("stat /work/root/repo/src/index.ts")).toBe(false));
+  it("classifies sort -rn as read", () => expect(isWriteCommand("sort -rn")).toBe(false));
+  // Compounds: the classifier decides from the BASE command; the guard splits
+  // segments at `|` before classifying, so a pipeline of read verbs stays read.
+  it("classifies `stat | tail` as read (base verb, guard splits segments)", () =>
+    expect(isWriteCommand("stat | tail")).toBe(false));
+  it("classifies `stat | sort -rn | head` as read", () =>
+    expect(isWriteCommand("stat | sort -rn | head")).toBe(false));
+  it("classifies `ps aux | tail -3` as read", () => expect(isWriteCommand("ps aux | tail -3")).toBe(false));
+  // Regression guard: the unknown-command default must stay WRITE.
+  it("still classifies unknown commands as write", () => expect(isWriteCommand("frobnicate --flag")).toBe(true));
+  it("still classifies `diff` with a redirect as write", () =>
+    expect(isWriteCommand("diff -q a.ts b.ts > /tmp/d.txt")).toBe(true));
+});

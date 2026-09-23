@@ -388,3 +388,77 @@ describe("warnings (round 2) — quoted extensionless, commit flags, escaped sep
 		expect(result?.block).toBe(true);
 	});
 });
+
+describe("round 3 — read-tool allowlist + redirect-target scope", () => {
+	it("allows `shasum -a 256 <in-scope>` for a read-only specialist", () => {
+		expect(runBash(`shasum -a 256 ${SCOPE_DIR}/src.ts`, { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("allows `diff -q a b` for a read-only specialist", () => {
+		expect(runBash(`diff -q ${SCOPE_DIR}/a.ts ${SCOPE_DIR}/b.ts`, { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("allows `cmp a b` for a read-only specialist", () => {
+		expect(runBash(`cmp ${SCOPE_DIR}/a.ts ${SCOPE_DIR}/b.ts`, { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("allows `tail -40 <log>` and `wc -l <f>` for a read-only specialist", () => {
+		expect(runBash(`tail -40 ${SCOPE_DIR}/build.log`, { readOnly: true }).result?.block).toBeFalsy();
+		expect(runBash(`wc -l ${SCOPE_DIR}/src.ts`, { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("classifies compounds deterministically: `stat | tail` allowed for readOnly", () => {
+		expect(runBash(`stat ${SCOPE_DIR}/src.ts | tail -5`, { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("classifies compounds deterministically: `stat | sort -rn | head` allowed for readOnly", () => {
+		expect(runBash(`stat ${SCOPE_DIR}/src.ts | sort -rn | head -3`, { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("classifies compounds deterministically: `ps aux | tail -3` allowed for readOnly", () => {
+		expect(runBash("ps aux | tail -3", { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("allows readOnly `cat <out-of-scope> > /tmp/x` — redirect SOURCE keeps read-op", () => {
+		const { result, guard } = runBash("cat /outside/secret.ts > /tmp/x", { readOnly: true });
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).toHaveBeenCalledWith("/outside/secret.ts", "read");
+	});
+
+	it("blocks `cat <in-scope> > /outside/x` — redirect TARGET is the write op", () => {
+		const { result } = runBash(`cat ${SCOPE_DIR}/src.ts > /outside/x`);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/x is outside the allowed scope");
+	});
+
+	it("blocks `echo x > /outside/y` (read verb, redirect target out of scope)", () => {
+		const { result } = runBash("echo x > /outside/y");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/y is outside the allowed scope");
+	});
+
+	it("still blocks `tee /outside/x` (write by VERB — operands stay write-op)", () => {
+		const { result } = runBash("tee /outside/x");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/x is outside the allowed scope");
+	});
+
+	it("still blocks read-only `mv <in-scope-src> /tmp/x` (verb write keeps write-op operands)", () => {
+		expect(runBash(`mv ${SCOPE_DIR}/src.ts /tmp/x`, { readOnly: true }).result?.block).toBe(true);
+	});
+
+	it("keeps `bash -c …` write-class for read-only specialists (BY DESIGN)", () => {
+		expect(runBash(`bash -c 'cat ${SCOPE_DIR}/src.ts'`, { readOnly: true }).result?.block).toBe(true);
+	});
+
+	it("exempts the attached redirect form `>>/tmp/x` from scope checks (cleaned target)", () => {
+		const { result } = runBash(`cat ${SCOPE_DIR}/src.ts >>/tmp/x`, { readOnly: true });
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("blocks the attached redirect form `>>/outside/x` (cleaned target is scope-checked)", () => {
+		const { result } = runBash(`cat ${SCOPE_DIR}/src.ts >>/outside/x`);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/x is outside the allowed scope");
+	});
+});
