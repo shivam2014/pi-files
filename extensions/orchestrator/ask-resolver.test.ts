@@ -13,6 +13,7 @@ import {
 	tryAnswerFromContext,
 	stripQuestionRecords,
 	createAskOrchestratorResolver,
+	asksAboutFileContent,
 	UNANSWERED_SENTINEL,
 	resolve, hasLiteralSegment,
 } from "./ask-resolver.ts";
@@ -429,6 +430,108 @@ describe("createAskOrchestratorResolver", () => {
 
 		expect(answer.length).toBeLessThan(12_000);
 		expect(answer).toContain("[file truncated]");
+	});
+});
+
+// ─── asksAboutFileContent ────────────────────────────────────────────────────
+
+describe("asksAboutFileContent", () => {
+	it("returns false for a path-mentioning permission question", () => {
+		expect(asksAboutFileContent("may I write to /Users/me/repo/diagnostic.test.ts?")).toBe(false);
+		expect(asksAboutFileContent("should I edit src/scope-guard.ts or create a new file?")).toBe(false);
+	});
+
+	it("returns true for show-me / contents / read phrasings", () => {
+		expect(asksAboutFileContent("show me /Users/me/repo/config.json")).toBe(true);
+		expect(asksAboutFileContent("what are the contents of src/guard.ts?")).toBe(true);
+		expect(asksAboutFileContent("what does scope-guard.ts contain?")).toBe(true);
+		expect(asksAboutFileContent("read the file /Users/me/repo/notes.md")).toBe(true);
+		expect(asksAboutFileContent("read notes.md")).toBe(true);
+		// Inspection verbs directed at a path are about-questions (keeps the
+		// existing ask-orchestrator-escalation buffer test semantics).
+		expect(asksAboutFileContent("Check auth.ts for details")).toBe(true);
+	});
+
+	it("returns false for empty or non-file questions", () => {
+		expect(asksAboutFileContent("")).toBe(false);
+		expect(asksAboutFileContent("is the build passing?")).toBe(false);
+	});
+});
+
+// ─── createAskOrchestratorResolver — file previews gated on file-about questions ──
+
+describe("createAskOrchestratorResolver — preview gating (path mention is not an about-question)", () => {
+	let cwd: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "ask-resolver-gate-"));
+	});
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("does NOT dump a file for a path-mentioning permission question (falls through to sentinel)", async () => {
+		const file = join(cwd, "diagnostic.test.ts");
+		writeFileSync(file, "export const DUMP_MARKER = 1;", "utf-8");
+		const buf: string[] = [];
+		const resolver = createAskOrchestratorResolver({ cwd }, buf);
+
+		const question = `may I write to ${file}?`;
+		const answer = await resolver(question);
+
+		expect(answer).not.toContain("DUMP_MARKER");
+		expect(answer).not.toContain(`--- ${file}`);
+		expect(answer).toBe(UNANSWERED_SENTINEL);
+		expect(buf).toHaveLength(1);
+		expect(buf[0]).toBe(question);
+	});
+
+	it("still previews the file when the question asks about its contents", async () => {
+		const file = join(cwd, "config.json");
+		writeFileSync(file, '{"answer": 42}', "utf-8");
+		const resolver = createAskOrchestratorResolver({ cwd });
+
+		const answer = await resolver(`show me ${file}`);
+
+		expect(answer).toContain(`--- ${file}`);
+		expect(answer).toContain('"answer": 42');
+	});
+
+	it("previews on 'what does X contain' phrasing (existing behaviour kept)", async () => {
+		const file = join(cwd, "data.txt");
+		writeFileSync(file, "some content", "utf-8");
+		const resolver = createAskOrchestratorResolver({ cwd });
+
+		const answer = await resolver("What does data.txt contain?");
+
+		expect(answer).toContain("data.txt");
+		expect(answer).toContain("some content");
+	});
+
+	it("previews on 'read the file' phrasing", async () => {
+		const file = join(cwd, "notes.md");
+		writeFileSync(file, "# Notes", "utf-8");
+		const resolver = createAskOrchestratorResolver({ cwd });
+
+		const answer = await resolver(`read the file ${file}`);
+
+		expect(answer).toContain("# Notes");
+	});
+
+	it("a path mention in a permission question does not beat a real docs answer", async () => {
+		const docsDir = join(cwd, "docs");
+		mkdirSync(docsDir, { recursive: true });
+		writeFileSync(join(docsDir, "deployment.md"), "Deploy via CI.", "utf-8");
+		const file = join(cwd, "deployment.test.ts");
+		writeFileSync(file, "export const DUMP_MARKER = 1;", "utf-8");
+		const resolver = createAskOrchestratorResolver({ cwd });
+
+		const answer = await resolver(`may I edit ${file} before deployment?`);
+
+		expect(answer).not.toContain("DUMP_MARKER");
+		expect(answer).toContain("deployment.md");
+		expect(answer).toContain("Deploy via CI.");
 	});
 });
 

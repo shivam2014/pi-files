@@ -337,6 +337,36 @@ export function detectEscalationSignal(text: string): EscalationRecommend | null
 }
 
 /**
+ * True when the question is genuinely ASKING ABOUT a file's contents
+ * ("show me X", "what does X contain?", "read the file"), as opposed to
+ * merely MENTIONING a path ("may I write to /path/foo.ts?").
+ *
+ * Rung 1 of the resolver used to preview any existing referenced file
+ * regardless of relevance — a path mention inside a permission question is a
+ * scope question, not a request for the file's contents (live defect: "may I
+ * write to /…/diagnostic.test.ts?" got a file dump).
+ */
+export function asksAboutFileContent(question: string): boolean {
+	if (!question) return false;
+	const q = question;
+	return (
+		/\bshow\s+me\b/i.test(q) ||
+		/\bshow\s+(?:the\s+)?(?:file|contents?|code|source|implementation)\b/i.test(q) ||
+		/\bcontents?\s+of\b/i.test(q) ||
+		/\bwhat\s+does\b[\s\S]{0,120}?\b(?:contain|say|do)\b/i.test(q) ||
+		/\bwhat(?:'s| is)\s+in\b/i.test(q) ||
+		/\bread\s+(?:me\s+)?(?:the\s+)?(?:file|contents?)\b/i.test(q) ||
+		/\bread\s+(?:me\s+)?[`'"]?[\w./~-]*[./][\w./~-]+/i.test(q) ||
+		// Inspection verbs directed at a path ("Check auth.ts for details") ask
+		// to consult the file — permission questions ("may I write to X?") do not.
+		/\b(?:check|inspect|examine|look\s+at)\s+(?:the\s+)?(?:file\b|contents?\b|[`'"]?[\w./~-]*[./][\w./~-]+)/i.test(q) ||
+		/\bcat\s+(?:the\s+)?(?:file\b|[`'"]?[\w./~-]+\.[\w-]+)/i.test(q) ||
+		/\bopen\s+(?:the\s+)?file\b/i.test(q) ||
+		/\bdisplay\s+(?:the\s+)?(?:file|contents?)\b/i.test(q)
+	);
+}
+
+/**
  * Build the resolver that the subagent calls via ask_orchestrator.
  *
  * Resolution order:
@@ -356,12 +386,19 @@ export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[
 
 		const combined = context ? `${question}\n\nContext: ${context}` : question;
 
-		// 1. Answer from explicitly referenced files
-		const paths = extractReferencedPaths(combined, cwd);
-		if (paths.length > 0) {
-			const parts = paths.map((p) => `--- ${p}\n${readFilePreview(p)}`);
-			const answer = parts.join("\n\n");
-			return answer.length > MAX_ANSWER_CHARS ? answer.slice(0, MAX_ANSWER_CHARS) + "\n[answer truncated]" : answer;
+		// 1. Answer from explicitly referenced files — ONLY when the question is
+		//    actually asking about the file's contents. A bare path mention (e.g.
+		//    "may I write to /path/diagnostic.test.ts?") is a scope question, not
+		//    a request for the file; previewing it there was the live defect.
+		//    Non-about questions fall through to docs → escalation → context →
+		//    UNANSWERED sentinel.
+		if (asksAboutFileContent(question)) {
+			const paths = extractReferencedPaths(combined, cwd);
+			if (paths.length > 0) {
+				const parts = paths.map((p) => `--- ${p}\n${readFilePreview(p)}`);
+				const answer = parts.join("\n\n");
+				return answer.length > MAX_ANSWER_CHARS ? answer.slice(0, MAX_ANSWER_CHARS) + "\n[answer truncated]" : answer;
+			}
 		}
 
 		// 2. Answer from docs/
