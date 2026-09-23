@@ -33,6 +33,10 @@ export PI_DEBUG_REDRAW=1
 # State
 # ---------------------------------------------------------------------------
 CAPTURE_DIR="${CAPTURE_DIR:-$(mktemp -d /tmp/tui-smoke-XXXXXX)}"
+# A preset CAPTURE_DIR (e.g. via env) may not exist yet; without this the first
+# snapshot write to "$CAPTURE_DIR/00-startup.txt" aborts under set -e with a
+# bare "No such file or directory", masking the real cause.
+mkdir -p "$CAPTURE_DIR"
 PASS_COUNT=0
 FAIL_COUNT=0
 TOTAL_TESTS=0
@@ -46,6 +50,8 @@ CLEANED_UP=0
 log() { printf '[tui-smoke] %s\n' "$*"; }
 pass() { printf '  ✓ %s\n' "$*"; PASS_COUNT=$((PASS_COUNT + 1)); TEST_RESULTS+=("PASS: $*"); }
 fail() { printf '  ✗ %s\n' "$*"; FAIL_COUNT=$((FAIL_COUNT + 1)); TEST_RESULTS+=("FAIL: $*"); }
+# skip — assertion not applicable (never counted in TOTAL_TESTS)
+skip() { printf '  ⊘ SKIP: %s\n' "$*"; }
 
 # capture — snapshot the current tmux pane into CAPTURE_TEXT
 capture() {
@@ -94,6 +100,55 @@ wait_until_stable() {
   return 1
 }
 
+# wait_for_completion — wait until the orchestrator run reaches a genuine
+#   terminal (idle) state, bounded by $TEST_TIMEOUT (never an unbounded loop).
+#
+#   Signal: pi's live activity status footer has cleared. That footer is the
+#   single per-frame status rule at the bottom of the pane: while work is in
+#   flight it carries a braille spinner glyph + verb, e.g.
+#     "── ⠇ Scouting... ─────"  /  "── ⠇ Coding... ─────";
+#   when the agent goes idle it renders as a BARE rule with no spinner glyph.
+#   Evidence from the capture files on disk:
+#     • 00-startup.txt (idle)                      → 0 busy footers
+#     • 02-activity-feed.txt / 03-specialist-blocks.txt (in flight) → present
+#     • run4 04-final-state.txt (settled)          → 0 busy footers
+#
+#   Why the footer and not other markers: the transcript keeps HISTORICAL
+#   frames, so "absence" checks on plan/delegation step lines are unreliable —
+#   a superseded delegation block keeps its last "⠏ Step 4" spinner (and the
+#   plan tool leaves a "⠋ Plan: …" line) committed to scrollback forever. The
+#   footer is a live region, so it is replaced every frame and reflects real
+#   state. It also STAYS DRAWN during a slow model wait (the pane goes
+#   byte-identical but the glyph is still on screen) — which is exactly what the
+#   old fixed ~8s pane-stability threshold misread as "finished".
+#
+#   This marker is INDEPENDENT of the two post-completion assertions
+#   ("plan panel cleared" regex ◆|Step [0-9]+: and the "✓ N completed" fold
+#   line): it observes neither of those strings.
+#
+#   Returns 0 once settled, 1 on timeout (caller emits a distinct TIMEOUT verdict).
+wait_for_completion() {
+  local timeout="${1:-$TEST_TIMEOUT}"
+  local settle_need="${2:-6}"
+  local elapsed=0
+  local settled=0
+  local busy_footer_re='─+ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]'
+  while [ "$elapsed" -lt "$timeout" ]; do
+    capture
+    if echo "$CAPTURE_TEXT" | grep -qE "$busy_footer_re"; then
+      settled=0
+    else
+      settled=$((settled + 1))
+      if [ "$settled" -ge "$settle_need" ]; then
+        return 0
+      fi
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
 # send_keys — send a string to tmux pane
 send_keys() {
   tmux send-keys -t "$TMUX_SESSION" -- "$1"
@@ -119,7 +174,8 @@ cleanup() {
   log "════════════════════════════════════════"
   log "  Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed (${TOTAL_TESTS} total)"
   log "════════════════════════════════════════"
-  for r in "${TEST_RESULTS[@]}"; do
+  # ${arr[@]+...} guards the empty-array expansion under bash 3.2 + set -u
+  for r in ${TEST_RESULTS[@]+"${TEST_RESULTS[@]}"}; do
     log "  $r"
   done
   log "════════════════════════════════════════"
@@ -163,10 +219,24 @@ rm -f "$PI_TUI_WRITE_LOG" 2>/dev/null || true
 # Clean previous debug logs
 rm -rf /tmp/tui/render-*.log 2>/dev/null || true
 
+# Sweep leftover tmux sessions from earlier aborted smoke runs. Own namespace
+# only ('tui-smoke-*'); never the session this run is about to create.
+LEFTOVER_SESSIONS=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^tui-smoke-' || true)
+for s in $LEFTOVER_SESSIONS; do
+  if [ "$s" != "$TMUX_SESSION" ]; then
+    if tmux kill-session -t "$s" 2>/dev/null; then
+      log "Killed leftover tmux session: $s"
+    fi
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # Start tmux + pi
 # ---------------------------------------------------------------------------
 log "Starting pi in tmux session..."
+
+# Ensure /tmp/tui exists for render logs
+mkdir -p /tmp/tui
 
 # Explicitly unset PI_ORCHESTRATOR_SUBAGENT to prevent subagent context leak
 # from orchestrator extension (env var causes extension to skip registration)
@@ -243,7 +313,7 @@ while [ "$ELAPSED" -lt "$TEST_TIMEOUT" ]; do
   # Save snapshot
   echo "$CAPTURE_TEXT" > "$CAPTURE_DIR/01-plan-panel.txt"
   # Check for plan panel markers
-  if echo "$CAPTURE_TEXT" | grep -qE 'Orchestration Plan|Plan Panel|Plan:|┌.*Plan'; then
+  if echo "$CAPTURE_TEXT" | grep -qE '◆|Step [0-9]+:'; then
     PLAN_FOUND=1
     break
   fi
@@ -331,22 +401,46 @@ else
 fi
 
 # ── Wait for completion ────────────────────────────────────────────────────
+# Replaces a fixed ~8s quiet/stability threshold that raced slow model runs:
+# during a slow turn the pane can sit unchanged for >8s, so wait_until_stable
+# returned while the session was still mid-run and the post-completion
+# assertions below produced false failures. We instead wait for a real terminal
+# signal, bounded by $TEST_TIMEOUT, and emit a distinct TIMEOUT verdict when the
+# run never reaches terminal state (latency ≠ assertion regression).
+# Set when the run never reaches terminal state; dependent post-completion
+# assertions below (plan-cleared, fold line) are meaningless on a timed-out
+# run, so they emit explicit SKIP lines instead of cascading false failures.
+COMPLETION_TIMEOUT=0
 log ""
-log "Waiting for orchestrator to finish..."
-wait_until_stable 8 "$TEST_TIMEOUT" || true
+log "Waiting for orchestrator to finish (completion signal, ${TEST_TIMEOUT}s max)..."
+if wait_for_completion "$TEST_TIMEOUT"; then
+  log "Completion signal observed — run reached terminal state."
+else
+  COMPLETION_TIMEOUT=1
+  log "TIMEOUT: completion signal not observed after ${TEST_TIMEOUT}s"
+  # Counted verdict: bump TOTAL_TESTS so the summary keeps pass+fail == total
+  # (previously the bare fail() pushed FAIL_COUNT past TOTAL_TESTS).
+  TOTAL_TESTS=$((TOTAL_TESTS + 1))
+  fail "TIMEOUT: completion signal not observed after ${TEST_TIMEOUT}s"
+fi
 capture
 echo "$CAPTURE_TEXT" > "$CAPTURE_DIR/04-final-state.txt"
 
-# ── test_plan_panel_not_collapsed ──────────────────────────────────────────
-TOTAL_TESTS=$((TOTAL_TESTS + 1))
+# ── test_plan_panel_cleared_after_complete ───────────────────────────────
 log ""
-log "── test_plan_panel_not_collapsed ──"
-log "Verifying plan panel persists after completion..."
-
-if echo "$CAPTURE_TEXT" | grep -qE 'Orchestration Plan|Plan Panel|Plan:|┌.*Plan'; then
-  pass "Plan panel persists after completion"
+log "── test_plan_panel_cleared_after_complete ──"
+if [ "$COMPLETION_TIMEOUT" -eq 1 ]; then
+  skip "plan-cleared — run timed out, no terminal state to validate"
 else
-  fail "Plan panel disappeared after completion"
+  TOTAL_TESTS=$((TOTAL_TESTS + 1))
+  log "Verifying plan panel is cleared after completion (correct behavior)..."
+
+  # U5 acceptance — assert cleared-after-complete as correct behavior
+  if echo "$CAPTURE_TEXT" | grep -qE '◆|Step [0-9]+:'; then
+    fail "Plan panel still visible after completion (should be cleared)"
+  else
+    pass "Plan panel cleared after completion"
+  fi
 fi
 
 # ── test_no_crash_log (final) ──────────────────────────────────────────────
@@ -360,6 +454,152 @@ if [ -n "$CRASH_LOGS" ]; then
   fail "Crash/panic logs found during run: $CRASH_LOGS"
 else
   pass "No crash logs during the run"
+fi
+
+# ── test_token_glyphs_visible ──────────────────────────────────────────
+TOTAL_TESTS=$((TOTAL_TESTS + 1))
+log ""
+log "── test_token_glyphs_visible ──"
+log "Checking for token line glyphs (↑, ↓, ⇄, ↕)..."
+
+capture
+if echo "$CAPTURE_TEXT" | grep -qE '↑[0-9]+'; then
+  pass "Token input glyph (↑) visible in TUI"
+elif echo "$CAPTURE_TEXT" | grep -qE '↕[0-9]+/[0-9]+'; then
+  pass "Token context glyph (↕) visible in TUI"
+else
+  fail "No token glyphs (↑, ↕) found in TUI output"
+fi
+
+# ── test_fold_line_after_complete ────────────────────────────────────────
+log ""
+log "── test_fold_line_after_complete ──"
+if [ "$COMPLETION_TIMEOUT" -eq 1 ]; then
+  skip "fold line — run timed out, no completed run to fold"
+else
+  TOTAL_TESTS=$((TOTAL_TESTS + 1))
+  log "Checking for '✓ N completed' fold line after completion..."
+
+  if echo "$CAPTURE_TEXT" | grep -qE '✓ [0-9]+ completed'; then
+    pass "Fold line '✓ N completed' present"
+  else
+    fail "Fold line '✓ N completed' not found"
+  fi
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# §7 quality checks — TUI regression markers. Each targets a known defect
+# class; absence of the marker = regression.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── test_no_duplicate_delegate_blocks ─────────────────────────────────────
+TOTAL_TESTS=$((TOTAL_TESTS + 1))
+log ""
+log "── test_no_duplicate_delegate_blocks ──"
+log "Counting 'delegate <Name>' headers per capture (duplication guard)..."
+
+MAX_DELEGATES=0
+MAX_DELEGATES_FILE="(none)"
+for f in "$CAPTURE_DIR"/*.txt; do
+  [ -f "$f" ] || continue
+  n=$(awk '/delegate [A-Z]/' "$f" | wc -l | tr -d ' ')
+  n=${n:-0}
+  if [ "$n" -gt "$MAX_DELEGATES" ]; then
+    MAX_DELEGATES="$n"
+    MAX_DELEGATES_FILE="$(basename "$f")"
+  fi
+done
+
+if [ "$MAX_DELEGATES" -le 1 ]; then
+  pass "No duplicated delegate blocks (max ${MAX_DELEGATES} header(s) in ${MAX_DELEGATES_FILE})"
+else
+  fail "Duplicated delegate blocks: ${MAX_DELEGATES} headers in ${MAX_DELEGATES_FILE} (expected ≤1 per capture)"
+fi
+
+# ── test_step_elapsed_timer ───────────────────────────────────────────────
+TOTAL_TESTS=$((TOTAL_TESTS + 1))
+log ""
+log "── test_step_elapsed_timer ──"
+log "Checking completed step lines carry elapsed time — '(6s)' / '(2m 27s)'..."
+
+TIMER_RE='\(([0-9]+m )?[0-9]+s\)'
+TIMER_SAMPLES=0
+TIMER_VALUES=""
+for f in "$CAPTURE_DIR"/*.txt; do
+  [ -f "$f" ] || continue
+  while IFS= read -r val; do
+    [ -n "$val" ] || continue
+    TIMER_SAMPLES=$((TIMER_SAMPLES + 1))
+    TIMER_VALUES="${TIMER_VALUES}${val}"$'\n'
+  done < <(grep -E '✓ Step [0-9]+:' "$f" | grep -oE "$TIMER_RE" | tr -d '()' || true)
+done
+
+if [ "$TIMER_SAMPLES" -eq 0 ]; then
+  fail "No elapsed timer on any completed step line (expected '(Ns)' or '(Nm Ns)')"
+else
+  # Advancement across captures is reported, not enforced: a fast run can
+  # legitimately show the same duration in every capture it appears in, and
+  # enforcing it would reintroduce the spurious-failure class this fixes.
+  TIMER_DISTINCT=$(printf '%s' "$TIMER_VALUES" | sort -u | grep -c '[0-9]' || true)
+  TIMER_DISTINCT=${TIMER_DISTINCT:-0}
+  TIMER_ADVANCE="values advance across captures"
+  if [ "$TIMER_DISTINCT" -le 1 ]; then
+    TIMER_ADVANCE="single value across captures (advance not observable)"
+  fi
+  pass "Elapsed timers on completed steps (${TIMER_SAMPLES} sample(s), ${TIMER_DISTINCT} distinct; ${TIMER_ADVANCE})"
+fi
+
+# ── test_lint_pair_in_write_log ───────────────────────────────────────────
+log ""
+log "── test_lint_pair_in_write_log ──"
+if [ ! -f "$PI_TUI_WRITE_LOG" ] || [ ! -s "$PI_TUI_WRITE_LOG" ]; then
+  skip "lint pair — write log missing/empty, lint hook never exercised"
+else
+  TOTAL_TESTS=$((TOTAL_TESTS + 1))
+  log "Checking write log for 'auto-lint queued: <file>' followed by 'Linting <file>'..."
+
+  QUEUED_BASES=$(grep -oE 'auto-lint queued: [A-Za-z0-9._/-]+' "$PI_TUI_WRITE_LOG" 2>/dev/null | sed 's#.*: ##; s#.*/##' | sort -u || true)
+  LINTED_BASES=$(grep -oE 'Linting [A-Za-z0-9._/-]+' "$PI_TUI_WRITE_LOG" 2>/dev/null | sed 's#^Linting ##; s#.*/##' | sort -u || true)
+
+  if [ -z "$QUEUED_BASES" ]; then
+    fail "No 'auto-lint queued:' substep in write log — lint hook never fired"
+  else
+    LINTED_FLAT=" $(echo $LINTED_BASES | tr '\n' ' ') "
+    LINT_MATCH=""
+    for b in $QUEUED_BASES; do
+      case "$LINTED_FLAT" in
+        *" $b "*) LINT_MATCH="$b"; break ;;
+      esac
+    done
+    if [ -n "$LINT_MATCH" ]; then
+      pass "Lint pair present: 'auto-lint queued: ${LINT_MATCH}' + 'Linting ${LINT_MATCH}'"
+    else
+      fail "Queued lint file(s) [$(echo $QUEUED_BASES | tr '\n' ' ')] never followed by 'Linting <same file>'"
+    fi
+  fi
+fi
+
+# ── test_no_object_object_leak ────────────────────────────────────────────
+TOTAL_TESTS=$((TOTAL_TESTS + 1))
+log ""
+log "── test_no_object_object_leak ──"
+log "Checking captures + write log for '[object Object]' leaks..."
+
+OO_COUNT=0
+for f in "$CAPTURE_DIR"/*.txt; do
+  [ -f "$f" ] || continue
+  n=$(grep -cF '[object Object]' "$f" 2>/dev/null || true)
+  OO_COUNT=$((OO_COUNT + ${n:-0}))
+done
+if [ -f "$PI_TUI_WRITE_LOG" ]; then
+  n=$(grep -cF '[object Object]' "$PI_TUI_WRITE_LOG" 2>/dev/null || true)
+  OO_COUNT=$((OO_COUNT + ${n:-0}))
+fi
+
+if [ "$OO_COUNT" -eq 0 ]; then
+  pass "No '[object Object]' leaks across captures + write log"
+else
+  fail "Found ${OO_COUNT} '[object Object]' occurrence(s) — object rendered instead of label"
 fi
 
 # ── Verify no error patterns in write log ──────────────────────────────────
