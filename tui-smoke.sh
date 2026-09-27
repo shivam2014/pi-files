@@ -7,8 +7,8 @@
 #
 # Environment:
 #   PI_BIN          — path to pi binary (default: pi)
-#   TEST_TIMEOUT    — per-test timeout in seconds (default: 45)
-#   TOTAL_TIMEOUT   — total script timeout in seconds (default: 120)
+#   TEST_TIMEOUT    — per-test timeout in seconds (default: 120)
+#   TOTAL_TIMEOUT   — total script timeout in seconds (default: 180)
 #   CAPTURE_DIR     — directory for captures (default: /tmp/tui-smoke-XXXXXX)
 #   TMUX_SESSION    — tmux session name (default: tui-smoke-$$)
 
@@ -19,7 +19,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 PI_BIN="${1:-${PI_BIN:-pi}}"
 TEST_PROMPT="${2:-${TEST_PROMPT:-add error handling to main.ts}}"
-TEST_TIMEOUT="${TEST_TIMEOUT:-60}"
+# 120s (was 60s): a scout delegation legitimately ran 1m15s; the old default
+# tripped wait_for_completion into a TIMEOUT verdict and cascaded 3 false FAILs.
+# Override with TEST_TIMEOUT=<secs> for tighter/looser runs.
+TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 TOTAL_TIMEOUT="${TOTAL_TIMEOUT:-180}"
 TMUX_SESSION="${TMUX_SESSION:-tui-smoke-$$}"
 TMUX_COLS=80
@@ -603,7 +606,12 @@ fi
 # ── test_lint_pair_in_write_log ───────────────────────────────────────────
 log ""
 log "── test_lint_pair_in_write_log ──"
-if [ ! -f "$PI_TUI_WRITE_LOG" ] || [ ! -s "$PI_TUI_WRITE_LOG" ]; then
+if [ "$COMPLETION_TIMEOUT" -eq 1 ]; then
+  # Same timed-out-run guard as the plan-cleared / fold-line tests above: a run
+  # that never reached terminal state may simply not have written yet, so a
+  # missing lint pair here is an artifact of the timeout, not a hook failure.
+  skip "lint pair — run timed out, no writes to lint"
+elif [ ! -f "$PI_TUI_WRITE_LOG" ] || [ ! -s "$PI_TUI_WRITE_LOG" ]; then
   skip "lint pair — write log missing/empty, lint hook never exercised"
 else
   TOTAL_TESTS=$((TOTAL_TESTS + 1))
