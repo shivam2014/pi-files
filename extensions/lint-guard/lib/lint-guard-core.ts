@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { join, isAbsolute, resolve as pathResolve, dirname, parse } from "node:path";
 import { homedir, platform } from "node:os";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -26,6 +27,8 @@ export interface LintTool {
 	args: string[];
 	cwd?: string;
 	name: string;
+	/** When set, the runner must surface this instead of executing the command. */
+	error?: string;
 }
 
 export interface LintResult {
@@ -81,6 +84,40 @@ export function commandExists(cmd: string): boolean {
 		? spawnSync("where", [cmd], { stdio: "ignore" })
 		: spawnSync("sh", ["-c", `command -v ${cmd}`], { stdio: "ignore" });
 	return result.status === 0;
+}
+
+// ── Bundled TypeScript toolchain ──────────────────────────────────────
+
+/**
+ * Root of this extension tree (…/extensions) — the directory whose
+ * node_modules carries the bundled toolchain. Derived from this module's own
+ * file location, so it resolves from both the live tree and the canon mirror.
+ */
+function extensionsRootDir(): string {
+	return pathResolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+/** Absolute path to the bundled tsc JS entry (no .bin shims — cross-platform). */
+export function bundledTscPath(): string {
+	return join(extensionsRootDir(), "node_modules", "typescript", "bin", "tsc");
+}
+
+/** Honest error shown when the bundled toolchain is absent, naming the fix. */
+export function bundledTscMissingError(): string {
+	return `typescript not available: bundled toolchain missing at ${bundledTscPath()}. Run "npm install" in ${extensionsRootDir()} to install it.`;
+}
+
+/**
+ * Build the tsc lint tool from the bundled toolchain, invoked as
+ * `node <extensions>/node_modules/typescript/bin/tsc` via process.execPath.
+ * Never falls back to npx: its resolution chain can end at a deprecated stub.
+ * Missing bundled toolchain → explicit error, no silent fallback.
+ */
+function tscLintTool(tscArgs: string[], cwd: string): LintTool {
+	if (!existsSync(bundledTscPath())) {
+		return { tool: "tsc", args: [], cwd, name: "tsc", error: bundledTscMissingError() };
+	}
+	return { tool: process.execPath, args: [bundledTscPath(), ...tscArgs], cwd, name: "tsc" };
 }
 
 // ── Config roster ─────────────────────────────────────────────────────
@@ -191,9 +228,8 @@ export function buildLintCommand(
 ): string {
 	switch (fileType) {
 		case "typescript":
-			return commandExists("npx")
-				? `npx tsc --noEmit ${filePath}`
-				: `tsc --noEmit ${filePath}`;
+			// Bundled toolchain only — npx can resolve a deprecated tsc stub.
+			return `${process.execPath} ${bundledTscPath()} --noEmit ${filePath}`;
 		case "javascript":
 			return `npx eslint ${filePath}`;
 		case "python":
@@ -233,15 +269,7 @@ export function buildLintTool(filePath: string, cwd: string): LintTool | null {
 				config?.name === "biome.json" ||
 				config?.name === "biome.jsonc"
 			) {
-				const useNpx = commandExists("npx");
-				return {
-					tool: useNpx ? "npx" : "tsc",
-					args: useNpx
-						? ["tsc", "--noEmit", "--incremental"]
-						: ["--noEmit", "--incremental"],
-					cwd: config.dir,
-					name: "tsc",
-				};
+				return tscLintTool(["--noEmit", "--incremental"], config.dir);
 			}
 			if (isEslintConfig) {
 				return {
@@ -252,28 +280,12 @@ export function buildLintTool(filePath: string, cwd: string): LintTool | null {
 				};
 			}
 			{
-				const useNpx = commandExists("npx");
-				return {
-					tool: useNpx ? "npx" : "tsc",
-					args: useNpx
-						? ["tsc", "--noEmit", "--strict", resolvedFile]
-						: ["--noEmit", "--strict", resolvedFile],
-					cwd: standaloneCwd,
-					name: "tsc",
-				};
+				return tscLintTool(["--noEmit", "--strict", resolvedFile], standaloneCwd);
 			}
 
 		case "javascript":
 			if (config?.name === "tsconfig.json") {
-				const useNpx = commandExists("npx");
-				return {
-					tool: useNpx ? "npx" : "tsc",
-					args: useNpx
-						? ["tsc", "--allowJs", "--checkJs", "--noEmit"]
-						: ["--allowJs", "--checkJs", "--noEmit"],
-					cwd: config.dir,
-					name: "tsc",
-				};
+				return tscLintTool(["--allowJs", "--checkJs", "--noEmit"], config.dir);
 			}
 			if (isEslintConfig) {
 				return {
@@ -386,6 +398,21 @@ export function buildLintTool(filePath: string, cwd: string): LintTool | null {
 				name: "ruby",
 			};
 	}
+}
+
+// ── describeToolError ─────────────────────────────────────────────────
+
+/**
+ * Map a raw tool-runner error to an honest, user-facing lint error.
+ * The bash runner signals timeouts as `timeout:<seconds>`; anything else is
+ * reported as an unavailable tool.
+ */
+export function describeToolError(message: string): string {
+	if (message.startsWith("timeout:")) {
+		const seconds = Number.parseFloat(message.slice("timeout:".length));
+		return Number.isFinite(seconds) ? `Timed out after ${seconds}s` : "Timed out";
+	}
+	return `Tool not available: ${message}`;
 }
 
 // ── formatResult ──────────────────────────────────────────────────────

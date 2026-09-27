@@ -1,5 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { detectFileType, buildLintCommand, formatResult } from "../lib/lint-guard-core";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	buildLintCommand,
+	buildLintTool,
+	bundledTscMissingError,
+	bundledTscPath,
+	describeToolError,
+	detectFileType,
+	formatResult,
+} from "../lib/lint-guard-core";
 import type { LintResult } from "../lib/lint-guard-core";
 
 describe("lint-guard-core", () => {
@@ -42,9 +52,13 @@ describe("lint-guard-core", () => {
 	});
 
 	describe("buildLintCommand", () => {
-		it("builds tsc command for TypeScript", () => {
+		it("builds bundled tsc command for TypeScript (no npx)", () => {
 			const cmd = buildLintCommand("typescript", "/path/to/file.ts");
 			expect(cmd).toContain("tsc");
+			expect(cmd).toContain(bundledTscPath());
+			expect(cmd).toContain(process.execPath);
+			expect(cmd).toContain("--noEmit");
+			expect(cmd).not.toContain("npx");
 		});
 
 		it("builds eslint command for JavaScript", () => {
@@ -75,6 +89,50 @@ describe("lint-guard-core", () => {
 		it("builds rubocop/ruby command for Ruby", () => {
 			const cmd = buildLintCommand("ruby", "/path/to/file.rb");
 			expect(cmd).toMatch(/rubocop|ruby/);
+		});
+	});
+
+	describe("bundled TypeScript toolchain", () => {
+		it("points at the extensions node_modules tsc entry", () => {
+			expect(bundledTscPath()).toMatch(/node_modules\/typescript\/bin\/tsc$/);
+			expect(bundledTscPath().endsWith("extensions/node_modules/typescript/bin/tsc")).toBe(true);
+		});
+
+		it("missing-toolchain error names the install step", () => {
+			const msg = bundledTscMissingError();
+			expect(msg).toContain("not available");
+			expect(msg).toContain("npm install");
+		});
+	});
+
+	describe("buildLintTool tsc construction", () => {
+		it("runs the bundled tsc via process.execPath, never npx", () => {
+			const probe = join(tmpdir(), "pi-lint-probe", "file.ts");
+			const tool = buildLintTool(probe, process.cwd());
+			expect(tool).not.toBeNull();
+			expect(tool!.name).toBe("tsc");
+			expect(tool!.tool).toBe(process.execPath);
+			expect(tool!.tool).not.toBe("npx");
+			expect(tool!.args[0]).toBe(bundledTscPath());
+			expect(tool!.args).toContain("--noEmit");
+			expect(tool!.error).toBeUndefined();
+		});
+	});
+
+	describe("describeToolError", () => {
+		it("relabels runner timeouts honestly", () => {
+			expect(describeToolError("timeout:10")).toBe("Timed out after 10s");
+			expect(describeToolError("timeout:120")).toBe("Timed out after 120s");
+		});
+
+		it("handles fractional and malformed timeout payloads", () => {
+			expect(describeToolError("timeout:0.5")).toBe("Timed out after 0.5s");
+			expect(describeToolError("timeout:abc")).toBe("Timed out");
+		});
+
+		it("keeps Tool not available for genuinely missing tools", () => {
+			expect(describeToolError("spawn ruff ENOENT")).toBe("Tool not available: spawn ruff ENOENT");
+			expect(describeToolError("aborted")).toBe("Tool not available: aborted");
 		});
 	});
 

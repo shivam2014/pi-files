@@ -15,6 +15,9 @@ import { getAgentDir, createLocalBashOperations, type ExtensionAPI } from "@eare
 import { Type } from "typebox";
 import {
 	buildLintTool,
+	bundledTscMissingError,
+	bundledTscPath,
+	describeToolError,
 	formatResult,
 	isFileWriteCommand,
 	type LintTool,
@@ -39,6 +42,9 @@ function getShellEnv(): NodeJS.ProcessEnv {
 // Timeouts after 10s, caps error output at 2000 chars.
 
 async function runTool(tool: LintTool, filePath: string): Promise<LintResult> {
+	if (tool.error) {
+		return { success: false, errors: tool.error, tool: tool.name, file: filePath };
+	}
 	try {
 		let output = '';
 		const { exitCode } = await local.exec(
@@ -67,9 +73,10 @@ async function runTool(tool: LintTool, filePath: string): Promise<LintResult> {
 			file: filePath,
 		};
 	} catch (err: any) {
+		const message = err instanceof Error ? err.message : String(err);
 		return {
 			success: false,
-			errors: `Tool not available: ${err.message}`,
+			errors: describeToolError(message),
 			tool: tool.name,
 			file: filePath,
 		};
@@ -248,6 +255,13 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			if (!existsSync(bundledTscPath())) {
+				return {
+					content: [{ type: "text", text: bundledTscMissingError() }],
+					details: { success: false },
+				};
+			}
+
 			onUpdate?.({
 				content: [{ type: "text", text: "Running tsc --noEmit..." }],
 				details: { status: "running" },
@@ -256,7 +270,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				let output = '';
 				const { exitCode } = await local.exec(
-					'npx tsc --noEmit --pretty false',
+					`${process.execPath} ${bundledTscPath()} --noEmit --pretty false`,
 					ctx.cwd,
 					{
 						onData: (data: string | Buffer) => { output += data.toString(); },
@@ -281,11 +295,14 @@ export default function (pi: ExtensionAPI) {
 					details: { success, errors: capped },
 				};
 			} catch (err: any) {
+				const message = err instanceof Error ? err.message : String(err);
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Failed to run tsc: ${err.message}`,
+							text: message.startsWith("timeout:")
+								? describeToolError(message)
+								: `Failed to run tsc: ${message}`,
 						},
 					],
 					details: { success: false },
