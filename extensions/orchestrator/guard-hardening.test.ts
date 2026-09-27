@@ -507,7 +507,10 @@ describe("round 4 — command-position path tokens are read-op (executable, not 
 	it("allows `/bin/echo` with in-scope args (existence grants no exemption; command word is read)", () => {
 		const { result, guard } = runBash(`/bin/echo ${SCOPE_DIR}/file.tex`);
 		expect(result?.block).toBeFalsy();
-		expect(guard.isPathAllowed).toHaveBeenCalledWith("/bin/echo", "read");
+		// Round 5: `/bin/echo` basename-normalizes to the read verb `echo`, so the
+		// segment is read-classified and the old command-position read-probe no
+		// longer exists. Invariant kept: the executable is NEVER write-checked.
+		expect(guard.isPathAllowed).not.toHaveBeenCalledWith("/bin/echo", "write");
 	});
 
 	it("bare-name command unchanged: `pdflatex <in-scope>/f.tex` allowed", () => {
@@ -519,4 +522,56 @@ describe("round 4 — command-position path tokens are read-op (executable, not 
 		expect(result?.block).toBe(true);
 		expect(result?.reason).toBe("Scope violation: /outside/y is outside the allowed scope");
 	});
+});
+
+describe("round 5 — read-only specialist diagnostics false positives (fix)", () => {
+	// Live reviewer probes were blocked as "write command" for benign read-only
+	// diagnostics: absolute-path binaries, pgrep/lsof, env-assignment prefixes,
+	// and the read-only ~/.pi/check-claim.sh helper. None of these mutate files.
+	it("allows `/bin/echo hi` for a read-only specialist (basename normalization)", () => {
+		expect(runBash("/bin/echo hi", { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("allows `CAPTURE_DIR=/tmp/x /bin/echo hi` (env-assignment prefix)", () => {
+		expect(runBash("CAPTURE_DIR=/tmp/x /bin/echo hi", { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("allows `pgrep -fl pi` (process inspection)", () => {
+		expect(runBash("pgrep -fl pi", { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("allows `lsof <path>` (open-file inspection)", () => {
+		expect(runBash(`lsof ${SCOPE_DIR}/src.ts`, { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	it("allows `echo PI_SESSION_ID=${PI_SESSION_ID:-unset} ; ps -p $$`", () => {
+		expect(
+			runBash("echo PI_SESSION_ID=${PI_SESSION_ID:-unset} ; ps -p $$", { readOnly: true }).result?.block,
+		).toBeFalsy();
+	});
+
+	it("allows the read-only helper `~/.pi/check-claim.sh`", () => {
+		expect(runBash("~/.pi/check-claim.sh", { readOnly: true }).result?.block).toBeFalsy();
+	});
+
+	// Negative controls: write commands stay blocked for read-only specialists.
+	const stillBlocked: string[] = [
+		"/bin/rm -f x",
+		"rm x",
+		"tee f",
+		"mv a b",
+		"cp a b",
+		"touch f",
+		"sed -i '' f",
+		"echo x > f",
+		"echo x >> f",
+		"/usr/bin/git push",
+		"~/.pi/claim.sh",
+		"bash ~/.pi/claim.sh",
+	];
+	for (const cmd of stillBlocked) {
+		it(`still blocks \`${cmd}\` for a read-only specialist`, () => {
+			expect(runBash(cmd, { readOnly: true }).result?.block).toBe(true);
+		});
+	}
 });

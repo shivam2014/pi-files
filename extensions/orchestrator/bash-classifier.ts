@@ -3,6 +3,8 @@
  * Uses simple string matching instead of regex for readability.
  */
 
+import { basename } from "node:path";
+
 // Commands that are always read-only
 const READ_COMMANDS = new Set([
   "ls", "cat", "grep", "find", "head", "tail", "wc", "echo", "pwd", "date",
@@ -28,7 +30,29 @@ const READ_COMMANDS = new Set([
   // Round 3: read-only inspection tools that were missing from the allowlist
   // (blocked as writes for read-only specialists): hashing, file comparison.
   "shasum", "diff", "cmp",
+  // Round 5: process / open-file diagnostics (live reviewer FP: blocked as
+  // writes). Base-token normalization (below) also covers `/usr/bin/pgrep` etc.
+  "pgrep", "lsof",
 ]);
+
+/** Leading `VAR=value` env-assignment tokens inline a variable, not a command
+ *  (commit b977b4b precedent: `CAPTURE_DIR=/tmp/x` names no path, runs no verb).
+ *  The regex anchors on the NAME before `=`, so `${VAR:-default}`-valued and
+ *  `$$`-containing values classify exactly like plain values. */
+const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** Verified read-only helper scripts under ~/.pi. Scripts execute arbitrary
+ *  code — only named helpers with a known read-only body are allowed, and only
+ *  via a `~/.pi/`, `$HOME/.pi/` or absolute `…/.pi/` path form. `claim.sh` is
+ *  deliberately absent: it WRITES .claimed-by and must stay blocked. */
+const READ_ONLY_PI_SCRIPTS = new Set(["check-claim.sh"]);
+
+/** True when a raw command token names a known read-only ~/.pi helper script. */
+function isReadOnlyPiScript(rawCommand: string): boolean {
+  if (!rawCommand || !READ_ONLY_PI_SCRIPTS.has(basename(rawCommand))) return false;
+  if (rawCommand.startsWith("~/.pi/") || rawCommand.startsWith("$HOME/.pi/")) return true;
+  return /^\/.*\/\.pi\/[^/]+$/.test(rawCommand);
+}
 
 // Commands that are always write-modifying
 const WRITE_COMMANDS = new Set([
@@ -99,8 +123,15 @@ export function isWriteCommand(command: string): boolean {
     return true;
   }
 
+  // Round 5: leading env assignments (`VAR=value`, incl. `${VAR:-default}`
+  // values) name no command — skip them. Path-qualified binaries classify by
+  // BASENAME (`/bin/echo` is `echo`), so absolute/relative read tools are not
+  // misread as unknown-command writes.
   const parts = trimmed.split(/\s+/);
-  const baseCommand = parts[0] ?? '';
+  let cmdIndex = 0;
+  while (cmdIndex < parts.length && ENV_ASSIGNMENT_RE.test(parts[cmdIndex])) cmdIndex++;
+  const rawCommand = parts[cmdIndex] ?? '';
+  const baseCommand = rawCommand.includes('/') ? basename(rawCommand) : rawCommand;
 
   // Check if base command is a known write command
   if (WRITE_COMMANDS.has(baseCommand)) {
@@ -113,9 +144,15 @@ export function isWriteCommand(command: string): boolean {
   // Shell wrappers run their payload: classify the wrapped command. `-c`
   // payloads are opaque (arbitrary code) — fail closed to write.
   if (baseCommand === 'bash' || baseCommand === 'sh' || baseCommand === 'zsh') {
-    const wrapped = parts.slice(1);
+    const wrapped = parts.slice(cmdIndex + 1);
     if (wrapped.length === 0 || wrapped[0] === '-c') return true;
     return isWriteCommand(wrapped.join(' '));
+  }
+
+  // Round 5: verified read-only ~/.pi helper scripts. Checked BEFORE the read
+  // allowlist so the raw token keeps its path form for the trust check.
+  if (isReadOnlyPiScript(rawCommand)) {
+    return false;
   }
 
   // Check if base command is a known read command
@@ -128,7 +165,7 @@ export function isWriteCommand(command: string): boolean {
 
   // Check for git subcommands
   if (baseCommand === "git") {
-    const subcommand = parts[1];
+    const subcommand = parts[cmdIndex + 1];
     if (subcommand === '--version' || subcommand === 'version') return false;
     if (subcommand) {
       const gitCmd = `git ${subcommand}`;
@@ -139,7 +176,7 @@ export function isWriteCommand(command: string): boolean {
 
   // Check for gh subcommands (typically 3-word: gh <resource> <action>)
   if (baseCommand === "gh") {
-    const ghCmd = parts.slice(0, 3).join(" ");
+    const ghCmd = parts.slice(cmdIndex, cmdIndex + 3).join(" ");
     if (READ_COMMANDS.has(ghCmd)) return false;
     if (WRITE_COMMANDS.has(ghCmd)) return true;
     // Unknown gh subcommands default to write (safe default)
@@ -148,12 +185,12 @@ export function isWriteCommand(command: string): boolean {
 
   // Check for test runner and type-check commands via package managers
   if (baseCommand === 'npx' || baseCommand === 'npm' || baseCommand === 'yarn' || baseCommand === 'pnpm' || baseCommand === 'bun') {
-    const secondWord = parts[1];
+    const secondWord = parts[cmdIndex + 1];
     const readOnlySubcommands = new Set(['test', 'vitest', 'jest', 'mocha', 'cypress', 'playwright', 'tsc', 'typecheck', 'type-check', 'lint', 'eslint', 'prettier', '--version', '-v', '--help', '-h']);
     const readOnlyScripts = new Set(['test', 'test:unit', 'test:integration', 'typecheck', 'type-check', 'lint', 'typecheck:watch']);
     if (readOnlySubcommands.has(secondWord)) return false;
     if ((baseCommand === 'npm' || baseCommand === 'pnpm' || baseCommand === 'yarn') && secondWord === 'run') {
-      const scriptName = parts[2];
+      const scriptName = parts[cmdIndex + 2];
       if (readOnlyScripts.has(scriptName)) return false;
     }
     if (baseCommand === 'yarn' && readOnlyScripts.has(secondWord)) return false;

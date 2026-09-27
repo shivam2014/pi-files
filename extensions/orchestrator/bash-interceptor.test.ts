@@ -272,3 +272,57 @@ describe("getBashToolReplacement — BUG-5 scoped /tmp exemptions", () => {
     expect(r.tool).toBe("write");
   });
 });
+
+// ── Round 5: read-only specialist diagnostics false positives ──
+// createBashInterceptor({ readOnly: true }) must not block benign read-only
+// diagnostics (basename-normalized binaries, pgrep/lsof, env-assignment
+// prefixes, the ~/.pi/check-claim.sh read-only helper).
+
+describe("createBashInterceptor — round 5 read-only diagnostics", () => {
+  const run = (command: string) =>
+    createBashInterceptor({ readOnly: true }).handler(
+      { toolName: "bash", input: { command } },
+      { ui: { notify: vi.fn() } },
+    );
+
+  it("allows `/bin/echo hi` (basename normalization)", async () => {
+    expect(await run("/bin/echo hi")).toBeUndefined();
+  });
+
+  it("allows `CAPTURE_DIR=/tmp/x /bin/echo hi` (env-assignment prefix)", async () => {
+    expect(await run("CAPTURE_DIR=/tmp/x /bin/echo hi")).toBeUndefined();
+  });
+
+  it("allows `pgrep -fl pi`", async () => {
+    expect(await run("pgrep -fl pi")).toBeUndefined();
+  });
+
+  it("allows `lsof /some/file`", async () => {
+    expect(await run("lsof /some/file")).toBeUndefined();
+  });
+
+  it("allows the `~/.pi/check-claim.sh` read-only helper", async () => {
+    expect(await run("~/.pi/check-claim.sh")).toBeUndefined();
+  });
+
+  it("still blocks `/bin/rm -f x`", async () => {
+    expect(await run("/bin/rm -f x")).toEqual({
+      block: true,
+      reason: "Write command blocked in read-only mode",
+    });
+  });
+
+  it("still blocks redirects: `echo x > f`", async () => {
+    expect(await run("echo x > f")).toEqual({
+      block: true,
+      reason: "Write command blocked in read-only mode",
+    });
+  });
+
+  it("still blocks `~/.pi/claim.sh` (writes the claim file)", async () => {
+    expect(await run("~/.pi/claim.sh orchestrator-ui-leaks")).toEqual({
+      block: true,
+      reason: "Write command blocked in read-only mode",
+    });
+  });
+});

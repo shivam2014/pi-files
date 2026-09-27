@@ -103,3 +103,45 @@ describe("round 3 — read-only tool allowlist (read-only specialist false posit
   it("still classifies `diff` with a redirect as write", () =>
     expect(isWriteCommand("diff -q a.ts b.ts > /tmp/d.txt")).toBe(true));
 });
+
+// ── Round 5: path-token normalization + read-only diagnostics ──
+// Read-only specialists (reviewer/scout) were false-positived on benign
+// diagnostics: `/bin/echo`, `pgrep`, `lsof`, `~/.pi/check-claim.sh` classified
+// as writes because the raw base token is not in the allowlist. Absolute /
+// relative path tokens must classify by BASENAME, leading `VAR=value` and
+// `VAR=${X:-default}` env assignments must be skipped (commit b977b4b
+// precedent: assignments inline no command), and named verified read-only
+// ~/.pi helper scripts are allowed. `claim.sh` is NOT listed — it writes
+// .claimed-by and must stay blocked.
+
+describe("round 5 — path-token normalization and read-only diagnostics", () => {
+  it("allows `/bin/echo hi` (basename echo)", () => expect(isWriteCommand("/bin/echo hi")).toBe(false));
+  it("allows `CAPTURE_DIR=/tmp/x /bin/echo hi` (env-assignment prefix skipped)", () =>
+    expect(isWriteCommand("CAPTURE_DIR=/tmp/x /bin/echo hi")).toBe(false));
+  it("allows `${VAR:-default}`-valued env assignment prefix", () =>
+    expect(isWriteCommand("CAPTURE_DIR=${TMPROOT:-/tmp} /bin/echo hi")).toBe(false));
+  it("allows `pgrep -fl pi`", () => expect(isWriteCommand("pgrep -fl pi")).toBe(false));
+  it("allows `lsof /some/file`", () => expect(isWriteCommand("lsof /some/file")).toBe(false));
+  it("allows `echo PI_SESSION_ID=${PI_SESSION_ID:-unset} ; ps -p $$`", () =>
+    expect(isWriteCommand("echo PI_SESSION_ID=${PI_SESSION_ID:-unset} ; ps -p $$")).toBe(false));
+  it("allows the read-only helper `~/.pi/check-claim.sh`", () =>
+    expect(isWriteCommand("~/.pi/check-claim.sh")).toBe(false));
+  // Negative controls — the allowlist must not loosen write blocking.
+  it("still blocks `/bin/rm -f x` (basename rm)", () => expect(isWriteCommand("/bin/rm -f x")).toBe(true));
+  it("still blocks `rm x`", () => expect(isWriteCommand("rm x")).toBe(true));
+  it("still blocks `tee f`", () => expect(isWriteCommand("tee f")).toBe(true));
+  it("still blocks `mv a b`", () => expect(isWriteCommand("mv a b")).toBe(true));
+  it("still blocks `cp a b`", () => expect(isWriteCommand("cp a b")).toBe(true));
+  it("still blocks `touch f`", () => expect(isWriteCommand("touch f")).toBe(true));
+  it("still blocks `sed -i '' f`", () => expect(isWriteCommand("sed -i '' f")).toBe(true));
+  it("still blocks `> f` redirect", () => expect(isWriteCommand("echo x > f")).toBe(true));
+  it("still blocks `>> f` redirect", () => expect(isWriteCommand("echo x >> f")).toBe(true));
+  it("still blocks `/usr/bin/git push` (basename git, write subcommand)", () =>
+    expect(isWriteCommand("/usr/bin/git push")).toBe(true));
+  it("still blocks `~/.pi/claim.sh` (writes the claim file — not in helper allowlist)", () =>
+    expect(isWriteCommand("~/.pi/claim.sh orchestrator-ui-leaks")).toBe(true));
+  it("still blocks `bash ~/.pi/claim.sh` (wrapper recursion)", () =>
+    expect(isWriteCommand("bash ~/.pi/claim.sh")).toBe(true));
+  it("still blocks env-prefixed writes: `CAPTURE_DIR=/tmp/x /bin/rm -f x`", () =>
+    expect(isWriteCommand("CAPTURE_DIR=/tmp/x /bin/rm -f x")).toBe(true));
+});
