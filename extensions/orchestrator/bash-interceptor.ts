@@ -199,10 +199,37 @@ function isMutatingEditor(name: string, text: string): boolean {
   return hasFileWriteIndicator(text);
 }
 
+/**
+ * True only for a REAL recursive+force `rm`. The flags — never the operands —
+ * must contain both `r`/`R` (recursive) and `f` (force), in any order or
+ * combined form: `rm -rf x`, `rm -fr x`, `rm -r -f x`, `rm -Rf x`,
+ * `rm --recursive --force x`.
+ *
+ * Round 4: the old regex `-[^ ]*r[^ ]*f|-[^ ]*f[^ ]*r` matched a single `-f`
+ * plus a dash-containing OPERAND naming r-then-f (e.g.
+ * `rm -f capture-dir/reports-final.txt` → "rm -rf is blocked" over-match) and
+ * missed the split `-r -f` form. Operands are not scanned here, so plain
+ * `rm -f /tmp/x` passes.
+ */
 function isBlockedRmRecursive(command: string): boolean {
-  const trimmed = command.trim();
-  if (!trimmed.startsWith("rm ") && !trimmed.startsWith("rm\t")) return false;
-  return /-[^ ]*r[^ ]*f|-[^ ]*f[^ ]*r|--recursive.*--force|--force.*--recursive/.test(trimmed);
+	const segment = splitShellSegments(tokenizeShell(command))[0] ?? [];
+	let i = 0;
+	while (i < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[i].value) || segment[i].value === "export")) i++;
+	const word = segment[i]?.value;
+	if (!word || basename(word) !== "rm") return false;
+	let recursive = false;
+	let force = false;
+	for (const token of segment.slice(i + 1)) {
+		const v = token.value;
+		if (v === "--") break; // end of options: nothing after this is a flag
+		if (v === "--recursive") { recursive = true; continue; }
+		if (v === "--force") { force = true; continue; }
+		if (/^-[A-Za-z]+$/.test(v)) {
+			if (/[rR]/.test(v)) recursive = true;
+			if (v.includes("f")) force = true;
+		}
+	}
+	return recursive && force;
 }
 
 // ── Scoped /tmp exemptions (BUG-5) ──

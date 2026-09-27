@@ -462,3 +462,61 @@ describe("round 3 — read-tool allowlist + redirect-target scope", () => {
 		expect(result?.reason).toBe("Scope violation: /outside/x is outside the allowed scope");
 	});
 });
+
+describe("round 4 — env-assignment tokens are not path operands (false-positive fix)", () => {
+	// `CAPTURE_DIR=/tmp/x` / `PATH=…` used to be scanned as a path, resolve to
+	// `<cwd>/CAPTURE_DIR=/tmp/x`, and scope-block the whole command. Assignments
+	// name no path; the value after `=` must not be scanned either.
+	it("allows `CAPTURE_DIR=/tmp/x tee <in-scope>/x.ts` without scope-checking the assignment", () => {
+		const { result, guard } = runBash(`CAPTURE_DIR=/tmp/x tee ${SCOPE_DIR}/x.ts`);
+		expect(result?.block).toBeFalsy();
+		const checked = guard.isPathAllowed.mock.calls.map((c: any[]) => String(c[0]));
+		expect(checked.some((p) => p.includes("CAPTURE_DIR"))).toBe(false);
+		expect(guard.isPathAllowed).toHaveBeenCalledWith(`${SCOPE_DIR}/x.ts`, "write");
+	});
+
+	it("allows `PATH=/outside/bin pdflatex <in-scope>/file.tex` (assignment value not scanned)", () => {
+		const { result, guard } = runBash(`PATH=/outside/bin pdflatex ${SCOPE_DIR}/file.tex`);
+		expect(result?.block).toBeFalsy();
+		const checked = guard.isPathAllowed.mock.calls.map((c: any[]) => String(c[0]));
+		expect(checked.some((p) => p.includes("PATH=") || p.includes("/outside/bin"))).toBe(false);
+	});
+
+	it("still blocks an env-prefixed command with an out-of-scope operand", () => {
+		const { result } = runBash("CAPTURE_DIR=/tmp/x rm -f /outside/x.ts");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/x.ts is outside the allowed scope");
+	});
+});
+
+describe("round 4 — command-position path tokens are read-op (executable, not operand)", () => {
+	// An unknown command defaults write-class; its executable path must still be
+	// a READ (running a binary mutates nothing), while arguments keep write-op.
+	it("allows an out-of-scope absolute executable with in-scope args and checks it as read", () => {
+		const { result, guard } = runBash(`/outside/texlive/bin/pdflatex -output-directory ${SCOPE_DIR} ${SCOPE_DIR}/file.tex`);
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).toHaveBeenCalledWith("/outside/texlive/bin/pdflatex", "read");
+	});
+
+	it("still write-checks ARGUMENTS of an out-of-scope executable", () => {
+		const { result } = runBash("/outside/bin/tool /outside/arg.ts");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/arg.ts is outside the allowed scope");
+	});
+
+	it("allows `/bin/echo` with in-scope args (existence grants no exemption; command word is read)", () => {
+		const { result, guard } = runBash(`/bin/echo ${SCOPE_DIR}/file.tex`);
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).toHaveBeenCalledWith("/bin/echo", "read");
+	});
+
+	it("bare-name command unchanged: `pdflatex <in-scope>/f.tex` allowed", () => {
+		expect(runBash(`pdflatex ${SCOPE_DIR}/file.tex`).result?.block).toBeFalsy();
+	});
+
+	it("redirects stay write-checked: `/bin/echo hi > /outside/y` blocked", () => {
+		const { result } = runBash("/bin/echo hi > /outside/y");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/y is outside the allowed scope");
+	});
+});

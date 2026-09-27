@@ -162,6 +162,66 @@ describe("getBashToolReplacement", () => {
   });
 });
 
+// ── rm -f over-match (round 4) ──
+// The dangerous check must match a real recursive+force combo (flags only),
+// not `-f` alone and not r/f letters inside a dash-containing OPERAND.
+
+describe("isBlockedRmRecursive — rm flag combo detection (round 4)", () => {
+  it("allows `rm -f /tmp/x` (force alone is not recursive)", () => {
+    expect(getBashToolReplacement("rm -f /tmp/x")).toEqual({ allowed: true });
+  });
+
+  it("allows `rm -f <dash-containing operand naming r-then-f>` (old over-match)", () => {
+    // Used to match /-[^ ]*r[^ ]*f/ via the OPERAND `capture-dir/reports-final.txt`
+    // and blame it on "rm -rf is blocked".
+    expect(getBashToolReplacement("rm -f /tmp/capture-dir/reports-final.txt")).toEqual({ allowed: true });
+  });
+
+  it("allows `rm -r /tmp/x` (recursive without force)", () => {
+    expect(getBashToolReplacement("rm -r /tmp/x")).toEqual({ allowed: true });
+  });
+
+  it("still blocks `rm -rf <relative>` (combined flag)", () => {
+    const r = getBashToolReplacement("rm -rf generated-dir");
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain("rm -rf is blocked");
+  });
+
+  it("blocks `rm -fr <path>` (combined, reversed order)", () => {
+    const r = getBashToolReplacement("rm -fr /tmp/x");
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain("rm -rf is blocked");
+  });
+
+  it("blocks split `rm -r -f <path>` and `rm -f -r <path>`", () => {
+    expect(getBashToolReplacement("rm -r -f /tmp/x").allowed).toBe(false);
+    expect(getBashToolReplacement("rm -f -r /tmp/x").allowed).toBe(false);
+  });
+
+  it("blocks long-form `rm --recursive --force <path>`", () => {
+    expect(getBashToolReplacement("rm --recursive --force /tmp/x").allowed).toBe(false);
+  });
+
+  it("does not block when `-r`/`-f` appear only after `--` (operands)", () => {
+    expect(getBashToolReplacement("rm -f -- /tmp/-r-final.txt")).toEqual({ allowed: true });
+  });
+
+  it("`rm -rf /` stays blocked override-proof (dangerous, not just bypassable)", () => {
+    expect(getBashToolReplacement("rm -rf /", true)).toEqual({
+      allowed: false,
+      reason:
+        "Dangerous command blocked. This command cannot be executed even with override:true.",
+    });
+  });
+
+  it("interceptor handler does not flag `rm -f /tmp/x` as dangerous", async () => {
+    const interceptor = createBashInterceptor({ readOnly: false, blockDangerous: true });
+    const ctx = { ui: { notify: vi.fn() } };
+    const result = await interceptor.handler({ toolName: "bash", input: { command: "rm -f /tmp/x" } }, ctx);
+    expect(result).toBeUndefined();
+  });
+});
+
 // ── BUG-5: scoped /tmp exemptions (temp-scratch writes must not be redirected) ──
 
 describe("getBashToolReplacement — BUG-5 scoped /tmp exemptions", () => {

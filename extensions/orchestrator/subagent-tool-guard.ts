@@ -644,6 +644,13 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 								// Redirect operator tokens name no path of their own; the target token
 								// (separate or attached form) supplies the cleaned path below.
 								if (!token.quoted && (token.value === '>' || token.value === '>>')) continue;
+								// Round 4: env-assignment tokens (`VAR=value`, `PATH=…`) assign an
+								// environment variable — the token is not a path operand, and the value
+								// after `=` must NOT be scanned (do not split on `=`): without this,
+								// `CAPTURE_DIR=/tmp/x` resolved as `<cwd>/CAPTURE_DIR=/tmp/x` → false
+								// scope block. An actual value flag (`--output=/path`) starts with `-`
+								// and is handled by the attached-value branch below, untouched.
+								if (!token.quoted && !redirectTargetAt.has(t) && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.value)) continue;
 								const value = redirectTargetAt.get(t) ?? token.value;
 								if (value === '' || value === '--') continue;
 								const prev = segment[t - 1];
@@ -675,8 +682,18 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 									}
 									for (const match of matches) {
 										// Round 3: redirect TARGETS are write-op even when the command is
-										// read-classified; every other operand follows operandOp.
-										segEntries.push({ raw: match, op: redirectTargetAt.has(t) ? 'write' : operandOp });
+										// read-classified; every other operand follows operandOp. Redirect
+										// takes precedence so an attached form in command position
+										// (`>/out/x echo hi`) can never be downgraded to a read.
+										// Round 4 (option iii): a path token in COMMAND position is the
+										// executable being run — always a read, never an operand write.
+										// Unknown commands default write-class, which otherwise scope-blocked
+										// `/usr/local/texlive/…/pdflatex -output-directory <tmp> f.tex` on the
+										// binary path itself. Args/redirects stay write-checked.
+										segEntries.push({
+											raw: match,
+											op: redirectTargetAt.has(t) ? 'write' : t === cmdIdx ? 'read' : operandOp,
+										});
 									}
 								}
 							}
