@@ -44,6 +44,9 @@ The extension is the mechanical safety net for manager and worker mistakes. A we
 ### 8. Workers get complete truth about their part
 Workers have no global context. The manager must hand each worker: its real tools, its real limits, the guards that will block it, and enough scope to deliver its part of the working system.
 
+### 9. Simplicity
+**Simplicity.** Tools, frameworks, and procedures must be simple and intuitive — second nature. If it must scale to thousands of users, the procedure must be followable without training. Prefer no-surprise states, honest messages, and one obvious behavior per tool.
+
 ---
 
 ## Design Constraints
