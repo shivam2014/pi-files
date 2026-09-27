@@ -47,6 +47,7 @@ vi.mock("node:fs", async () => {
 });
 
 import { handleSubagentToolCall } from "./subagent-tool-guard";
+import { isWriteCommand } from "./bash-classifier";
 import type { SubagentState } from "./subagent-sessions";
 
 /** Install a ScopeGuard stub whose scope is exactly SCOPE_DIR (reads always allowed). */
@@ -574,4 +575,25 @@ describe("round 5 — read-only specialist diagnostics false positives (fix)", (
 			expect(runBash(cmd, { readOnly: true }).result?.block).toBe(true);
 		});
 	}
+});
+
+describe("round 6 — `bash -n`/`--noexec` are read-class (reads are never blocked)", () => {
+	// Design (scope-guard.ts): reads are never blocked. `bash -c` payloads are
+	// opaque executable code and stay write-class (covered by round 3 tests).
+	it("classifier: `-n`/`--noexec` wrappers are read-class, `-c` stays write-class", () => {
+		expect(isWriteCommand("bash -n script.sh")).toBe(false);
+		expect(isWriteCommand("sh -n script.sh")).toBe(false);
+		expect(isWriteCommand("bash --noexec script.sh")).toBe(false);
+		expect(isWriteCommand("bash -c 'cat /outside/x.ts'")).toBe(true);
+	});
+
+	it("allows `bash -n <in-scope script>` for a read-only specialist", () => {
+		const { result } = runBash(`bash -n ${SCOPE_DIR}/git-hook.sh`, { readOnly: true });
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("does not scope-block `bash -n <out-of-scope script>` (syntax check only reads)", () => {
+		const { result } = runBash("bash -n /outside/hook.sh", { readOnly: true });
+		expect(result?.block).toBeFalsy();
+	});
 });

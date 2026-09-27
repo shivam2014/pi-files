@@ -200,6 +200,20 @@ function isMutatingEditor(name: string, text: string): boolean {
 }
 
 /**
+ * True when `touch` sets timestamps/metadata via flags the native write tool
+ * cannot express (`-a`, `-t`, `-r`, `-d`, `--date`, `--reference`, `--time`).
+ * Those calls pass through to bash; plain `touch <file>` still maps to write.
+ */
+function touchSetsMetadata(rest: string): boolean {
+  for (const token of rest.split(/\s+/)) {
+    if (!token) continue;
+    if (/^-[a-zA-Z]*[trda][a-zA-Z]*$/.test(token)) return true;
+    if (/^--(?:date|reference|time)(?:=|$)/.test(token)) return true;
+  }
+  return false;
+}
+
+/**
  * True only for a REAL recursive+force `rm`. The flags — never the operands —
  * must contain both `r`/`R` (recursive) and `f` (force), in any order or
  * combined form: `rm -rf x`, `rm -fr x`, `rm -r -f x`, `rm -Rf x`,
@@ -313,8 +327,9 @@ export function getBashToolReplacement(command: string | undefined, override?: b
     case "awk":
     case "perl":
       return isMutatingEditor(name, text) ? { allowed: true, tool: "edit" } : { allowed: true };
-    case "mkdir":
-    case "touch": return { allowed: true, tool: "write" };
+    case "mkdir": return { allowed: true, tool: "write" };
+    case "touch":
+      return touchSetsMetadata(rest) ? { allowed: true } : { allowed: true, tool: "write" };
     case "python":
     case "python3":
     case "node":

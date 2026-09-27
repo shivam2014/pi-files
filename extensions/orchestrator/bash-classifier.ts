@@ -145,6 +145,9 @@ export function isWriteCommand(command: string): boolean {
   // payloads are opaque (arbitrary code) — fail closed to write.
   if (baseCommand === 'bash' || baseCommand === 'sh' || baseCommand === 'zsh') {
     const wrapped = parts.slice(cmdIndex + 1);
+    // Round 6: `-n`/`--noexec` only syntax-check the script — pure reads, never
+    // blocked by design. `-c` payloads are opaque executable code: write-class.
+    if (wrapped[0] === '-n' || wrapped[0] === '--noexec') return false;
     if (wrapped.length === 0 || wrapped[0] === '-c') return true;
     return isWriteCommand(wrapped.join(' '));
   }

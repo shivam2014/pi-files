@@ -33,6 +33,12 @@ describe("createBashInterceptor", () => {
     expect(result).toEqual({ block: true, reason: "Write command blocked in read-only mode" });
   });
 
+  it("still blocks metadata touch in read-only mode (write-class unchanged)", async () => {
+    const interceptor = createBashInterceptor({ readOnly: true });
+    const result = await interceptor.handler(mockEvent("touch -t 202001010000 file"), mockCtx);
+    expect(result).toEqual({ block: true, reason: "Write command blocked in read-only mode" });
+  });
+
   it("allows write commands in read-write mode", async () => {
     const interceptor = createBashInterceptor({ readOnly: false });
     const result = await interceptor.handler(mockEvent("rm file.txt"), mockCtx);
@@ -122,6 +128,16 @@ describe("getBashToolReplacement", () => {
 
   it("redirects touch to write", () => {
     expect(getBashToolReplacement("touch file.txt")).toEqual({ allowed: true, tool: "write" });
+  });
+
+  it("allows touch with metadata flags through bash (write tool cannot set timestamps)", () => {
+    expect(getBashToolReplacement("touch -t 202001010000 file")).toEqual({ allowed: true });
+    expect(getBashToolReplacement("touch --date='2020-01-01' file")).toEqual({ allowed: true });
+    expect(getBashToolReplacement("touch --reference=ref file")).toEqual({ allowed: true });
+    expect(getBashToolReplacement("touch --time=202001010000 file")).toEqual({ allowed: true });
+    expect(getBashToolReplacement("touch -d '2020-01-01' file")).toEqual({ allowed: true });
+    expect(getBashToolReplacement("touch -r ref file")).toEqual({ allowed: true });
+    expect(getBashToolReplacement("touch -a file")).toEqual({ allowed: true });
   });
 
   it("redirects sed -i to edit", () => {

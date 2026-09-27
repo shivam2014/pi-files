@@ -8,6 +8,7 @@
  * into another's scope check.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { homedir } from "node:os";
 
 const SCOPE_DIR = "/work/root/repo";
 const DELEGATION_CWD = "/work/root";
@@ -136,5 +137,70 @@ describe("#139 bash path-token resolution", () => {
 		const { result, guard } = runBash(`VAR=1 git commit -m "fix foo.ts"`);
 		expect(result?.block).toBeFalsy();
 		expect(guard.isPathAllowed).not.toHaveBeenCalled();
+	});
+});
+
+describe("guard false-positive batch — tilde extraction, .c truncation, for-loop lists, wrapper size gate", () => {
+	it("(tilde) expands `~/.pi/claim.sh` before scope resolution", () => {
+		const { result, guard, state } = runBash("bash ~/.pi/claim.sh");
+		expect(guard.isPathAllowed).toHaveBeenCalledWith(`${homedir()}/.pi/claim.sh`, "write");
+		expect(guard.isPathAllowed).not.toHaveBeenCalledWith("/.pi/claim.sh", expect.anything());
+		expect(state.blockedCalls[0]?.target).toBe("~/.pi/claim.sh");
+		expect(result?.reason).toBe("Scope violation: ~/.pi/claim.sh is outside the allowed scope");
+	});
+
+	it("(truncation) resolves `.claimed-by` whole, not as `.c`", () => {
+		const { result, guard, state } = runBash("touch /work/root/.claimed-by");
+		expect(guard.isPathAllowed).toHaveBeenCalledWith("/work/root/.claimed-by", "write");
+		expect(guard.isPathAllowed).not.toHaveBeenCalledWith("/work/root/.c", expect.anything());
+		expect(result?.reason).toBe("Scope violation: /work/root/.claimed-by is outside the allowed scope");
+		expect(state.blockedCalls[0]?.target).toBe("/work/root/.claimed-by");
+	});
+
+	it("(truncation) allows an in-scope `.claimed-by` with the full path checked", () => {
+		const { result, guard } = runBash("touch /work/root/repo/.claimed-by");
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).toHaveBeenCalledWith("/work/root/repo/.claimed-by", "write");
+	});
+
+	it("(loop) treats `for … in` items as data, not scope-checked operands", () => {
+		const { result, guard } = runBash(
+			"for f in guard-hardening.test.ts; do shasum -a 256 /work/root/repo/$f; done",
+		);
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).not.toHaveBeenCalledWith("/work/root/guard-hardening.test.ts", "write");
+	});
+
+	it("(loop) still blocks an out-of-scope redirect inside the loop body", () => {
+		const { result } = runBash(
+			"for f in /work/root/repo/a.ts; do shasum -a 256 $f > /outside/out.txt; done",
+		);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/out.txt is outside the allowed scope");
+	});
+
+	it("(wrapper) `perl -e '<script>' <in-scope file>` skips the size gate for script operands", () => {
+		const { result, guard } = runBash(`perl -e 'alarm 90; exec @ARGV' -- ${SCOPE_DIR}/huge.ts`);
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).toHaveBeenCalledWith(`${SCOPE_DIR}/huge.ts`, "write");
+		expect(guard.checkFileSize).not.toHaveBeenCalled();
+	});
+
+	it("(wrapper) still size-blocks a real write redirect target", () => {
+		const { result } = runBash(`perl -e 'print 1' > ${SCOPE_DIR}/huge.ts`);
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe(`File too large: ${SCOPE_DIR}/huge.ts`);
+	});
+
+	it("(wrapper) still scope-blocks a genuine out-of-scope redirect", () => {
+		const { result } = runBash("perl -e 'print 1' > /outside/x.ts");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/x.ts is outside the allowed scope");
+	});
+
+	it("(wrapper) still scope-checks script operands (scope gate not weakened)", () => {
+		const { result } = runBash("perl -e 'unlink @ARGV' /outside/x.ts");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/x.ts is outside the allowed scope");
 	});
 });

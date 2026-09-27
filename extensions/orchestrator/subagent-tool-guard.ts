@@ -40,10 +40,15 @@ function isTmpPath(p: string): boolean {
 /**
  * W2: broadened file-like extension allowlist (+sh/json/yaml/md/env/csv/log/mjs/cjs…).
  * Round 2: hoisted to module scope so substitution-payload scanning can reuse it.
+ * Round 6: `~` joins the token character class so `~/.pi/claim.sh` is extracted
+ * whole and reaches the `~/` homedir expansion in the resolution loop; the
+ * `(?![\w-])` right boundary stops single-letter extensions (`c`) from
+ * swallowing hyphen-suffixed names like `.claimed-by` (which then fall through
+ * to the extensionless rule and keep their full path).
  * Limit: bare extensionless filenames without a `/` (Makefile, LICENSE) are only
  * caught via the per-segment write-op extensionless rule.
  */
-const pathRegex = /[\w./-]+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc|md|mdx|yaml|yml|toml|txt|sh|bash|zsh|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|sql|env|csv|tsv|log|xml|html|css|scss|sass|less|vue|svelte|lock|cfg|ini|conf|graphql|proto|tf|tfvars)/g;
+const pathRegex = /[\w./~-]+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonc|md|mdx|yaml|yml|toml|txt|sh|bash|zsh|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|sql|env|csv|tsv|log|xml|html|css|scss|sass|less|vue|svelte|lock|cfg|ini|conf|graphql|proto|tf|tfvars)(?![\w-])/g;
 
 /**
  * C2 (round 2): locate command substitutions (`$( … )` with a balanced-paren
@@ -406,7 +411,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 			const input = event.input || {};
 			// Per-path operation: bash entries carry their own segment-level op (C1);
 			// text-tool inputs inherit the tool's operation.
-			const filePaths: { raw: string; base: string; op: 'read' | 'write' | 'edit' }[] = [];
+			const filePaths: { raw: string; base: string; op: 'read' | 'write' | 'edit'; skipSizeCheck?: boolean }[] = [];
 			const textOp = event.toolName === 'edit' ? 'edit' : readOnlyTools.has(event.toolName) ? 'read' : 'write';
 
 			if (input.filePath) filePaths.push({ raw: input.filePath, base: cwd, op: textOp });
@@ -610,10 +615,16 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						// Write due to the COMMAND itself (redirects excluded): write-listed verb,
 						// wrapper payload (python3 -c, xargs rm, find -exec). Opaque command
 						// substitutions are write-class by construction.
+						// Round 6: wrapper payloads (perl -e, python -c, xargs …) make the
+						// segment write-class, but their FILE OPERANDS are not necessarily
+						// write targets — they skip the size gate (scope stays checked),
+						// mirroring git staging args (#139). Real write targets (redirect
+						// targets, in-place editors) keep the gate.
+						const wrapperWrite = wrapperWrites(baseTokens, baseCmdIdx);
 						const verbWrite =
 							isWriteCommand(classifierText(baseTokens))
 							|| (baseAnchored !== undefined && isWriteCommand(baseAnchored))
-							|| wrapperWrites(baseTokens, baseCmdIdx);
+							|| wrapperWrite;
 						const commandWrite = verbWrite || substitutionInners.length > 0;
 						const hasRedirect = redirectTargets.length > 0;
 						const segmentWrite = commandWrite || hasRedirect;
@@ -628,7 +639,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						// Path extraction happens BEFORE the readOnly gate: the /tmp
 						// scratch exemption (W-d, round 2) is target-aware and needs the
 						// segment's write targets.
-						const segEntries: { raw: string; op: 'read' | 'write' }[] = [];
+						const segEntries: { raw: string; op: 'read' | 'write'; skipSizeCheck?: boolean }[] = [];
 						// Test runner and compiler commands are read-only — skip file path extraction
 						const isTestRunner = TEST_RUNNER_PREFIXES.some(prefix => classifierSegment.startsWith(prefix));
 						if (!isTestRunner) {
@@ -638,12 +649,21 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 							// flags (-f, -n, …) never do. W2: extensionless candidates count
 							// as paths for write ops (round 2: quoted included too).
 							const valueFlags = VALUE_FLAGS_BY_CMD[cmdWord ?? ''] ?? EMPTY_VALUE_FLAGS;
+							// Round 6: `for <var> in <items>` — list items are DATA for later
+							// segments, not operands of the `for` command; resolving bare names
+							// against the delegation cwd produced false scope violations
+							// (`for f in x.test.ts; do shasum …/$f; done`). Redirect targets in
+							// the same segment stay write-scanned.
+							const forListStart = cmdWord === 'for'
+								? segment.findIndex((tk) => !tk.quoted && tk.value === 'in')
+								: -1;
 							for (let t = 0; t < segment.length; t++) {
 								const token = segment[t];
 								if (!token) continue;
 								// Redirect operator tokens name no path of their own; the target token
 								// (separate or attached form) supplies the cleaned path below.
 								if (!token.quoted && (token.value === '>' || token.value === '>>')) continue;
+								if (forListStart >= 0 && t > forListStart && !redirectTargetAt.has(t)) continue;
 								// Round 4: env-assignment tokens (`VAR=value`, `PATH=…`) assign an
 								// environment variable — the token is not a path operand, and the value
 								// after `=` must NOT be scanned (do not split on `=`): without this,
@@ -693,6 +713,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 										segEntries.push({
 											raw: match,
 											op: redirectTargetAt.has(t) ? 'write' : t === cmdIdx ? 'read' : operandOp,
+											skipSizeCheck: wrapperWrite && !redirectTargetAt.has(t),
 										});
 									}
 								}
@@ -727,7 +748,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						// Commit entries; /tmp scratch paths stay exempt from scope checks.
 						for (const e of segEntries) {
 							if (isTmpPath(e.raw)) continue;
-							filePaths.push({ raw: e.raw, base: baseDir, op: e.op });
+							filePaths.push({ raw: e.raw, base: baseDir, op: e.op, skipSizeCheck: e.skipSizeCheck });
 						}
 						// C5 (round 2): a write-class xargs bridges stdin into file mutation —
 						// re-escalate prior read ops from the same pipeline so
@@ -787,6 +808,10 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 					debugLog("scope-guard: expansion request", expansion);
 					return { block: true, reason: `Scope violation: ${rawPath} is outside the allowed scope`, expansionRequest: expansion };
 				}
+				// Round 6: wrapper-script operands skip the size gate — the gate applies
+				// to real write targets (redirect targets, in-place editors), not to ARGV
+				// files handed to an interpreter (`perl -e '<script>' <file>`).
+				if (entry.skipSizeCheck) continue;
 				let fileContent = '';
 				if (entry.op === 'write' && input.content) {
 					// For write operations, check the NEW content size, not existing file
