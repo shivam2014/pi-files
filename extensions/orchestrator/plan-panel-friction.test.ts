@@ -21,7 +21,7 @@ import {
 	startDelegationStep,
 	_instances,
 } from "./plan-panel.ts";
-import { registerAdvancePlanStepTool } from "./plan-tool.ts";
+import { registerAdvancePlanStepTool, registerPlanAddStepsTool } from "./plan-tool.ts";
 
 function mockCtx(sessionId = "plan-panel-friction-test") {
 	const setWidget = (_key: string, _content: string[] | undefined) => {};
@@ -45,6 +45,15 @@ function captureAdvanceTool() {
 }
 
 const advanceTool = captureAdvanceTool();
+
+/** Capture the plan_add_steps tool registered by plan-tool.ts. */
+function captureAddStepsTool() {
+	const tools: Record<string, { execute: (...a: any[]) => any }> = {};
+	registerPlanAddStepsTool({ registerTool: (t: any) => { tools[t.name] = t; } } as any);
+	return tools.plan_add_steps;
+}
+
+const addStepsTool = captureAddStepsTool();
 
 describe("FIX 1 — a completed plan is preserved, not discarded", () => {
 	beforeEach(() => { _instances.clear(); });
@@ -137,5 +146,66 @@ describe("FIX 2 — advance_plan_step distinguishes COMPLETE from ABSENT", () =>
 		const text = out.content[0].text as string;
 		expect(text).toContain("No active plan");
 		expect(text).not.toContain("Plan complete");
+	});
+});
+
+describe("BATCH-2 FIX — plans with pending steps survive turn boundaries", () => {
+	beforeEach(() => { _instances.clear(); });
+
+	it("(a) a plan with pending steps survives clearPlanPanel; advance_plan_step works after", async () => {
+		const ctx = mockCtx("friction-batch2-pending");
+		setupPlanPanel("Pending goal", ["A", "B"], ctx);
+
+		// agent_end and before_agent_start both call clearPlanPanel at each turn boundary.
+		clearPlanPanel(ctx);
+		clearPlanPanel(ctx);
+
+		expect(hasActivePlan(ctx)).toBe(true);
+		const out = await advanceTool.execute("id", {}, undefined, () => {}, ctx);
+		const text = out.content[0].text as string;
+		expect(text).toContain("Step completed: 'A'");
+		expect(text).not.toContain("No active plan");
+
+		// Step B still pending → preserved again across a second turn boundary.
+		clearPlanPanel(ctx);
+		expect(hasActivePlan(ctx)).toBe(true);
+		const out2 = await advanceTool.execute("id", {}, undefined, () => {}, ctx);
+		expect(out2.content[0].text as string).toContain("Step completed: 'B'");
+	});
+
+	it("(b) plan_add_steps on a completed plan reopens it and reports the actual count", async () => {
+		const ctx = mockCtx("friction-batch2-reopen");
+		setupPlanPanel("Completed goal", ["A"], ctx);
+		completeAll(ctx, 1);
+		expect((getPlanState(ctx) as any)?.completed).toBe(true);
+
+		const out = await addStepsTool.execute("id", { steps: ["B", "C"] }, undefined, () => {}, ctx);
+		expect(out.content[0].text).toBe("Added 2 of 2 step(s) (duplicates skipped).");
+		expect(out.details.added).toBe(2);
+
+		const state = getPlanState(ctx)!;
+		expect((state as any).completed).toBe(false);
+		expect(state.steps.map(s => s.label)).toEqual(["A", "B", "C"]);
+		expect(state.steps[2].completed).toBe(false);
+	});
+
+	it("(c) plan_add_steps with no plan reports 'No active plan' honestly", async () => {
+		const ctx = mockCtx("friction-batch2-absent");
+		const out = await addStepsTool.execute("id", { steps: ["X", "Y"] }, undefined, () => {}, ctx);
+		expect(out.content[0].text).toContain("No active plan");
+		expect(out.content[0].text).toContain("plan()");
+		expect(out.details.error).toBeTruthy();
+		expect(hasActivePlan(ctx)).toBe(false);
+	});
+
+	it("(d) duplicates-skipped count is reported accurately", async () => {
+		const ctx = mockCtx("friction-batch2-dupes");
+		setupPlanPanel("Dupes goal", ["A", "B"], ctx);
+
+		const out = await addStepsTool.execute("id", { steps: ["A", "B", "C"] }, undefined, () => {}, ctx);
+		expect(out.content[0].text).toBe("Added 1 of 3 step(s) (duplicates skipped).");
+		expect(out.details.added).toBe(1);
+		expect(out.details.duplicatesSkipped).toBe(2);
+		expect(getPlanState(ctx)!.steps.length).toBe(3);
 	});
 });

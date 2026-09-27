@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
 	setupPlanPanel,
 	completePlanStep,
-	clearPlanPanel,
+	discardPlanPanel,
 	hasActivePlan,
 	inspectPlanState,
 	getPlanState,
@@ -63,7 +63,7 @@ describe("insert_step", () => {
 
 	beforeEach(() => {
 		ctx = mockCtx();
-		if (hasActivePlan(ctx)) clearPlanPanel(ctx);
+		discardPlanPanel(ctx);
 	});
 
 	it("inserts before active step — active step index shifts", () => {
@@ -117,7 +117,7 @@ describe("remove_step", () => {
 
 	beforeEach(() => {
 		ctx = mockCtx();
-		if (hasActivePlan(ctx)) clearPlanPanel(ctx);
+		discardPlanPanel(ctx);
 	});
 
 	it("removes pending step — indices shift", () => {
@@ -181,7 +181,7 @@ describe("modify_step", () => {
 
 	beforeEach(() => {
 		ctx = mockCtx();
-		if (hasActivePlan(ctx)) clearPlanPanel(ctx);
+		discardPlanPanel(ctx);
 	});
 
 	it("modifies label", () => {
@@ -219,7 +219,7 @@ describe("widget refresh after mutation", () => {
 
 	beforeEach(() => {
 		ctx = mockCtx();
-		if (hasActivePlan(ctx)) clearPlanPanel(ctx);
+		discardPlanPanel(ctx);
 	});
 
 	it("setWidget called after modifyStep", () => {
@@ -244,7 +244,7 @@ describe("startDelegationStep label preservation", () => {
 
 	beforeEach(() => {
 		ctx = mockCtx();
-		if (hasActivePlan(ctx)) clearPlanPanel(ctx);
+		discardPlanPanel(ctx);
 	});
 
 	it("does NOT overwrite the original step label", () => {

@@ -629,7 +629,15 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		// from "never created", so the delegate auto-create path would replace it with a
 		// fresh 1-step plan. Keep the instance + state; only genuine teardown (a new
 		// plan() or a different session) replaces it.
-		if (this.planState?.completed) {
+		// FIX 3 (batch-2): a plan with PENDING steps is preserved too. agent_end and
+		// before_agent_start call this at every turn boundary; deleting an in-flight plan
+		// made the next turn's plan tools answer "No active plan" (repro: plan_add_steps
+		// 14:41 → turn boundary → advance_plan_step 14:56 → "No active plan"). Keep the
+		// instance + state + on-disk snapshot across turn boundaries; only stop timers and
+		// clear the widget. Genuine abandonment stays handled by plan() replacement and
+		// the delegate auto-create path.
+		const hasPendingSteps = (this.planState?.steps ?? []).some((s) => !s.completed);
+		if (this.planState?.completed || hasPendingSteps) {
 			this.stopPlanTimer();
 			this._setWidget = null;
 			this._lastWidgetContent = null;
@@ -652,8 +660,8 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 	/**
 	 * DEFECT 2: unconditional teardown used at session_shutdown.
 	 *
-	 * clearPlanPanel() PRESERVES a plan whose `completed` flag is set (that is the
-	 * documented turn-boundary contract). session_shutdown is a process-lifetime
+	 * clearPlanPanel() PRESERVES a plan whose `completed` flag is set or that still has
+	 * pending steps (that is the documented turn-boundary contract). session_shutdown is a process-lifetime
 	 * boundary where the retained instance must go, so it needs a teardown that
 	 * ignores the `completed` flag. This drops plan state and stops timers; the
 	 * `_instances` map entry is removed by the module-level discardPlanPanel().

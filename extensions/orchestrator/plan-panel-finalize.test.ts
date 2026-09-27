@@ -4,7 +4,7 @@ import {
 	completePlanStep,
 	finalizePlanStep,
 	clearPlanIfComplete,
-	clearPlanPanel,
+	discardPlanPanel,
 	hasActivePlan,
 	inspectPlanState,
 	addSteps,
@@ -64,7 +64,7 @@ describe("finalizePlanStep matches completePlanStep", () => {
 		expect(stateAfterFinalize.steps[0].state).toBe("completed");
 		expect(stateAfterFinalize.steps[1].state).toBe("active");
 
-		if (hasActivePlan(mockCtx())) clearPlanPanel(mockCtx());
+		if (hasActivePlan(mockCtx())) discardPlanPanel(mockCtx());
 		setupPlanPanel("Test goal", ["Step A", "Step B"], mockCtx());
 
 		completePlanStep(mockCtx());
@@ -104,10 +104,8 @@ describe("finalizePlanStep matches completePlanStep", () => {
 
 describe("clearPlanIfComplete", () => {
 	beforeEach(() => {
-		// Ensure clean state
-		if (hasActivePlan(mockCtx())) {
-			clearPlanPanel(mockCtx());
-		}
+		// Ensure clean state — full teardown (clearPlanPanel preserves in-flight plans)
+		discardPlanPanel(mockCtx());
 	});
 
 	it("keeps planState alive after all steps completed", () => {
@@ -147,7 +145,7 @@ describe("clearPlanIfComplete", () => {
 
 	it("does nothing when no active plan", () => {
 		// No plan active
-		if (hasActivePlan(mockCtx())) clearPlanPanel(mockCtx());
+		discardPlanPanel(mockCtx());
 		expect(hasActivePlan(mockCtx())).toBe(false);
 		expect(() => clearPlanIfComplete(mockCtx())).not.toThrow();
 	});
@@ -155,9 +153,7 @@ describe("clearPlanIfComplete", () => {
 
 describe("addSteps", () => {
 	beforeEach(() => {
-		if (hasActivePlan(mockCtx())) {
-			clearPlanPanel(mockCtx());
-		}
+		discardPlanPanel(mockCtx());
 	});
 
 	it("adds new steps to an existing plan", () => {
@@ -193,7 +189,7 @@ describe("addSteps", () => {
 	});
 
 	it("does nothing when no active plan", () => {
-		if (hasActivePlan(mockCtx())) clearPlanPanel(mockCtx());
+		discardPlanPanel(mockCtx());
 		expect(hasActivePlan(mockCtx())).toBe(false);
 		expect(() => addSteps(["Step X"], mockCtx())).not.toThrow();
 		expect(hasActivePlan(mockCtx())).toBe(false);

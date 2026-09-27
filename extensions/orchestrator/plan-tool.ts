@@ -213,10 +213,21 @@ export function registerPlanAddStepsTool(pi: ExtensionAPI) {
             "Output: Returns count of steps added, skipping any duplicates",
         ],
         async execute(toolCallId, params, signal, onUpdate, ctx) {
-            addSteps(params.steps, ctx as SessionContext);
+            // HONESTY FIX (batch-2): addSteps() returns {added, error?} — 0 added when
+            // there is no panel/plan, and fewer than requested when duplicates are
+            // skipped. Report the ACTUAL outcome; never claim "Added N" when N steps
+            // were not added.
+            const result = addSteps(params.steps, ctx as SessionContext);
+            if (!result || result.error) {
+                return {
+                    content: [{ type: 'text', text: 'No active plan. Call plan() first.' }],
+                    details: { error: result?.error ?? 'No active plan' },
+                };
+            }
+            const requested = params.steps.length;
             return {
-                content: [{ type: "text", text: `Added ${params.steps.length} step(s) to plan.` }],
-                details: { kind: params.kind },
+                content: [{ type: 'text', text: `Added ${result.added} of ${requested} step(s) (duplicates skipped).` }],
+                details: { added: result.added, requested, duplicatesSkipped: requested - result.added, kind: params.kind },
             };
         },
     });

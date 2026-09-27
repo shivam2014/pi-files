@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { setupPlanPanel, clearPlanPanel, hasActivePlan, _resolveCtx, _instances } from "./plan-panel.js";
+import { setupPlanPanel, discardPlanPanel, hasActivePlan, _resolveCtx, _instances } from "./plan-panel.js";
 import type { SessionContext } from "./types.js";
 
 // Mock ui.setWidget for all tests
@@ -30,14 +30,15 @@ describe("PlanPanel singleton isolation", () => {
     expect(hasActivePlan(ctx2)).toBe(true);
   });
 
-  it("clearing one session does not affect another", () => {
+  it("discarding one session does not affect another", () => {
     const ctx1 = mockCtx("session-1");
     const ctx2 = mockCtx("session-2");
 
     setupPlanPanel("Goal 1", ["step1"], ctx1);
     setupPlanPanel("Goal 2", ["step2"], ctx2);
 
-    clearPlanPanel(ctx1);
+    // clearPlanPanel preserves in-flight plans; discardPlanPanel is the teardown primitive.
+    discardPlanPanel(ctx1);
 
     expect(hasActivePlan(ctx1)).toBe(false);
     expect(hasActivePlan(ctx2)).toBe(true);
