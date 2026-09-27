@@ -516,6 +516,57 @@ else
   fail "Duplicated delegate blocks: ${MAX_DELEGATES} headers in ${MAX_DELEGATES_FILE} (expected ≤1 per capture)"
 fi
 
+# ── test_single_usage_counter_line ────────────────────────────────────────
+## Regression guard: while streaming, a delegate block once showed TWO
+## usage-counter lines — the feed's own token line (renderTokenLine) PLUS the
+## live suffix appended to the multi-line feed text (glued onto the last step
+## row). The global status-bar footer also matches '↑[0-9]', so counting is
+## scoped to delegate-block regions: a region runs from a 'delegate <Name>'
+## header to the next header, a '^──' separator line, or EOF. FAIL iff any
+## single region holds ≥2 matching lines; SKIP when no capture has a block.
+log ""
+log "── test_single_usage_counter_line ──"
+MAX_REGION_COUNT=0
+MAX_REGION_FILE="(none)"
+REGION_TOTAL=0
+OFFENDING_REGIONS=""
+for f in "$CAPTURE_DIR"/*.txt; do
+  [ -f "$f" ] || continue
+  f_base="$(basename "$f")"
+  while IFS=$'\t' read -r cnt hdr; do
+    [ -n "$cnt" ] || continue
+    REGION_TOTAL=$((REGION_TOTAL + 1))
+    if [ "$cnt" -gt "$MAX_REGION_COUNT" ]; then
+      MAX_REGION_COUNT="$cnt"
+      MAX_REGION_FILE="$f_base"
+    fi
+    if [ "$cnt" -ge 2 ]; then
+      OFFENDING_REGIONS="${OFFENDING_REGIONS}${f_base}: '${hdr}' → ${cnt} counter lines"$'\n'
+    fi
+  done < <(awk '
+    /delegate [A-Z]/ { if (in_region) printf "%d\t%s\n", cnt, hdr; in_region = 1; cnt = 0; hdr = $0; next }
+    /^──/            { if (in_region) printf "%d\t%s\n", cnt, hdr; in_region = 0; next }
+    in_region && /↑[0-9]/ { cnt++ }
+    END              { if (in_region) printf "%d\t%s\n", cnt, hdr }
+  ' "$f")
+done
+
+if [ "$REGION_TOTAL" -eq 0 ]; then
+  skip "usage-counter line — no capture contained a delegate block"
+else
+  TOTAL_TESTS=$((TOTAL_TESTS + 1))
+  log "Checking usage-counter lines (↑<digits>) per delegate block..."
+  if [ "$MAX_REGION_COUNT" -le 1 ]; then
+    pass "At most one usage-counter line per delegate block (max ${MAX_REGION_COUNT} in ${MAX_REGION_FILE}; ${REGION_TOTAL} block(s) checked)"
+  else
+    fail "Usage-counter lines per delegate block: max ${MAX_REGION_COUNT} in ${MAX_REGION_FILE} (expected ≤1 per block)"
+    while IFS= read -r region_line; do
+      [ -n "$region_line" ] || continue
+      log "  offending region — ${region_line}"
+    done <<< "$OFFENDING_REGIONS"
+  fi
+fi
+
 # ── test_step_elapsed_timer ───────────────────────────────────────────────
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 log ""

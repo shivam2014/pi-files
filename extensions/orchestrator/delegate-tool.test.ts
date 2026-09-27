@@ -122,6 +122,124 @@ describe("delegate tool rendering", () => {
 		const matches = comp.text.match(/fix auth bug/g);
 		expect(matches).toHaveLength(1);
 	});
+
+	it("streaming: exactly one usage-counter line when the feed already shows the token line", () => {
+		const theme = {
+			fg: (_name: string, text: string) => text,
+			bold: (text: string) => text,
+			dim: (text: string) => text,
+		};
+		const context: any = {
+			invalidate: vi.fn(),
+			state: { delegateArgs: { specialist: "coder", task: "fix auth" } },
+		};
+		// Feed text as renderActivityFeed produces it once token data arrives.
+		const feedText = [
+			"\u25c6 fix auth",
+			"↑57k ⇄576k CH91% ↓30k ctx↕58k/1.0M",
+			"○ Step 5: Compile report with per-item verdicts",
+		].join("\n");
+		const comp = delegateTool.renderResult(
+			{
+				content: [{ type: "text", text: feedText }],
+				details: { tokenInput: 57000, tokenOutput: 30000, tokenCached: 576000, elapsedMs: 279000 },
+			},
+			{ isPartial: true },
+			theme,
+			context,
+		);
+		const lines: string[] = comp.text.split("\n");
+		// Exactly one usage-counter line — the feed's own token line…
+		const counterLines = lines.filter((l) => /↑[0-9]/.test(l));
+		expect(counterLines).toHaveLength(1);
+		expect(counterLines[0]).toContain("ctx↕");
+		// …the live counter suffix is NOT appended a second time…
+		expect(comp.text).not.toContain("↓30k ⇄576k");
+		// …total elapsed stays visible…
+		expect(comp.text).toContain("4m 39s");
+		// …on its own line, never glued onto a step row.
+		expect(comp.text).not.toMatch(/Step 5:[^\n]*↑[0-9]/);
+		expect(comp.text).not.toMatch(/Step 5:[^\n]*4m 39s/);
+		const elapsedLines = lines.filter((l) => l.includes("4m 39s"));
+		expect(elapsedLines).toHaveLength(1);
+		expect(elapsedLines[0]).not.toContain("Step");
+
+		// Clean up the spinner channel registered by the partial render.
+		delegateTool.renderResult(
+			{ content: [{ type: "text", text: "done" }], details: {} },
+			{ isPartial: false },
+			theme,
+			context,
+		);
+	});
+
+	it("streaming: keeps the counter suffix when the feed has no token line yet", () => {
+		const theme = {
+			fg: (_name: string, text: string) => text,
+			bold: (text: string) => text,
+			dim: (text: string) => text,
+		};
+		const context: any = {
+			invalidate: vi.fn(),
+			state: { delegateArgs: { specialist: "coder", task: "fix auth" } },
+		};
+		const feedText = "\u25c6 fix auth\n\u25cf\u25cb\u25cb 1/3";
+		const comp = delegateTool.renderResult(
+			{
+				content: [{ type: "text", text: feedText }],
+				details: { tokenInput: 57000, tokenOutput: 30000, tokenCached: 576000, elapsedMs: 279000 },
+			},
+			{ isPartial: true },
+			theme,
+			context,
+		);
+		expect(comp.text).toContain("↑57k");
+		expect(comp.text).toContain("4m 39s");
+
+		// Clean up the spinner channel registered by the partial render.
+		delegateTool.renderResult(
+			{ content: [{ type: "text", text: "done" }], details: {} },
+			{ isPartial: false },
+			theme,
+			context,
+		);
+	});
+
+	it("completed: one complete usage surface, no glued suffix on step rows", () => {
+		const theme = {
+			fg: (_name: string, text: string) => text,
+			bold: (text: string) => text,
+			dim: (text: string) => text,
+		};
+		const context: any = {
+			invalidate: vi.fn(),
+			state: { delegateArgs: { specialist: "coder", task: "fix auth" } },
+		};
+		const feedText = [
+			"\u25c6 fix auth",
+			"↑57k ⇄576k CH91% ↓30k ctx↕58k/1.0M",
+			"✓ Step 1: done (12s)",
+		].join("\n");
+		delegateTool.renderResult(
+			{ content: [{ type: "text", text: feedText }], details: {} },
+			{ isPartial: true },
+			theme,
+			context,
+		);
+		const comp = delegateTool.renderResult(
+			{
+				content: [{ type: "text", text: "" }],
+				details: { tokenUsage: { input: 57000, cached: 576000, output: 30000 }, elapsedMs: 279000 },
+			},
+			{ isPartial: false },
+			theme,
+			context,
+		);
+		const counterLines: string[] = comp.text.split("\n").filter((l: string) => /↑[0-9]/.test(l));
+		expect(counterLines).toHaveLength(1);
+		expect(counterLines[0]).toContain("ctx↕");
+		expect(comp.text).not.toMatch(/\(12s\)[^\n]*↑[0-9]/);
+	});
 });
 
 describe("delegate render driver — shared render scheduler", () => {

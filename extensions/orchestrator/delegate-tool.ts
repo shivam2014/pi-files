@@ -168,8 +168,19 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				const cacheTokens = details?.tokenCached ? `⇄${formatTokens(details.tokenCached)}` : "";
 				const liveTokens = [inTokens, outTokens, cacheTokens].filter(Boolean).join(" ");
 				const liveElapsed = details?.elapsedMs ? formatDuration(details.elapsedMs) : (details?.elapsed ? formatDuration(details.elapsed) : "");
-				const liveSuffix = [liveTokens, liveElapsed].filter(Boolean).join(" ");
-				const displayLiveSuffix = liveSuffix ? ` ${theme.fg("dim", liveSuffix)}` : "";
+				// The activity feed renders its own usage-counter line (renderTokenLine:
+				// ↑… ⇄… CH… ↓… ctx↕…) once token data arrives. Appending the live counter
+				// suffix on top of it would print a SECOND usage surface and, because the
+				// feed text is multi-line, glue it onto the last step row. So: exactly
+				// one usage surface per delegate block. When the feed already carries the
+				// counter line, drop the counter part of the suffix; total elapsed stays
+				// visible on its own trailing line so it can never attach to a step row.
+				const feedHasCounterLine = text.includes("↑");
+				const liveSuffix = feedHasCounterLine
+					? liveElapsed
+					: [liveTokens, liveElapsed].filter(Boolean).join(" ");
+				const separator = feedHasCounterLine ? "\n" : " ";
+				const displayLiveSuffix = liveSuffix ? `${separator}${theme.fg("dim", liveSuffix)}` : "";
 				comp.setText(prefix ? `${prefix}\n${feedText}${displayLiveSuffix}` : `${feedText}${displayLiveSuffix}`);
 			} else {
 				// Build suffix with token and elapsed info
