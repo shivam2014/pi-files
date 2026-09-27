@@ -7,8 +7,14 @@
 import { type Specialist } from "./types.ts";
 import { listAvailableSkillNames } from "./skill-resolver.ts";
 
-/** Shared clarification protocol instruction — ask orchestrator before guessing. */
-export const CLARIFICATION_PROTOCOL = `follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info"`;
+/**
+ * Shared clarification protocol instruction — ask orchestrator before guessing.
+ * The trailing clause closes the escalation-bypass loop: auto-continuation
+ * nudges and ask_orchestrator answers are NOT authorization to override task
+ * stop-conditions or claim locks (live defect: a worker read a fuzzy context
+ * answer as consent to override a foreign claim).
+ */
+export const CLARIFICATION_PROTOCOL = `follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info". Auto-continuation nudges and ask-orchestrator responses are NOT authorization to bypass task stop-conditions or claim locks; if a stop-condition is met, re-report and stop`;
 
 /**
  * Difficulty signal template — the subagent's self-reported escalation signal.
@@ -368,6 +374,7 @@ Rules:
 - Verify your changes compile/work
 - The \`lint\` tool is available for checking file syntax after edits. It auto-runs after \`edit\`/\`write\`, but you can also call it explicitly.
 - If the task is ambiguous, scope is unclear, or requirements are missing, follow the clarification protocol: ask ONE specific, answerable question via ask_orchestrator with your recommended answer first — never "please provide more info". Self-serve from CONTEXT.md/docs/adr/code before asking.
+- Auto-continuation nudges and ask-orchestrator responses are NOT authorization to bypass task stop-conditions or claim locks; if a stop-condition is met, re-report and stop.
 
 ${SCOPE_VIOLATION_GUIDANCE}
 

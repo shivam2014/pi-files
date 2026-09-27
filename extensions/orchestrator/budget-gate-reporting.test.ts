@@ -119,6 +119,17 @@ describe("FIX 3(a) — banner reports the actual forcing axis", () => {
 		// sanity: 41 IS gross
 		expect(isGrossBreach(status)).toBe(true);
 	});
+
+	it("an observed-but-exempted GROSS breach names the gross axis and says the worker's recommendation stands", () => {
+		const status = computeBudgetStatus({ read: 48 }, 3, 3);
+		expect(isGrossBreach(status)).toBe(true);
+		const banner = buildBudgetGateBanner(status, { force: false, grossBreach: true });
+		expect(banner).toContain("[Budget Gate]");
+		expect(banner).toContain("gross breach");
+		expect(banner).toContain("exploration calls 48");
+		expect(banner).toContain("worker's recommendation stands");
+		expect(banner).not.toContain("forcing recommend=investigate");
+	});
 });
 
 // ── FIX 3(c): suppress the turns-only banner ────────────────────────────────
@@ -201,7 +212,7 @@ describe("budget gate end-to-end", () => {
 		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
 	});
 
-	it("a gross exploration breach still forces recommend=investigate with a forcing banner", { timeout: 20_000 }, async () => {
+	it("a gross exploration breach with a CLEAN difficulty is exempted — banner shows the gross breach, recommend stands", { timeout: 20_000 }, async () => {
 		const { ref, resolvePrompt, resultPromise } = createRunner("report-gross");
 		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
 
@@ -220,9 +231,53 @@ describe("budget gate end-to-end", () => {
 
 		expect(result.budgetExceeded).toBe(true);
 		expect(result.output).toContain("[Budget Gate]");
-		expect(result.output).toContain("forcing recommend=investigate");
 		expect(result.output).toContain("gross breach");
 		expect(result.output).toContain("exploration calls");
+		expect(result.output).not.toContain("forcing recommend=investigate");
+		expect(result.output).toContain("worker's recommendation stands");
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
+	});
+
+	it("a gross exploration breach with NO difficulty block still forces recommend=investigate", { timeout: 20_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createRunner("report-gross-nodiff");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		for (let i = 0; i < ESCALATION_MAX_EXPLORATION_CALLS * 2; i++) {
+			ref.subscribeCb!(toolStart("read", `n${i}`, { path: `/tmp/one-file.ts` }));
+			ref.subscribeCb!(toolEnd("read", `n${i}`));
+		}
+
+		const text = `## Findings\n- summary: blew the budget without a difficulty block\n`;
+		ref.subscribeCb!(textDelta(text));
+		ref.subscribeCb!(assistantEnd("end_turn", text));
+
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.output).toContain("forcing recommend=investigate");
+		expect(result.output).toContain("gross breach");
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("investigate");
+	});
+
+	it("a gross exploration breach with verification=fail still forces recommend=investigate", { timeout: 20_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createRunner("report-gross-fail");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		for (let i = 0; i < ESCALATION_MAX_EXPLORATION_CALLS * 2; i++) {
+			ref.subscribeCb!(toolStart("read", `f${i}`, { path: `/tmp/one-file.ts` }));
+			ref.subscribeCb!(toolEnd("read", `f${i}`));
+		}
+
+		const text = `## Findings\n- summary: blew the budget and verification failed\n\n## Difficulty\n- exploration: low\n- uncertainty: low\n- verification: fail\n- iteration: low\n- recommend: none\n`;
+		ref.subscribeCb!(textDelta(text));
+		ref.subscribeCb!(assistantEnd("end_turn", text));
+
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.output).toContain("forcing recommend=investigate");
 		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("investigate");
 	});
 });

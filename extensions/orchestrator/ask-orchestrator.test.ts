@@ -136,4 +136,11 @@ describe("createAskOrchestratorTool", () => {
 
 		expect((result.content[0] as any).text).toContain("not wired");
 	});
+
+	it("tool description warns a missing live answer is a NO-ANSWER sentinel, never approval", () => {
+		const tool = createAskOrchestratorTool(async () => "x", undefined, "coder", new ActivityFeed());
+
+		expect(tool.description).toContain("NO-ANSWER sentinel");
+		expect(tool.description).toContain("never as approval");
+	});
 });

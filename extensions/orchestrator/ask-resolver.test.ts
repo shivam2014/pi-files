@@ -14,6 +14,7 @@ import {
 	stripQuestionRecords,
 	createAskOrchestratorResolver,
 	asksAboutFileContent,
+	isAuthorizationQuestion,
 	UNANSWERED_SENTINEL,
 	resolve, hasLiteralSegment,
 } from "./ask-resolver.ts";
@@ -565,7 +566,8 @@ describe("createAskOrchestratorResolver — no echo, explicit UNANSWERED sentine
 
 		const answer = await resolver("xyzzy plugh foobar quux", "completely unrelated content");
 
-		expect(answer).toMatch(/^UNANSWERED —/);
+		expect(answer).toContain("NO ORCHESTRATOR ANSWER AVAILABLE");
+		expect(answer).toContain("NOT authorization or approval");
 		expect(answer).toBe(UNANSWERED_SENTINEL);
 		expect(answer).not.toBe("Question recorded for orchestrator. Proceed with available information. The orchestrator will address this in the next delegation.");
 	});
@@ -775,4 +777,106 @@ describe("empty scope specialist behavior", () => {
 	});
 });
 
+});
+
+// ─── isAuthorizationQuestion (authorization-intent guard) ────────────────────
+
+describe("isAuthorizationQuestion", () => {
+	it("detects approval/permission/authorization phrasings (live-defect list)", () => {
+		expect(isAuthorizationQuestion("Can I override the claim lock and proceed?")).toBe(true);
+		expect(isAuthorizationQuestion("May I edit the shared file?")).toBe(true);
+		expect(isAuthorizationQuestion("Am I allowed to touch the shared tree?")).toBe(true);
+		expect(isAuthorizationQuestion("Should I bypass the scope guard?")).toBe(true);
+		expect(isAuthorizationQuestion("Is it ok to write outside my scope?")).toBe(true);
+		expect(isAuthorizationQuestion("Is it okay if I change the plan?")).toBe(true);
+		expect(isAuthorizationQuestion("Do I have permission to read ~/pi-files?")).toBe(true);
+		expect(isAuthorizationQuestion("I need approval to expand scope")).toBe(true);
+		expect(isAuthorizationQuestion("Are you authorizing this change?")).toBe(true);
+		expect(isAuthorizationQuestion("Go ahead?")).toBe(true);
+		expect(isAuthorizationQuestion("Should I proceed?")).toBe(true);
+		expect(isAuthorizationQuestion("Is it safe to skip the test?")).toBe(true);
+	});
+
+	it("does not flag factual questions", () => {
+		expect(isAuthorizationQuestion("Which file contains the specialist prompts?")).toBe(false);
+		expect(isAuthorizationQuestion("What does readme.md say?")).toBe(false);
+		expect(isAuthorizationQuestion("How does the issue tracker work?")).toBe(false);
+		expect(isAuthorizationQuestion("")).toBe(false);
+	});
+});
+
+// ─── resolver: authorization-intent guard (escalation bypass) ────────────────
+
+describe("createAskOrchestratorResolver — authorization-intent guard", () => {
+	let cwd: string;
+
+	beforeEach(() => {
+		cwd = mkdtempSync(join(tmpdir(), "ask-resolver-auth-"));
+	});
+
+	afterEach(() => {
+		rmSync(cwd, { recursive: true, force: true });
+	});
+
+	it("NEVER answers an approval-seeking question from fuzzy recent context — sentinel instead", async () => {
+		const buf: string[] = [];
+		// Live defect: the worker asked for authorization and got an unrelated
+		// keyword-overlap line back, which it read as consent. This context line
+		// has strong word overlap and pre-fix WOULD have answered.
+		const resolver = createAskOrchestratorResolver({
+			cwd,
+			recentContext: "assistant: The claim lock is held elsewhere; proceeding or overriding was discussed as possible.",
+		}, buf);
+
+		const answer = await resolver("Can I override the claim lock and proceed?");
+
+		expect(answer).toBe(UNANSWERED_SENTINEL);
+		expect(answer).not.toMatch(/From the current conversation:/);
+		expect(answer).toContain("NOT authorization");
+		// still recorded for the next delegation
+		expect(buf).toHaveLength(1);
+		expect(buf[0]).toBe("Can I override the claim lock and proceed?");
+	});
+
+	it("a matching permission-ish context line is never returned as an 'answer'", async () => {
+		const resolver = createAskOrchestratorResolver({
+			cwd,
+			recentContext: "assistant: You may override the claim lock if the task requires it.",
+		});
+
+		const answer = await resolver("May I override the claim lock?");
+
+		expect(answer).toBe(UNANSWERED_SENTINEL);
+			expect(answer).not.toMatch(/From the current conversation:/);
+	});
+
+	it("keeps factual fuzzy-context answers working (no false positives)", async () => {
+		const resolver = createAskOrchestratorResolver({
+			cwd,
+			recentContext: "assistant: The specialist prompts file is stored in specialists.ts.",
+		});
+
+		const answer = await resolver("Which file contains specialist prompts?");
+
+		expect(answer).toContain("From the current conversation:");
+		expect(answer).toContain("specialists.ts");
+	});
+
+	it("records the authorization question exactly once in the buffer", async () => {
+		const buf: string[] = [];
+		const resolver = createAskOrchestratorResolver({
+			cwd,
+			recentContext: "assistant: nothing relevant here at all.",
+		}, buf);
+
+		await resolver("Should I go ahead?");
+
+		expect(buf).toEqual(["Should I go ahead?"]);
+	});
+
+	it("the sentinel is unmistakable: not authorization, stop and report", () => {
+		expect(UNANSWERED_SENTINEL).toContain("NO ORCHESTRATOR ANSWER AVAILABLE");
+		expect(UNANSWERED_SENTINEL).toContain("This is NOT authorization or approval");
+		expect(UNANSWERED_SENTINEL).toContain("stop and report the blocker");
+	});
 });

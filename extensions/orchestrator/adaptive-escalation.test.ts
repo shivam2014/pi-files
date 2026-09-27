@@ -16,6 +16,7 @@ import {
 	type DifficultySignal,
 } from './delegate-pipeline';
 import { renderSpecialistPrompt } from './specialists';
+import { shouldNudge, reportsExplicitStop, PERSISTENCE_NUDGE_MESSAGE } from './subagent-runner';
 import { buildOrchestratorPrompt } from './prompt-builder';
 import type { DelegationMetrics } from './types';
 
@@ -166,5 +167,48 @@ describe('PART C — adaptive routing instruction (prompt-builder)', () => {
 		expect(systemPrompt).toContain('# Recalibration');
 		expect(systemPrompt).toContain('# Execution Monitoring');
 		expect(systemPrompt).toContain('# Delegation Error Protocol');
+	});
+});
+
+// ── PART D: stop-aware persistence nudge (escalation-bypass fix) ─────────────
+describe('PART D — stop-aware persistence nudge', () => {
+	it('suppresses the nudge when the worker explicitly reported a stop (STOPPED:)', () => {
+		const stopReport = '## Findings\n- summary: blocked on foreign claim\n\n(STOPPED: task stop-condition met — standing by)';
+		expect(reportsExplicitStop(stopReport)).toBe(true);
+		expect(shouldNudge('stop', true, false, stopReport)).toBe(false);
+	});
+
+	it('detects the remaining explicit-stop phrasings', () => {
+		expect(reportsExplicitStop('I hit a stop-condition and stopped')).toBe(true);
+		expect(reportsExplicitStop('Standing by for further instructions')).toBe(true);
+		expect(reportsExplicitStop('Awaiting orchestrator input')).toBe(true);
+		expect(reportsExplicitStop('Escalating per the worker protocol')).toBe(true);
+		expect(reportsExplicitStop('\u26d4 NO ORCHESTRATOR ANSWER AVAILABLE')).toBe(true);
+		expect(reportsExplicitStop('')).toBe(false);
+		expect(reportsExplicitStop(undefined)).toBe(false);
+	});
+
+	it('still nudges a lazy incomplete stop with no stop report', () => {
+		const lazy = 'I read a few files and ran out of ideas.';
+		expect(reportsExplicitStop(lazy)).toBe(false);
+		expect(shouldNudge('stop', true, false, lazy)).toBe(true);
+		expect(shouldNudge('stop', true, false, undefined)).toBe(true);
+	});
+
+	it('never nudges when steps are complete or a nudge already happened', () => {
+		expect(shouldNudge('stop', false, false, 'STOPPED: done')).toBe(false);
+		expect(shouldNudge('stop', true, true, 'lazy output')).toBe(false);
+	});
+
+	it('the nudge text itself carries the non-resume clause for unguarded stops', () => {
+		expect(PERSISTENCE_NUDGE_MESSAGE).toContain('Continue: finish all remaining steps');
+		expect(PERSISTENCE_NUDGE_MESSAGE).toContain('do NOT resume');
+	});
+
+	it('specialist prompts forbid treating nudges/answers as authorization to bypass stop-conditions', () => {
+		for (const name of ['coder', 'scout'] as const) {
+			const prompt = renderSpecialistPrompt(name);
+			expect(prompt).toContain('NOT authorization to bypass task stop-conditions or claim locks');
+		}
 	});
 });

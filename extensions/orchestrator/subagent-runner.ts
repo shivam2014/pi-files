@@ -259,7 +259,8 @@ export function forceDifficultyRecommend(output: string, recommend: string): str
 /**
  * Whether a counted budget breach is GROSS: it blew past the counted budget by
  * ≥2× on ANY axis (exploration calls, distinct files, or turns). A gross overrun
- * is unmistakable and forces escalation regardless of the worker's self-report.
+ * forces escalation UNLESS the worker's parsed difficulty explicitly reports a
+ * clean run (verification=pass AND uncertainty=low) — see shouldForceRecommend.
  * The files axis is measured against the specialist's OWN cap (`filesCap`) so a
  * scout's 10 files is not "gross" just because the default cap is 5.
  */
@@ -300,6 +301,9 @@ export function grossBreachAxisLabels(
  * FIX 3(a): build the one-line budget-gate banner from the FINAL counted totals.
  * Reports ALL breached axes (counts + caps) and, when escalation is forced by a
  * gross breach, names the gross axis/axes that caused it — never a non-gross axis.
+ * When a gross breach is EXEMPTED (clean difficulty, no forcing), the banner
+ * still names the gross axis but reads as a note that the worker's own
+ * recommendation stands — never as "forcing".
  */
 export function buildBudgetGateBanner(
 	status: BudgetStatus,
@@ -307,8 +311,12 @@ export function buildBudgetGateBanner(
 	filesCap: number = ESCALATION_MAX_FILES_TOUCHED,
 ): string {
 	const head = `\u26a0 [Budget Gate] ${status.breachKind} budget breach (${status.reason})`;
-	if (!opts.force) return `${head} \u2014 observed; recommend left unchanged.`;
 	const grossNote = opts.grossBreach ? ` (gross breach: ${grossBreachAxisLabels(status, filesCap).join("; ")})` : "";
+	if (!opts.force) {
+		return opts.grossBreach
+			? `${head} \u2014 observed${grossNote}; worker's recommendation stands.`
+			: `${head} \u2014 observed; recommend left unchanged.`;
+	}
 	return `${head} \u2014 forcing recommend=investigate${grossNote}.`;
 }
 
@@ -334,7 +342,10 @@ export function isLintMessage(msg: any): boolean {
 /**
  * Decide whether a counted budget breach should FORCE `recommend=investigate`.
  *
- *   - GROSS breach (≥2× the limit on any axis) → ALWAYS force, whatever the report.
+ *   - GROSS breach (≥2× the limit on any axis) → force UNLESS the worker's parsed
+ *     difficulty explicitly reports a clean run (`verification: pass` AND
+ *     `uncertainty: low`, the parsed enum values). Gross + (no difficulty block |
+ *     verification≠pass | uncertainty≠low) still forces.
  *   - SUBSTANTIVE breach (exploration calls over budget) → force ONLY
  *     when the difficulty block CORROBORATES confusion (`verification: fail`,
  *     `uncertainty: high`, or the worker's own `recommend: investigate`). A read-heavy
@@ -359,9 +370,14 @@ export function shouldForceRecommend(
 ): boolean {
 	if (breachKind === "none") return false;
 	if (breachKind === "files-only") return false;
-	if (grossBreach) return true;
 	const verification = (difficulty?.verification ?? "").toLowerCase();
 	const uncertainty = (difficulty?.uncertainty ?? "").toLowerCase();
+	if (grossBreach) {
+		// A gross breach no longer forces when the FINAL [Difficulty] block explicitly
+		// reports a clean, unambiguous run (verification=pass AND uncertainty=low).
+		// Anything else — missing block, unparsed fields, fail, medium/high — forces.
+		return !(verification === "pass" && uncertainty === "low");
+	}
 	if (breachKind === "substantive") {
 		const recommend = (difficulty?.recommend ?? "").toLowerCase();
 		return verification === "fail" || uncertainty === "high" || recommend === "investigate";
@@ -375,6 +391,17 @@ export const BUDGET_WRAPUP_MESSAGE =
 	"You have exceeded your exploration budget. Stop exploring immediately \u2014 do NOT make further read/grep/find/ls calls. " +
 	"Summarise what you already have and write your ## Completed / ## Findings report now. " +
 	"In the ## Difficulty block, give an HONEST assessment of the work you actually did \u2014 report what you really found; do not inflate or deflate it.";
+
+/**
+ * One-time persistence nudge injected when a stopped-but-incomplete run left no
+ * explicit stop report. The trailing clause is belt-and-braces: the stop-aware
+ * guard (reportsExplicitStop) suppresses the nudge for recognised stop reports,
+ * and this clause tells the model what to do if a stop was reported in a shape
+ * the patterns did not catch.
+ */
+export const PERSISTENCE_NUDGE_MESSAGE =
+	"You stopped before completing the task. Continue: finish all remaining steps, then report the final result. " +
+	"If you stopped because an explicit task stop-condition was met, do NOT resume \u2014 re-state the stop and end.";
 
 // ─── Delegate-model resolution (C2: no silent fallback to an expensive model) ───
 
@@ -528,11 +555,35 @@ export function truncateSubagentOutput(output: string, cap = OUTPUT_CAP): string
 }
 
 /**
- * Determine whether a subagent that stopped early should be nudged to continue.
- * Returns true only when the stop is non-error, steps remain incomplete,
- * and we haven't already nudged this session.
+ * True when the worker's final assistant text explicitly reports that it
+ * STOPPED on purpose (task stop-condition met, standing by, escalating,
+ * blocked). Patterns are grounded in observed worker output: a coder that hit
+ * a task stop-condition reported "FINDINGS … (STOPPED: …)" and the persistence
+ * nudge then told it to "Continue: finish all remaining steps" — overriding
+ * the stop it had correctly declared. Such an explicit stop report must never
+ * be answered with a continue-nudge.
  */
-export function shouldNudge(lastStopReason: string, stepsIncomplete: boolean, alreadyNudged: boolean): boolean {
+export function reportsExplicitStop(output: string | null | undefined): boolean {
+	if (!output) return false;
+	return (
+		/STOPPED:/i.test(output) ||
+		/\bstop[- ]condition\b/i.test(output) ||
+		/\bstanding\s+by\b/i.test(output) ||
+		/\bawaiting\s+orchestrator\b/i.test(output) ||
+		/\bescalating\b/i.test(output) ||
+		/\u26d4/.test(output)
+	);
+}
+
+/**
+ * Determine whether a subagent that stopped early should be nudged to continue.
+ * Returns true only when the stop is non-error, steps remain incomplete, we
+ * haven't already nudged this session, AND the worker's final assistant text
+ * does not explicitly report a deliberate stop (stop-aware guard, see
+ * reportsExplicitStop).
+ */
+export function shouldNudge(lastStopReason: string, stepsIncomplete: boolean, alreadyNudged: boolean, lastAssistantText?: string | null): boolean {
+	if (reportsExplicitStop(lastAssistantText)) return false;
 	return lastStopReason === "stop" && stepsIncomplete && !alreadyNudged;
 }
 
@@ -697,7 +748,7 @@ export function createAskOrchestratorTool(
 	return defineTool({
 		name: "ask_orchestrator",
 		label: "Ask Orchestrator",
-		description: "Pause the subagent and ask the orchestrator a clarification question. The orchestrator answers from context and the codebase. If it cannot answer, report the question back to the orchestrator in your final output.",
+		description: "Pause the subagent and ask the orchestrator a clarification question. The orchestrator answers from context and the codebase when a genuine answer exists. If no live orchestrator answer is available, you will receive a NO-ANSWER sentinel — treat it as 'stop and report', never as approval. If it cannot answer, report the question back to the orchestrator in your final output.",
 		parameters: Type.Object({
 			question: Type.String({ description: "The clarification question for the orchestrator" }),
 			context: Type.Optional(Type.String({ description: "Optional extra context to help answer the question" })),
@@ -1229,6 +1280,9 @@ export class SubagentRunner {
 			let lastStopReason: string | undefined;
 			let lastErrorMessage: string | undefined;
 			let lastAssistantMessage: string | undefined;
+			// Tail of the most recent assistant text, for explicit-stop detection
+			// at the persistence nudge (reportsExplicitStop / shouldNudge).
+			let lastAssistantStopText = "";
 			// Real per-tool call counts fed by tool_execution_start events (BUG-1)
 			const toolCallCounts: Record<string, number> = {};
 			// FIX 4: remember edit/write target paths from the START event so the END
@@ -1333,7 +1387,12 @@ export class SubagentRunner {
 								.filter((b: any) => b.type === "text" && typeof b.text === "string")
 								.map((b: any) => b.text)
 								.join("");
-							if (text) lastAssistantMessage = text.slice(0, 500);
+							if (text) {
+								lastAssistantMessage = text.slice(0, 500);
+								// Full-text tail for explicit-stop detection: the stop marker can sit
+								// past the 500-char recorder slice ("(STOPPED: …)" at report end).
+								lastAssistantStopText = text.length > 20_000 ? text.slice(-20_000) : text;
+							}
 						}
 						// C1: Accumulate per-turn token usage
 						const usage = (event.message as any).usage;
@@ -1640,10 +1699,10 @@ export class SubagentRunner {
 					// model SYNTHESIZING its deliverable, not agent stuckness — nudging and
 					// then terminating it would mislabel a successful run as stalled_no_progress.
 					const cleanCompleteStop = isCleanCompleteStop(lastStopReason, stepsIncomplete, output);
-					if (!cleanCompleteStop && shouldNudge(lastStopReason ?? "", stepsIncomplete, nudged)) {
+					if (!cleanCompleteStop && shouldNudge(lastStopReason ?? "", stepsIncomplete, nudged, lastAssistantStopText)) {
 						nudged = true;
 						startOutputSegment();
-						await session.prompt("You stopped before completing the task. Continue: finish all remaining steps, then report the final result.");
+						await session.prompt(PERSISTENCE_NUDGE_MESSAGE);
 					}
 
 					// ── Programmatic budget wrap-up nudge (PART A.3b) ──
@@ -1890,11 +1949,12 @@ export class SubagentRunner {
 			let finalOutput = truncateSubagentOutput(cleaned, OUTPUT_CAP);
 			// ── Programmatic budget gate (PART A.3a): conditionally FORCE the signal ──
 			// The observation banner ALWAYS surfaces a breach to the orchestrator. The
-			// `recommend` rewrite fires only when the breach is GROSS (≥2× any counted limit)
-			// or the FINAL `## Difficulty` CORROBORATES confusion (verification=fail,
-			// uncertainty=high, or recommend=investigate). A read-heavy-but-unambiguous run
-			// keeps the model's own recommend — wide exploration alone is not evidence of
-			// difficulty and forcing on it over-escalated live runs.
+			// `recommend` rewrite fires only when the FINAL `## Difficulty` CORROBORATES
+			// confusion (verification=fail, uncertainty=high, or recommend=investigate),
+			// or when the breach is GROSS (≥2× any counted limit) WITHOUT a clean
+			// difficulty report. A gross run whose difficulty says verification=pass AND
+			// uncertainty=low keeps the model's own recommend too — wide exploration alone
+			// is not evidence of difficulty and forcing on it over-escalated live runs.
 			// ── Calibration record inputs (instrumentation only; no behavior change) ──
 			// Captured BEFORE the gate so the un-forced values are the defaults, then
 			// overwritten with the gate's ACTUAL emitted values (single source of truth).

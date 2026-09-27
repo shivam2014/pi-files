@@ -65,10 +65,23 @@ describe("shouldForceRecommend (breach-kind forcing rule)", () => {
 		expect(shouldForceRecommend("substantive", { verification: "pass", uncertainty: "low", recommend: "investigate" })).toBe(true);
 	});
 
-	it("a GROSS breach forces regardless of a clean difficulty", () => {
-		expect(shouldForceRecommend("substantive", clean, true)).toBe(true);
-		expect(shouldForceRecommend("turns-only", clean, true)).toBe(true);
+	it("a GROSS breach is EXEMPTED when the difficulty is clean (verification=pass + uncertainty=low)", () => {
+		expect(shouldForceRecommend("substantive", clean, true)).toBe(false);
+		expect(shouldForceRecommend("turns-only", clean, true)).toBe(false);
 		expect(shouldForceRecommend("none", clean, true)).toBe(false);
+	});
+
+	it("a GROSS breach still forces without a clean difficulty report", () => {
+		// no block at all → nothing to exempt it
+		expect(shouldForceRecommend("substantive", null, true)).toBe(true);
+		expect(shouldForceRecommend("substantive", undefined, true)).toBe(true);
+		// block present but the clean pair (verification=pass + uncertainty=low) is not parseable
+		expect(shouldForceRecommend("substantive", {}, true)).toBe(true);
+		expect(shouldForceRecommend("substantive", { verification: "pass", uncertainty: "medium" }, true)).toBe(true);
+		expect(shouldForceRecommend("substantive", { verification: "pass", uncertainty: "high" }, true)).toBe(true);
+		expect(shouldForceRecommend("substantive", { verification: "fail", uncertainty: "low" }, true)).toBe(true);
+		expect(shouldForceRecommend("turns-only", { verification: "fail", uncertainty: "low" }, true)).toBe(true);
+		expect(shouldForceRecommend("turns-only", { verification: "pass", uncertainty: "high" }, true)).toBe(true);
 	});
 
 	it("a files-only breach NEVER forces — not even gross, whatever the difficulty", () => {

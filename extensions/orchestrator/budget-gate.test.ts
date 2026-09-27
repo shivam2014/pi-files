@@ -252,11 +252,13 @@ describe("PART A — runner forces recommend=investigate on a counted budget bre
 		expect(r.formatted).not.toContain("recommend=investigate");
 	});
 
-	it("(a-gross) a GROSS exploration breach (2× the limit) forces even with a clean difficulty", { timeout: 20_000 }, async () => {
+	it("(a-gross) a GROSS exploration breach (2× the limit) with a CLEAN difficulty is exempted — the gross breach is still reported, the worker's recommend stands", { timeout: 20_000 }, async () => {
 		const { ref, resolvePrompt, resultPromise } = createRunner("budget-gross");
 		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
 
-		// 2× the exploration cap is a gross breach — it forces regardless of self-report.
+		// 2× the exploration cap IS a gross breach, but a clean difficulty
+		// (verification=pass + uncertainty=low) means the worker's own recommend
+		// stands — the gate must NOT force.
 		for (let i = 0; i < ESCALATION_MAX_EXPLORATION_CALLS * 2; i++) {
 			ref.subscribeCb!(toolStart("read", `g${i}`, { path: `/tmp/one-file.ts` }));
 			ref.subscribeCb!(toolEnd("read", `g${i}`));
@@ -272,9 +274,9 @@ describe("PART A — runner forces recommend=investigate on a counted budget bre
 		expect(result.budgetExceeded).toBe(true);
 		expect(result.budgetBreachKind).toBe("substantive");
 		expect(result.output).toContain("⚠ [Budget Gate]");
-		expect(result.output).toContain("forcing recommend=investigate");
 		expect(result.output).toContain("gross breach");
-		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("investigate");
+		expect(result.output).not.toContain("forcing recommend=investigate");
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
 	});
 
 	it("(b) under-budget run keeps the model's own difficulty signal unchanged", { timeout: 20_000 }, async () => {

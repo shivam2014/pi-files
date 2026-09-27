@@ -10,7 +10,10 @@
  * 3. Orchestrator escalation — an explicit "I am stuck, escalate" signal must
  *    not be answerable by a fuzzy context match
  * 4. Recent ORCHESTRATOR-side conversation context (never the caller's own
- *    supplied `context` — returning the asker's words is an echo, not an answer)
+ *    supplied `context` — returning the asker's words is an echo, not an answer).
+ *    AUTHORIZATION-INTENT GUARD: questions seeking approval/permission/
+ *    authorization/decisions are NEVER answered from this fuzzy rung — the
+ *    sentinel applies (see isAuthorizationQuestion).
  * 5. Explicit UNANSWERED sentinel (question recorded for the next delegation)
  */
 
@@ -39,8 +42,13 @@ export const MAX_ANSWER_CHARS = 10_000;
  * round-trip is possible; this sentinel states that truth instead of
  * inventing an answer. The question is recorded in the questionBuffer
  * (exactly once) for the orchestrator to pick up in the next delegation.
+ *
+ * The wording is deliberately unmistakable: a fuzzy/leftover context line is
+ * NOT an answer, and nothing here grants authorization. Live defect: a worker
+ * that met a task stop-condition asked for approval, received an unrelated
+ * keyword-overlap line, and read it as consent to override a foreign claim.
  */
-export const UNANSWERED_SENTINEL = "UNANSWERED — no answer is available from the orchestrator while this delegation runs. Decide with your best judgment, state the assumption explicitly in your report, and continue. The question has been recorded for the orchestrator to address in the next delegation.";
+export const UNANSWERED_SENTINEL = "⛔ NO ORCHESTRATOR ANSWER AVAILABLE — no live orchestrator is attached to this subagent. This is NOT authorization or approval. If you are blocked, stop and report the blocker (do not infer approval).";
 
 export const CONTEXT_STOP_WORDS = new Set([
 	"what", "which", "where", "when", "who", "how", "does", "is", "are", "was", "were",
@@ -367,6 +375,38 @@ export function asksAboutFileContent(question: string): boolean {
 }
 
 /**
+ * True when the question seeks AUTHORIZATION/PERMISSION/APPROVAL or a go/no-go
+ * decision rather than factual information.
+ *
+ * Such questions must NEVER be answered from the fuzzy recent-context rung:
+ * live defect — a coder that had met its task stop-condition asked
+ * ask_orchestrator for permission and was answered with an unrelated
+ * "From the current conversation: - **Regression risks in shared render
+ * paths**…" line, which it then read as authorization to override a foreign
+ * claim. There is no live parent relay while a delegation runs, so the only
+ * truthful outcome for an authorization-class question is the NO-ANSWER
+ * sentinel. Factual lookups (file/doc rungs, factual fuzzy matches) are
+ * unaffected.
+ */
+export function isAuthorizationQuestion(question: string): boolean {
+	if (!question) return false;
+	const q = question;
+	return (
+		/\bcan\s+i\b/i.test(q) ||
+		/\bmay\s+i\b/i.test(q) ||
+		/\bam\s+i\s+(?:allowed|permitted|authoriz(?:ed|sed))\b/i.test(q) ||
+		/\bshould\s+i\b/i.test(q) ||
+		/\bis\s+it\s+(?:ok|okay)\b/i.test(q) ||
+		/\b(?:approv(?:e|al|ed|es|ing)|authoriz(?:e|ed|es|ing|ation)|authoris(?:e|ed|es|ing|ation))\b/i.test(q) ||
+		/\bpermission\b/i.test(q) ||
+		/\boverride\b/i.test(q) ||
+		/\bgo\s+ahead\b/i.test(q) ||
+		/\bproceed\b\s*\?/i.test(q) ||
+		/\bsafe\s+to\b/i.test(q)
+	);
+}
+
+/**
  * Build the resolver that the subagent calls via ask_orchestrator.
  *
  * Resolution order:
@@ -375,7 +415,9 @@ export function asksAboutFileContent(question: string): boolean {
  * 3. Orchestrator escalation (explicit "escalate" signal outranks the fuzzy
  *    context matcher — an explicit escalation must not be preempted by a
  *    keyword hit)
- * 4. Recent orchestrator conversation context (question records excluded)
+ * 4. Recent orchestrator conversation context (question records excluded), but
+ *    NEVER for authorization-intent questions — those fall through to the
+ *    sentinel so a fuzzy match can never be read as approval
  * 5. UNANSWERED sentinel
  */
 export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[]): (question: string, context?: string) => Promise<string> {
@@ -423,8 +465,17 @@ export function createAskOrchestratorResolver(ctx: any, questionBuffer?: string[
 		//    `context` is still used above (via `combined`) to understand the
 		//    question and resolve file references. Question records (pending-questions
 		//    blocks, `question "…"` lines) are stripped inside tryAnswerFromContext.
-		const contextAnswer = tryAnswerFromContext(question, recentContext);
-		if (contextAnswer) return contextAnswer;
+		//
+		//    AUTHORIZATION-INTENT GUARD: a question seeking approval/permission/
+		//    authorization/decisions must NEVER be answered from this fuzzy rung —
+		//    a keyword-overlap line is not consent (live defect: an unrelated context
+		//    line was read as authorization to override a foreign claim). Such
+		//    questions fall through to the sentinel, which explicitly denies being
+		//    authorization. Factual lookups are unaffected.
+		if (!isAuthorizationQuestion(question)) {
+			const contextAnswer = tryAnswerFromContext(question, recentContext);
+			if (contextAnswer) return contextAnswer;
+		}
 
 		// 5. No genuine answer exists — record the question (exactly once) and return
 		//    an explicit, non-deceptive sentinel. Never imply the orchestrator
