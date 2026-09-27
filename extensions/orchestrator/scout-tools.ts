@@ -178,7 +178,7 @@ export const gitReadTool = defineTool({
 // ── gh: Read-only GitHub operations ─────────────────────────────────────
 
 const GH_READ_COMMANDS = new Set([
-	"repo", "issue", "pr", "search", "release", "auth", "status",
+	"repo", "issue", "pr", "search", "release", "auth", "status", "api",
 ]);
 
 const GH_SEARCH_SUBCOMMANDS = new Set(["issues", "prs", "repos", "code", "commits"]);
@@ -187,6 +187,42 @@ const GH_ISSUE_SUBCOMMANDS = new Set(["list", "view", "status"]);
 const GH_PR_SUBCOMMANDS = new Set(["list", "view", "status", "diff", "checks"]);
 const GH_RELEASE_SUBCOMMANDS = new Set(["list", "view"]);
 const GH_AUTH_SUBCOMMANDS = new Set(["status"]);
+
+/** gh api flags that can carry a write payload (they imply POST/PATCH bodies). */
+const GH_API_WRITE_FIELDS = new Set(["-f", "--field", "-F", "--raw-field", "--input"]);
+
+/**
+ * Validate a `gh api` invocation as READ-ONLY (GET-only). `tokens` are the args
+ * AFTER the leading `api`. Returns null when allowed, else the rejection message.
+ * Blocked: graphql endpoints, non-GET methods (-X/--method), and write-style
+ * fields (-f/--field/-F/--raw-field/--input), which carry POST payloads.
+ */
+export function validateGhApiReadonly(tokens: string[]): string | null {
+	const reject = "gh api here is read-only: GET requests only; graphql and write fields are blocked";
+	for (let i = 0; i < tokens.length; i++) {
+		const t = tokens[i];
+		if (t === "graphql") return reject;
+		if (GH_API_WRITE_FIELDS.has(t)) return reject;
+		if (t.startsWith("--field=") || t.startsWith("--raw-field=") || t.startsWith("--input=") || t.startsWith("-f=") || t.startsWith("-F=")) {
+			return reject;
+		}
+		if (t === "-X" || t === "--method") {
+			const value = tokens[i + 1];
+			if (!value || value.toUpperCase() !== "GET") return reject;
+			i++;
+			continue;
+		}
+		if (t.startsWith("--method=")) {
+			if (t.slice("--method=".length).toUpperCase() !== "GET") return reject;
+			continue;
+		}
+		if (t.startsWith("-X")) {
+			if (t.slice(2).toUpperCase() !== "GET") return reject;
+			continue;
+		}
+	}
+	return null;
+}
 
 export const ghTool = defineTool({
 	name: "gh",
@@ -197,6 +233,8 @@ export const ghTool = defineTool({
 		"Use for viewing repos, issues, PRs, releases, searching",
 		"Only read-only operations are allowed (view, list, status, search)",
 		"Do not use for creating, editing, or deleting GitHub resources",
+		"For result counts use `gh search … --limit 1000 --jq length` or a GET-only `gh api` endpoint (e.g. search/commits); --json fields are validated by gh itself (commitCount is not valid for search commits)",
+		"gh api here is GET-only: no -X/--method POST, no -f/--field/-F/--raw-field/--input, no graphql",
 	],
 	parameters: Type.Object({
 		args: Type.String({
@@ -221,6 +259,16 @@ export const ghTool = defineTool({
 				content: [{ type: "text", text: `Error: 'gh ${firstWord}' is not allowed.\nAllowed: ${allowed}` }],
 				details: { exitCode: null },
 			};
+		}
+
+		if (firstWord === "api") {
+			const violation = validateGhApiReadonly(tokens.slice(1));
+			if (violation) {
+				return {
+					content: [{ type: "text", text: `Error: ${violation}` }],
+					details: { exitCode: null },
+				};
+			}
 		}
 
 		if (firstWord === "repo" && secondWord && !GH_REPO_SUBCOMMANDS.has(secondWord)) {
