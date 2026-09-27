@@ -298,6 +298,14 @@ describe("handleSubagentToolCall", () => {
 			expect(result).toBeUndefined();
 		});
 
+		it("passes through get_search_content (read-only web retrieval)", () => {
+			const result = handleSubagentToolCall({
+				toolName: "get_search_content",
+				input: { query: "stored search content" },
+			}, true, undefined, subagentCtx(true));
+			expect(result).toBeUndefined();
+		});
+
 		it("does not block bash for an advisory read replacement (nag is advisory)", () => {
 			vi.mocked(getBashToolReplacement).mockReturnValue({ allowed: true, tool: "read" });
 			vi.mocked(isToolCallEventType).mockReturnValue(true);

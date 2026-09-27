@@ -15,7 +15,7 @@ import { resolve } from "node:path";
 import * as os from 'os';
 
 /** Tools that never modify state — always safe to allow */
-const readOnlyTools = new Set(['read', 'grep', 'find', 'ls', 'git-read', 'head', 'tail', 'wc', 'file', 'web_search', 'fetch_content', 'read_skill', 'vision_query', 'glob', 'planSteps', 'advanceStep', 'reportFinding', 'ask_orchestrator']);
+const readOnlyTools = new Set(['read', 'grep', 'find', 'ls', 'git-read', 'head', 'tail', 'wc', 'file', 'web_search', 'fetch_content', 'get_search_content', 'read_skill', 'vision_query', 'glob', 'planSteps', 'advanceStep', 'reportFinding', 'ask_orchestrator']);
 
 /**
  * Advisory-only replacements: read/grep/find/ls bash calls pass through — the

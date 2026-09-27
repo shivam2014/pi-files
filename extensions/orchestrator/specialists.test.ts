@@ -14,3 +14,19 @@ describe("A1 subagent prompt audit", () => {
     }
   });
 });
+
+describe("researcher web toolset", () => {
+  it("researcher carries the atomic store/retrieve web tools", () => {
+    const tools = SPECIALISTS.researcher.tools;
+    expect(tools).toContain("web_search");
+    expect(tools).toContain("fetch_content");
+    expect(tools).toContain("get_search_content");
+  });
+
+  it("get_search_content stays read-only (no mutation tools on researcher)", () => {
+    const tools = SPECIALISTS.researcher.tools;
+    expect(tools).not.toContain("edit");
+    expect(tools).not.toContain("write");
+    expect(tools).not.toContain("bash");
+  });
+});

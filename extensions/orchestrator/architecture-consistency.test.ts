@@ -100,6 +100,7 @@ describe("Specialist prompt consistency", () => {
 		const DISTINCTIVE_TOOLS = new Set([
 			"web_search",
 			"fetch_content",
+			"get_search_content",
 			"lint",
 			"edit",
 			"write",

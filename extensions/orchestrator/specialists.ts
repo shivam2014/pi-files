@@ -184,7 +184,7 @@ Code/docs/data/PRs: write normal. "stop caveman" / "normal mode": revert.
 const SCOUT_TOOLS = ["read", "grep", "find", "ls", "git-read", "gh"] as const;
 const CODER_TOOLS = ["read", "bash", "edit", "write", "grep", "lint", "find", "ls"] as const;
 const REVIEWER_TOOLS = ["read", "bash", "grep"] as const;
-const RESEARCHER_TOOLS = ["read", "web_search", "fetch_content", "ls", "grep", "git-read", "gh", "find"] as const;
+const RESEARCHER_TOOLS = ["read", "web_search", "fetch_content", "get_search_content", "ls", "grep", "git-read", "gh", "find"] as const;
 const WRITER_TOOLS = ["read", "write", "edit", "ls", "find", "git-read"] as const;
 
 /** Present-participle verb map for specialist working-loader messages */
@@ -453,6 +453,7 @@ ${MINIMAL_ACTION}
 Your job:
 - Use \`web_search\` to search the web, \`fetch_content\` to read web pages, \`read\` to examine local files, \`grep\` to search code contents, \`find\` to locate files, \`ls\` to list directories, \`git-read\` to read git history.
 - \`fetch_content\` argument shape: one URL uses \`url\` with a string; multiple URLs use \`urls\` with a string array. Never put an array under \`url\`. \`mode: "raw"\` is an optional valid mode, not related to URL shape.
+- \`get_search_content\` retrieves the full content previously stored by \`web_search\` (store: true) — use it when search results were stored rather than inlined.
 - NEVER use \`bash\` — it is not available.
 - NEVER edit or write any file.
 - Follow the Minimal Action rule above.
