@@ -28,7 +28,7 @@ import type { Specialist, SubagentContext, Substep, DelegateControllerContext, D
 import { resolveSpecialistModel, DEFAULTS, getSessionModels } from "./orchestrator-config.ts";
 import { getLastOrchestratorModel } from "./orchestrator-model-state.ts";
 import type { Scope } from "./scope-manager.ts";
-import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS, ESCALATION_MAX_EXPLORATION_CALLS, ESCALATION_MAX_FILES_TOUCHED, ESCALATION_MAX_TURNS } from "./specialists.ts";
+import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS, ESCALATION_MAX_EXPLORATION_CALLS, ESCALATION_MAX_FILES_TOUCHED, ESCALATION_MAX_TURNS, escalationFilesCap } from "./specialists.ts";
 import { extractDifficultyFromOutput, type DifficultySignal } from "./delegate-pipeline.ts";
 import {
 	ActivityFeed,
@@ -139,16 +139,19 @@ export const EXPLORATION_TOOLS = ["read", "grep", "find", "ls"] as const;
 
 /**
  * Kind of budget breach, classified by which threshold(s) were crossed (strict `>`):
- *  - "substantive": exploration calls OR distinct files over budget — forces
+ *  - "substantive": exploration calls over budget — forces
  *    escalation ONLY when the worker's final difficulty CORROBORATES confusion
  *    (verification=fail, uncertainty=high, or recommend=investigate); a read-heavy
  *    but clean run keeps the model's own recommend.
  *  - "turns-only": ONLY the turns threshold crossed (exploration + files under
  *    budget) — turns alone are weak evidence, so forcing is conditional on the
  *    worker's own final difficulty.
+ *  - "files-only": ONLY the distinct-files threshold crossed (exploration + turns
+ *    under budget) — wide file coverage is not evidence of difficulty, so the
+ *    banner observes it but `recommend` is NEVER rewritten (even at ≥2× the cap).
  *  - "none": under budget.
  */
-export type BreachKind = "substantive" | "turns-only" | "none";
+export type BreachKind = "substantive" | "turns-only" | "files-only" | "none";
 
 /** Programmatic budget status computed from counted signals (not self-report). */
 export interface BudgetStatus {
@@ -188,36 +191,38 @@ export function extractToolFilePath(_toolName: string, args: any): string | unde
 }
 
 /**
- * Pure budget check: does the counted run cross ANY ESCALATION_MAX_* threshold?
+ * Pure budget check: does the counted run cross ANY counted threshold?
  * Uses strict `>` (matches the prompt contract "MORE THAN") so an exactly-at-budget
- * run is NOT flagged. Also classifies the breach KIND so the forcing rule can treat
- * a wide-exploration breach (always escalates) differently from a turns-only breach
- * (escalates only when the final difficulty admits difficulty). Never mutates;
- * fully testable.
+ * run is NOT flagged. `filesCap` is the specialist's OWN distinct-files cap
+ * (SSOT: escalationFilesCap in specialists.ts). Also classifies the breach KIND so
+ * the forcing rule can treat a wide-exploration breach (can escalate) differently
+ * from turns-only / files-only breaches (banner context; never force when alone).
+ * Never mutates; fully testable.
  */
 export function computeBudgetStatus(
 	counts: Record<string, number>,
 	distinctFiles: number,
 	turns: number,
+	filesCap: number = ESCALATION_MAX_FILES_TOUCHED,
 ): BudgetStatus {
 	const explorationCalls = EXPLORATION_TOOLS.reduce((sum, t) => sum + (counts[t] ?? 0), 0);
 	const reasons: string[] = [];
 	const explorationBreach = explorationCalls > ESCALATION_MAX_EXPLORATION_CALLS;
-	const filesBreach = distinctFiles > ESCALATION_MAX_FILES_TOUCHED;
+	const filesBreach = distinctFiles > filesCap;
 	const turnsBreach = turns > ESCALATION_MAX_TURNS;
 	if (explorationBreach) {
 		reasons.push(`exploration calls ${explorationCalls} > ${ESCALATION_MAX_EXPLORATION_CALLS}`);
 	}
 	if (filesBreach) {
-		reasons.push(`distinct files ${distinctFiles} > ${ESCALATION_MAX_FILES_TOUCHED}`);
+		reasons.push(`distinct files ${distinctFiles} > ${filesCap}`);
 	}
 	if (turnsBreach) {
 		reasons.push(`turns ${turns} > ${ESCALATION_MAX_TURNS}`);
 	}
-	// SUBSTANTIVE = the worker explored widely (calls) or touched many files.
-	// TURNS-ONLY = it merely took many turns, with exploration/files under budget.
-	const substantive = explorationBreach || filesBreach;
-	const breachKind: BreachKind = substantive ? "substantive" : turnsBreach ? "turns-only" : "none";
+	// SUBSTANTIVE = the worker explored widely (calls) — the strong signal.
+	// TURNS-ONLY = many turns only (files alone never elevates the kind).
+	// FILES-ONLY = wide file coverage with calls/turns under budget → banner only.
+	const breachKind: BreachKind = explorationBreach ? "substantive" : turnsBreach ? "turns-only" : filesBreach ? "files-only" : "none";
 	return {
 		exceeded: reasons.length > 0,
 		breachKind,
@@ -255,13 +260,16 @@ export function forceDifficultyRecommend(output: string, recommend: string): str
  * Whether a counted budget breach is GROSS: it blew past the counted budget by
  * ≥2× on ANY axis (exploration calls, distinct files, or turns). A gross overrun
  * is unmistakable and forces escalation regardless of the worker's self-report.
+ * The files axis is measured against the specialist's OWN cap (`filesCap`) so a
+ * scout's 10 files is not "gross" just because the default cap is 5.
  */
 export function isGrossBreach(
 	status: Pick<BudgetStatus, "explorationCalls" | "distinctFiles" | "turns">,
+	filesCap: number = ESCALATION_MAX_FILES_TOUCHED,
 ): boolean {
 	return (
 		status.explorationCalls >= ESCALATION_MAX_EXPLORATION_CALLS * 2 ||
-		status.distinctFiles >= ESCALATION_MAX_FILES_TOUCHED * 2 ||
+		status.distinctFiles >= filesCap * 2 ||
 		status.turns >= ESCALATION_MAX_TURNS * 2
 	);
 }
@@ -273,13 +281,14 @@ export function isGrossBreach(
  */
 export function grossBreachAxisLabels(
 	status: Pick<BudgetStatus, "explorationCalls" | "distinctFiles" | "turns">,
+	filesCap: number = ESCALATION_MAX_FILES_TOUCHED,
 ): string[] {
 	const axes: string[] = [];
 	if (status.explorationCalls >= ESCALATION_MAX_EXPLORATION_CALLS * 2) {
 		axes.push(`exploration calls ${status.explorationCalls} ≥ 2× cap ${ESCALATION_MAX_EXPLORATION_CALLS}`);
 	}
-	if (status.distinctFiles >= ESCALATION_MAX_FILES_TOUCHED * 2) {
-		axes.push(`distinct files ${status.distinctFiles} ≥ 2× cap ${ESCALATION_MAX_FILES_TOUCHED}`);
+	if (status.distinctFiles >= filesCap * 2) {
+		axes.push(`distinct files ${status.distinctFiles} ≥ 2× cap ${filesCap}`);
 	}
 	if (status.turns >= ESCALATION_MAX_TURNS * 2) {
 		axes.push(`turns ${status.turns} ≥ 2× cap ${ESCALATION_MAX_TURNS}`);
@@ -295,10 +304,11 @@ export function grossBreachAxisLabels(
 export function buildBudgetGateBanner(
 	status: BudgetStatus,
 	opts: { force: boolean; grossBreach: boolean },
+	filesCap: number = ESCALATION_MAX_FILES_TOUCHED,
 ): string {
 	const head = `\u26a0 [Budget Gate] ${status.breachKind} budget breach (${status.reason})`;
 	if (!opts.force) return `${head} \u2014 observed; recommend left unchanged.`;
-	const grossNote = opts.grossBreach ? ` (gross breach: ${grossBreachAxisLabels(status).join("; ")})` : "";
+	const grossNote = opts.grossBreach ? ` (gross breach: ${grossBreachAxisLabels(status, filesCap).join("; ")})` : "";
 	return `${head} \u2014 forcing recommend=investigate${grossNote}.`;
 }
 
@@ -306,17 +316,26 @@ export function buildBudgetGateBanner(
  * FIX 3(c): a turns-only breach does NOT force escalation (see shouldForceRecommend),
  * so its banner is pure context noise — it changes no behaviour and trains the
  * reader to ignore the signal. Suppress it (route to the debug log); keep banners
- * for substantive/gross breaches, which can force.
+ * for substantive (can force) and files-only (observed) breaches.
  */
 export function shouldShowBudgetBanner(breachKind: BreachKind): boolean {
 	return breachKind !== "turns-only";
 }
 
 /**
+ * True when a message_end event carries a lint-guard custom message.
+ * Session messages use role "toolResult"; older pi versions emitted "tool" —
+ * accept both so the lint forwarding never goes dead on a role rename.
+ */
+export function isLintMessage(msg: any): boolean {
+	return (msg?.role === "toolResult" || msg?.role === "tool") && msg?.toolName === "lint";
+}
+
+/**
  * Decide whether a counted budget breach should FORCE `recommend=investigate`.
  *
  *   - GROSS breach (≥2× the limit on any axis) → ALWAYS force, whatever the report.
- *   - SUBSTANTIVE breach (exploration calls OR distinct files over budget) → force ONLY
+ *   - SUBSTANTIVE breach (exploration calls over budget) → force ONLY
  *     when the difficulty block CORROBORATES confusion (`verification: fail`,
  *     `uncertainty: high`, or the worker's own `recommend: investigate`). A read-heavy
  *     but unambiguous run (uncertainty=low, verification=pass, recommend=plan/none)
@@ -325,6 +344,9 @@ export function shouldShowBudgetBanner(breachKind: BreachKind): boolean {
  *   - TURNS-ONLY breach (only the turn threshold crossed) → force ONLY when the
  *     worker's FINAL difficulty admits difficulty: `verification: fail` OR
  *     `uncertainty: high`. A clean turns-only run keeps its own recommend.
+ *   - FILES-ONLY breach (only distinct files over budget) → NEVER force, even when
+ *     gross (≥2× cap): wide file coverage alone is not evidence of difficulty; the
+ *     observation banner still surfaces it.
  *   - "none" → never force.
  *
  * Missing/absent difficulty is treated as "no admission" (do NOT force); there is
@@ -336,6 +358,7 @@ export function shouldForceRecommend(
 	grossBreach = false,
 ): boolean {
 	if (breachKind === "none") return false;
+	if (breachKind === "files-only") return false;
 	if (grossBreach) return true;
 	const verification = (difficulty?.verification ?? "").toLowerCase();
 	const uncertainty = (difficulty?.uncertainty ?? "").toLowerCase();
@@ -1221,7 +1244,7 @@ export class SubagentRunner {
 			// Recompute the counted budget from live counters; latches on first breach.
 			const checkBudget = () => {
 				if (budgetExceeded) return;
-				const status = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns);
+				const status = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns, escalationFilesCap(specialist.name));
 				if (status.exceeded) {
 					budgetExceeded = true;
 					budgetBreachKind = status.breachKind;
@@ -1326,7 +1349,7 @@ export class SubagentRunner {
 					}
 
 					const lintMsg = (event as any).message;
-					if (lintMsg?.role === "tool" && lintMsg?.toolName === "lint") {
+					if (isLintMessage(lintMsg)) {
 						const lintContent = typeof lintMsg.content === "string"
 							? lintMsg.content
 							: JSON.stringify(lintMsg.content ?? "");
@@ -1875,7 +1898,7 @@ export class SubagentRunner {
 			// ── Calibration record inputs (instrumentation only; no behavior change) ──
 			// Captured BEFORE the gate so the un-forced values are the defaults, then
 			// overwritten with the gate's ACTUAL emitted values (single source of truth).
-			let calibrationBudget: BudgetStatus = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns);
+			let calibrationBudget: BudgetStatus = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns, escalationFilesCap(specialist.name));
 			let calibrationDifficulty: DifficultySignal | null = extractDifficultyFromOutput(finalSegment);
 			let calibrationGate: CalibrationBudgetGate = {
 				forced: false,
@@ -1886,16 +1909,16 @@ export class SubagentRunner {
 			if (budgetExceeded) {
 				// Recompute from the FINAL counters so the kind reflects the whole run,
 				// not just the breach that first latched the wrap-up nudge.
-				const finalBudget = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns);
+				const finalBudget = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns, escalationFilesCap(specialist.name));
 				budgetBreachKind = finalBudget.breachKind;
 				// Parse the worker's own final difficulty (from the untruncated output).
 				const finalDifficulty = extractDifficultyFromOutput(finalSegment);
-				const grossBreach = isGrossBreach(finalBudget);
+				const grossBreach = isGrossBreach(finalBudget, escalationFilesCap(specialist.name));
 				const force = shouldForceRecommend(budgetBreachKind, finalDifficulty, grossBreach);
 				// FIX 3(a): build the banner from the FINAL totals (all breached axes; the
 				// gross axis/axes named as the trigger), not the stale first-latched reason.
 				// FIX 3(c): a turns-only breach forces nothing — suppress its banner.
-				const gateBanner = buildBudgetGateBanner(finalBudget, { force, grossBreach });
+				const gateBanner = buildBudgetGateBanner(finalBudget, { force, grossBreach }, escalationFilesCap(specialist.name));
 				if (shouldShowBudgetBanner(finalBudget.breachKind)) {
 					finalOutput = `${gateBanner}\n\n${finalOutput}`;
 				} else {

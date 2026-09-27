@@ -50,6 +50,15 @@ describe('PART A — hard-budget escalation rule (specialists)', () => {
 		expect(prompt).toContain('MORE THAN');
 	});
 
+	it("the prompt injection uses each child's OWN files cap (scout 12, coder 5)", () => {
+		const scout = renderSpecialistPrompt('scout');
+		const coder = renderSpecialistPrompt('coder');
+		expect(scout).toContain('MORE THAN 12 distinct files');
+		expect(scout).toContain('(10 calls, 12 files, 12 turns) without converging');
+		expect(coder).toContain('MORE THAN 5 distinct files');
+		expect(coder).toContain('(10 calls, 5 files, 12 turns) without converging');
+	});
+
 	it('coder prompt keeps the existing ## Difficulty block contract (adaptive escalation)', () => {
 		const prompt = renderSpecialistPrompt('coder');
 		expect(prompt).toContain('## Difficulty');

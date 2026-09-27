@@ -79,7 +79,7 @@ describe("computeBudgetStatus (pure counted budget)", () => {
 	it("distinct-files budget crossed → exceeded", () => {
 		const s = computeBudgetStatus({}, ESCALATION_MAX_FILES_TOUCHED + 1, 0);
 		expect(s.exceeded).toBe(true);
-		expect(s.breachKind).toBe("substantive");
+		expect(s.breachKind).toBe("files-only");
 		expect(s.reason).toContain("distinct files");
 	});
 

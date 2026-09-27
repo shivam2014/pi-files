@@ -17,6 +17,7 @@ import {
 	nextIntervention,
 	INITIAL_INTERVENTION,
 	STALL_GRACE_TURNS,
+	isLintMessage,
 } from "./subagent-runner.ts";
 import { DEFAULTS, resolveSpecialistModel, getSessionModels, setSessionModels, _sessionModels } from "./orchestrator-config.ts";
 import { shortenLabel, truncateLabel } from "../token-saver.ts";
@@ -55,6 +56,22 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
       create: vi.fn().mockResolvedValue({}),
     },
   };
+});
+
+describe("isLintMessage (lint message_end role matcher)", () => {
+	it("accepts the session role toolResult (role-drift fix)", () => {
+		expect(isLintMessage({ role: "toolResult", toolName: "lint" })).toBe(true);
+	});
+
+	it("accepts the legacy role tool", () => {
+		expect(isLintMessage({ role: "tool", toolName: "lint" })).toBe(true);
+	});
+
+	it("rejects other roles and other tools", () => {
+		expect(isLintMessage({ role: "assistant", toolName: "lint" })).toBe(false);
+		expect(isLintMessage({ role: "toolResult", toolName: "read" })).toBe(false);
+		expect(isLintMessage(undefined)).toBe(false);
+	});
 });
 
 describe("truncateSubagentOutput", () => {

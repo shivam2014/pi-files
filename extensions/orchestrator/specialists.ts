@@ -85,6 +85,23 @@ export const ESCALATION_MAX_FILES_TOUCHED = 5;
 export const ESCALATION_MAX_TURNS = 12;
 
 /**
+ * Per-specialist distinct-files caps (SSOT). Read-heavy investigators (scout,
+ * researcher) legitimately orient across more files; every specialist absent
+ * from this map keeps ESCALATION_MAX_FILES_TOUCHED. Consulted by
+ * computeBudgetStatus AND the prompt injection so the number the child is told
+ * always matches the number the budget gate enforces.
+ */
+export const ESCALATION_FILES_CAPS: Record<string, number> = {
+	scout: 12,
+	researcher: 12,
+};
+
+/** Distinct-files cap for one specialist — the child's OWN number. */
+export function escalationFilesCap(specialistName: string): number {
+	return ESCALATION_FILES_CAPS[specialistName] ?? ESCALATION_MAX_FILES_TOUCHED;
+}
+
+/**
  * Hard budget escalation rule — injected into coder/scout prompts.
  * A worker crossing the counted budget escalates UP via ask_orchestrator with a
  * structured \`recommend: investigate\` request so the orchestrator knows to
@@ -101,6 +118,18 @@ ask_orchestrator({
 })
 \`\`\`
 The \`recommend: investigate\` signal tells the orchestrator to escalate the ladder (spawn a scout) rather than just answer you.`;
+
+/**
+ * Per-specialist hard-budget rule: same text as WORKER_ESCALATION_RULE but with
+ * the child's OWN distinct-files cap, so the printed number matches the number
+ * the budget gate enforces (escalationFilesCap).
+ */
+export function buildWorkerEscalationRule(filesCap: number = ESCALATION_MAX_FILES_TOUCHED): string {
+	if (filesCap === ESCALATION_MAX_FILES_TOUCHED) return WORKER_ESCALATION_RULE;
+	return WORKER_ESCALATION_RULE
+		.replace("MORE THAN " + ESCALATION_MAX_FILES_TOUCHED + " distinct files", "MORE THAN " + filesCap + " distinct files")
+		.replace("calls, " + ESCALATION_MAX_FILES_TOUCHED + " files,", "calls, " + filesCap + " files,");
+}
 
 /**
  * Activity feed instruction template.
@@ -248,7 +277,7 @@ You are a read-only investigator (inspects code, docs, data, configs - whatever 
 
 ${MINIMAL_ACTION}
 
-${WORKER_ESCALATION_RULE}
+${buildWorkerEscalationRule(escalationFilesCap("scout"))}
 
 Your job:
 - Be fast. Use \`grep\` tool to search code contents, \`find\` tool to locate files by name/pattern, \`ls\` tool to list directories, \`git-read\` to read git history, \`gh\` for GitHub CLI, then \`read\` key sections.

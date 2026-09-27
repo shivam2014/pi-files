@@ -71,6 +71,11 @@ describe("shouldForceRecommend (breach-kind forcing rule)", () => {
 		expect(shouldForceRecommend("none", clean, true)).toBe(false);
 	});
 
+	it("a files-only breach NEVER forces — not even gross, whatever the difficulty", () => {
+		expect(shouldForceRecommend("files-only", clean, true)).toBe(false);
+		expect(shouldForceRecommend("files-only", { verification: "fail", uncertainty: "high", recommend: "investigate" }, true)).toBe(false);
+	});
+
 	it("turns-only breach with verification=fail forces", () => {
 		expect(shouldForceRecommend("turns-only", { verification: "fail", uncertainty: "low" })).toBe(true);
 	});
@@ -110,6 +115,10 @@ describe("isGrossBreach (≥2× any counted limit)", () => {
 		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: ESCALATION_MAX_FILES_TOUCHED * 2, turns: 0 })).toBe(true);
 		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: ESCALATION_MAX_FILES_TOUCHED * 2 - 1, turns: 0 })).toBe(false);
 	});
+	it("measures the files axis against the supplied specialist cap (scout=12: 10 files is not gross)", () => {
+		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: 10, turns: 0 }, 12)).toBe(false);
+		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: 24, turns: 0 }, 12)).toBe(true);
+	});
 	it("flags turns at 2× the limit, not 2×-1", () => {
 		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: 0, turns: ESCALATION_MAX_TURNS * 2 })).toBe(true);
 		expect(isGrossBreach({ explorationCalls: 0, distinctFiles: 0, turns: ESCALATION_MAX_TURNS * 2 - 1 })).toBe(false);
@@ -122,9 +131,20 @@ describe("computeBudgetStatus classifies breach kind", () => {
 		const s = computeBudgetStatus({ read: ESCALATION_MAX_EXPLORATION_CALLS + 1 }, 1, 1);
 		expect(s.breachKind).toBe("substantive");
 	});
-	it("distinct files over budget → substantive", () => {
+	it("distinct files over budget alone → files-only", () => {
 		const s = computeBudgetStatus({ read: ESCALATION_MAX_EXPLORATION_CALLS }, ESCALATION_MAX_FILES_TOUCHED + 1, 1);
+		expect(s.breachKind).toBe("files-only");
+	});
+	it("a specialist files cap (scout=12) is honoured: 12 calls + 10 files → substantive, no files breach", () => {
+		const s = computeBudgetStatus({ read: ESCALATION_MAX_EXPLORATION_CALLS + 2 }, 10, 1, 12);
 		expect(s.breachKind).toBe("substantive");
+		expect(s.exceeded).toBe(true);
+		expect(s.reason).toContain("exploration calls");
+		expect(s.reason).not.toContain("distinct files");
+	});
+	it("calls under the exploration cap with files over a custom cap → files-only", () => {
+		const s = computeBudgetStatus({ read: 6 }, 6, 1, 5);
+		expect(s.breachKind).toBe("files-only");
 	});
 	it("turns-only over budget → turns-only", () => {
 		const s = computeBudgetStatus({}, 0, ESCALATION_MAX_TURNS + 1);
@@ -198,7 +218,7 @@ const report = (opts: { verification: string; uncertainty: string; recommend?: s
 	`## Findings\n- summary: done\n\n## Difficulty\n- exploration: medium\n- uncertainty: ${opts.uncertainty}\n- verification: ${opts.verification}\n- iteration: high\n- recommend: ${opts.recommend ?? "none"}\n`;
 
 describe("PART A — breach-kind forcing (end-to-end)", () => {
-	it("(files) 6 files > 5 with a CLEAN difficulty → substantive but NOT gross → banner shown, recommend NOT rewritten", { timeout: 20_000 }, async () => {
+	it("(files-only) 6 files > 5 with a CLEAN difficulty → files-only → banner shown, recommend NOT rewritten", { timeout: 20_000 }, async () => {
 		const { ref, resolvePrompt, resultPromise } = createRunner("files-over");
 		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
 
@@ -216,7 +236,7 @@ describe("PART A — breach-kind forcing (end-to-end)", () => {
 		const result = await resultPromise;
 
 		expect(result.budgetExceeded).toBe(true);
-		expect(result.budgetBreachKind).toBe("substantive");
+		expect(result.budgetBreachKind).toBe("files-only");
 		expect(result.output).toContain("⚠ [Budget Gate]");
 		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
 		expect(result.output).not.toContain("forcing recommend=investigate");
@@ -283,6 +303,54 @@ describe("PART A — breach-kind forcing (end-to-end)", () => {
 
 		// Nudge fired even though forcing did NOT (clean turns-only breach).
 		expect(mockSession.prompt).toHaveBeenCalledWith(BUDGET_WRAPUP_MESSAGE);
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
+	});
+
+	it("(scout-like) 12 calls / 10 files: files within scout's 12-file cap → substantive banner, no forcing", { timeout: 20_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createRunner("scout");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		// Exploration 12 > 10 (substantive), distinct files 10 ≤ scout's own cap 12 →
+		// NO files breach, NO gross overrun: observe, never rewrite recommend.
+		for (let i = 0; i < 12; i++) {
+			ref.subscribeCb!(toolStart("read", `s${i}`, { path: `/tmp/scout-file-${i % 10}.ts` }));
+			ref.subscribeCb!(toolEnd("read", `s${i}`));
+		}
+
+		const text = report({ verification: "pass", uncertainty: "low" });
+		ref.subscribeCb!(textDelta(text));
+		ref.subscribeCb!(assistantEnd("end_turn", text));
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.budgetBreachKind).toBe("substantive");
+		expect(result.output).toContain("⚠ [Budget Gate]");
+		expect(result.output).not.toContain("forcing recommend=investigate");
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
+	});
+
+	it("(files-gross) 11 files > 5 (≥2×) with clean difficulty → files-only banner, NEVER forced", { timeout: 20_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createRunner("files-gross");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		// 11 distinct write targets (≥ 2× the 5-file cap) with ZERO exploration calls —
+		// a files-only gross breach. Gross files must not force.
+		for (let i = 0; i < ESCALATION_MAX_FILES_TOUCHED + 6; i++) {
+			ref.subscribeCb!(toolStart("write", `w${i}`, { filePath: `/tmp/gross-${i}.ts` }));
+			ref.subscribeCb!(toolEnd("write", `w${i}`));
+		}
+
+		const text = report({ verification: "pass", uncertainty: "low" });
+		ref.subscribeCb!(textDelta(text));
+		ref.subscribeCb!(assistantEnd("end_turn", text));
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.budgetBreachKind).toBe("files-only");
+		expect(result.output).toContain("⚠ [Budget Gate]");
+		expect(result.output).not.toContain("forcing recommend=investigate");
 		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
 	});
 });
