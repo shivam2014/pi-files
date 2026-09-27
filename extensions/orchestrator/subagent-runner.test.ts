@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
 	truncateSubagentOutput,
+	truncateToolResultHeadTail,
 	snapshotSubagentEnv,
 	cleanSubagentEnv,
 	installSubagentEnv,
@@ -20,8 +21,9 @@ import {
 import { DEFAULTS, resolveSpecialistModel, getSessionModels, setSessionModels, _sessionModels } from "./orchestrator-config.ts";
 import { shortenLabel, truncateLabel } from "../token-saver.ts";
 import { registerFusionTool } from "./fusion-tool.ts";
+import { ESCALATION_MAX_EXPLORATION_CALLS } from "./specialists.ts";
 import { createActivityFeed, addStep, completeCurrentStep, markFeedError } from "./activity-feed.ts";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SubagentState, subagentSessions } from "./subagent-sessions.ts";
@@ -1115,5 +1117,222 @@ describe("subagent-runner session model override wiring", () => {
 			expect(mockModelRegistry.find).toHaveBeenCalledWith("session", "delegate");
 		}, { timeout: 15_000 });
 		expect(mockModelRegistry.find).not.toHaveBeenCalledWith("global", "delegate");
+	});
+});
+
+// ─── Runner batch 2: segmented results (#8), head+tail truncation (B), plan-tool fallbacks (C) ───
+
+describe("runner fixes — segmented results, head+tail truncation, non-dropping plan tools", () => {
+	type SubscribeCb = (event: any) => void;
+
+	interface PromptCall { message: string; resolve: () => void; reject: (e: any) => void }
+	interface HarnessState {
+		subscribeCb: SubscribeCb | null;
+		prompts: PromptCall[];
+		sessionOptions: any;
+		mockSession: any;
+	}
+
+	function createHarness() {
+		const state: HarnessState = {
+			subscribeCb: null,
+			prompts: [],
+			sessionOptions: null,
+			mockSession: null,
+		};
+		const mockSession = {
+			sessionId: "test-runner-fixes",
+			messages: [] as any[],
+			subscribe: vi.fn((cb: SubscribeCb) => {
+				state.subscribeCb = cb;
+				return () => {};
+			}),
+			abort: vi.fn(),
+			prompt: vi.fn((message: string) => new Promise<void>((resolve, reject) => {
+				state.prompts.push({ message, resolve, reject });
+			})),
+			dispose: vi.fn(),
+			getSessionStats: vi.fn(() => ({ toolCalls: 0 })),
+		};
+		state.mockSession = mockSession;
+
+		const mockModel = { id: "test/fixes", contextWindow: 200_000 };
+		const mockModelRegistry = {
+			find: vi.fn(() => mockModel),
+			getAvailable: vi.fn(() => [mockModel]),
+			getAll: vi.fn(() => [mockModel]),
+		} as any;
+
+		const updates: any[] = [];
+		const runner = new SubagentRunner({
+			cwd: "/tmp",
+			modelRegistry: mockModelRegistry,
+			agentDir: "/Users/shivam94/.pi/agent",
+			agentSessionFactory: async (options: any) => {
+				state.sessionOptions = options;
+				return { session: mockSession };
+			},
+			onUpdate: (u: any) => updates.push(u),
+		} as any);
+
+		const specialist = { name: "fix-specialist", tools: ["read"], systemPrompt: "p" } as any;
+		const resultPromise = runner.run("task", specialist);
+		return { state, updates, resultPromise };
+	}
+
+	/**
+	 * Await the run while auto-resolving any prompt beyond `controlledUpTo` so a
+	 * stray nudge (never expected in these scenarios) cannot hang the test.
+	 */
+	async function awaitResult(resultPromise: Promise<any>, state: HarnessState, controlledUpTo: number) {
+		const net = setInterval(() => {
+			for (const p of state.prompts.slice(controlledUpTo)) p.resolve();
+		}, 25);
+		try {
+			return await resultPromise;
+		} finally {
+			clearInterval(net);
+		}
+	}
+
+	function assistantEnd(text: string, stopReason = "end_turn") {
+		return {
+			type: "message_end",
+			message: { role: "assistant", stopReason, content: [{ type: "text", text }], usage: { input: 10, output: 5, totalTokens: 15 } },
+		};
+	}
+	function textDelta(delta: string) {
+		return { type: "message_update", assistantMessageEvent: { type: "text_delta", delta } };
+	}
+
+	it("#8: nudged run returns exactly ONE report section (last segment only)", { timeout: 20_000 }, async () => {
+		const { state, resultPromise } = createHarness();
+		await vi.waitFor(() => expect(state.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+		await vi.waitFor(() => expect(state.prompts.length).toBe(1), { timeout: 10_000 });
+
+		// Cross the counted exploration budget so the wrap-up nudge fires.
+		for (let i = 0; i < ESCALATION_MAX_EXPLORATION_CALLS + 1; i++) {
+			state.subscribeCb!({ type: "tool_execution_start", toolName: "read", toolCallId: `r${i}`, args: { path: `/tmp/fix-${i}.ts` } });
+			state.subscribeCb!({ type: "tool_execution_end", toolName: "read", toolCallId: `r${i}`, result: `content-${i}`, isError: false });
+		}
+
+		const report1 = "## Findings\n- summary: FIRST_EMISSION\n";
+		state.subscribeCb!(textDelta(report1));
+		state.subscribeCb!(assistantEnd(report1));
+		state.prompts[0].resolve();
+
+		// Wrap-up nudge (prompt #2) — the model answers by re-emitting the full report.
+		await vi.waitFor(() => expect(state.prompts.length).toBe(2), { timeout: 10_000 });
+		expect(state.prompts[1].message).toContain("exceeded your exploration budget");
+		const report2 = "## Findings\n- summary: SECOND_EMISSION\n";
+		state.subscribeCb!(textDelta(report2));
+		state.subscribeCb!(assistantEnd(report2));
+		state.prompts[1].resolve();
+
+		const result = await awaitResult(resultPromise, state, 2);
+
+		expect(result.output).toContain("SECOND_EMISSION");
+		expect(result.output).not.toContain("FIRST_EMISSION");
+		expect((result.output.match(/## Findings/g) ?? []).length).toBe(1);
+	});
+
+	it("B: truncateToolResultHeadTail keeps head+tail with marker and never exceeds the cap", () => {
+		const long = "HEAD:" + "h".repeat(1500) + "x".repeat(6000) + "t".repeat(200) + ":TAIL_EXIT_42";
+		const out = truncateToolResultHeadTail(long, 2000);
+		expect(out.length).toBeLessThanOrEqual(2000);
+		expect(out.startsWith("HEAD:")).toBe(true);
+		expect(out.endsWith(":TAIL_EXIT_42")).toBe(true);
+		expect(out).toMatch(/…\[\d+ chars elided\]…/);
+		// Under the cap → unchanged.
+		expect(truncateToolResultHeadTail("small result", 2000)).toBe("small result");
+	});
+
+	it("B: runner emits head+tail [tool result] blocks (tail survives)", { timeout: 20_000 }, async () => {
+		const { state, resultPromise } = createHarness();
+		await vi.waitFor(() => expect(state.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+		await vi.waitFor(() => expect(state.prompts.length).toBe(1), { timeout: 10_000 });
+
+		const longOutput = Array.from({ length: 400 }, (_, i) => `line ${i}`).join("\n") + "\n_TAILMARK_EXIT_0_";
+		state.subscribeCb!({ type: "tool_execution_start", toolName: "read", toolCallId: "b1", args: { path: "/tmp/long.ts" } });
+		state.subscribeCb!({ type: "tool_execution_end", toolName: "read", toolCallId: "b1", result: longOutput, isError: false });
+		state.subscribeCb!(assistantEnd("## Completed\n- done"));
+		state.prompts[0].resolve();
+
+		const result = await awaitResult(resultPromise, state, 1);
+		expect(longOutput.length).toBeGreaterThan(2000);
+		expect(result.output).toContain("_TAILMARK_EXIT_0_");
+		expect(result.output).toMatch(/…\[\d+ chars elided\]…/);
+	});
+
+	it("C: advanceStep past the end is idempotent success", { timeout: 20_000 }, async () => {
+		const { state, resultPromise } = createHarness();
+		await vi.waitFor(() => expect(state.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+		await vi.waitFor(() => expect(state.sessionOptions).not.toBeNull(), { timeout: 10_000 });
+
+		const tools = state.sessionOptions.customTools as any[];
+		const byName = (n: string) => tools.find(t => t.name === n);
+
+		await byName("planSteps").execute("c1", { goal: "g", steps: ["one", "two"] });
+		const a1 = await byName("advanceStep").execute("c2", {});
+		expect(a1.details.status).toBe("step_advanced");
+		const a2 = await byName("advanceStep").execute("c3", {});
+		expect(a2.details.status).toBe("step_advanced");
+		expect(a2.details.allComplete).toBe(true);
+
+		const a3 = await byName("advanceStep").execute("c4", {});
+		expect(a3.details.status).toBe("all_complete");
+		expect(a3.content[0].text).toBe("All steps already complete");
+
+		state.prompts[0].resolve();
+		await awaitResult(resultPromise, state, 1);
+	});
+
+	it("C: reportFinding after plan exhaustion is stored, not dropped", { timeout: 20_000 }, async () => {
+		const { state, updates, resultPromise } = createHarness();
+		await vi.waitFor(() => expect(state.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+		await vi.waitFor(() => expect(state.sessionOptions).not.toBeNull(), { timeout: 10_000 });
+
+		const tools = state.sessionOptions.customTools as any[];
+		const byName = (n: string) => tools.find(t => t.name === n);
+
+		await byName("planSteps").execute("c1", { goal: "g", steps: ["one", "two"] });
+		await byName("advanceStep").execute("c2", {});
+		await byName("advanceStep").execute("c3", {});
+
+		// Past the last step: the old code returned "No active step" and dropped the finding.
+		const rf = await byName("reportFinding").execute("c4", { finding: "POST_PLAN_FINDING" });
+		expect(rf.details.status).toBe("reported");
+		expect(rf.details.orphaned).toBe(true);
+		expect(rf.content[0].text).toContain("POST_PLAN_FINDING");
+
+		// Visible in the rendered feed surfaced through onUpdate…
+		const rendered = updates.map((u: any) => u?.content?.[0]?.text ?? "").join("\n");
+		expect(rendered).toContain("POST_PLAN_FINDING");
+
+		state.prompts[0].resolve();
+		const result = await awaitResult(resultPromise, state, 1);
+		// …and persisted in the flight-recorder dump (activity feed) — never dropped.
+		const dump = JSON.parse(readFileSync(result.flightRecorderPath, "utf8"));
+		expect(JSON.stringify(dump.activityFeed)).toContain("POST_PLAN_FINDING");
+	});
+
+	it("B/trail: dump matcher reads role 'toolResult' and stores real outputs (50KB cap live)", { timeout: 20_000 }, async () => {
+		const { state, resultPromise } = createHarness();
+		await vi.waitFor(() => expect(state.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+		await vi.waitFor(() => expect(state.prompts.length).toBe(1), { timeout: 10_000 });
+
+		const longOutput = "REAL_OUTPUT_" + "o".repeat(500);
+		state.mockSession.messages = [
+			{ role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "/tmp/x.ts" } }] },
+			{ role: "toolResult", toolCallId: "t1", isError: false, content: [{ type: "text", text: longOutput }] },
+		];
+		state.subscribeCb!(assistantEnd("done"));
+		state.prompts[0].resolve();
+
+		const result = await awaitResult(resultPromise, state, 1);
+		const dump = JSON.parse(readFileSync(result.flightRecorderPath, "utf8"));
+		expect(dump.toolCallTrail).toHaveLength(1);
+		expect(dump.toolCallTrail[0].output).toBe(longOutput);
+		expect(dump.toolCallTrail[0].output.length).toBeGreaterThan(80);
 	});
 });

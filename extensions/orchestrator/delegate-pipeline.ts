@@ -1055,7 +1055,11 @@ export class DelegatePipeline {
 		outcome?: DelegationOutcome,
 	): string {
 		if (isAborted || isError) {
-			return DelegatePipeline.formatErrorAbort(output, toolCallTrail, turns, isAborted, errorMessage, stopReason, outcome);
+			// Error/abort/stall paths get the same output hygiene as success: when a
+			// report survived the failure, raw JSON tool-result blocks are stripped.
+			// (No-op when no report exists — output is left as-is for diagnosis.)
+			const cleanedAbort = DelegatePipeline.sanitizeOutputForOrchestrator(output);
+			return DelegatePipeline.formatErrorAbort(cleanedAbort, toolCallTrail, turns, isAborted, errorMessage, stopReason, outcome);
 		}
 		// Output hygiene: strip raw JSON tool-result blocks when report exists
 		const cleaned = DelegatePipeline.sanitizeOutputForOrchestrator(output);

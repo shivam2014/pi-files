@@ -429,6 +429,29 @@ export function resolveSkillPaths(skills: string[], agentDir: string): string[] 
 
 export const OUTPUT_CAP = 80_000;
 const PER_RESULT_CAP = 2000;
+/** B: head/tail split for per-tool-result truncation (exit codes and error tails survive). */
+const PER_RESULT_HEAD_CHARS = 1000;
+const PER_RESULT_TAIL_CHARS = 950;
+
+/**
+ * Head+tail truncation for a single tool result: keeps ~1000 head + ~950 tail
+ * chars with an elision marker between them, so exit codes / stack-trace tails
+ * survive. Never exceeds `cap`; the head shrinks when the marker would push past it.
+ */
+export function truncateToolResultHeadTail(result: string, cap: number = PER_RESULT_CAP): string {
+	if (result.length <= cap) return result;
+	let head = PER_RESULT_HEAD_CHARS;
+	const tail = PER_RESULT_TAIL_CHARS;
+	while (head > 0) {
+		const elided = result.length - head - tail;
+		const marker = `\n…[${elided} chars elided]…\n`;
+		if (head + marker.length + tail <= cap) {
+			return result.slice(0, head) + marker + result.slice(result.length - tail);
+		}
+		head--;
+	}
+	return result.slice(0, cap);
+}
 
 /**
  * Extract the last occurrence of a markdown section starting with `heading`.
@@ -988,6 +1011,34 @@ export class SubagentRunner {
 			const excludeTools = canUseBash(specialist.name) ? undefined : ["bash"];
 
 			let output = "";
+			// #8: nudge prompts ask the model to re-emit the report, so each prompt
+			// response accumulates into its own segment. `outputSegments` holds the
+			// segments BEFORE the current one; `output` is the live segment. The
+			// returned result is composed from the LAST segment (the final report).
+			// The stored session-messages dump is untouched.
+			const outputSegments: string[] = [];
+			/** Start a new output segment. Call immediately BEFORE each nudge session.prompt. */
+			const startOutputSegment = () => {
+				outputSegments.push(output);
+				output = "";
+			};
+			/** All segments concatenated — equals the pre-segmentation flat accumulator. */
+			const composeAllOutputSegments = () => outputSegments.join("") + output;
+			/**
+			 * Final result = the last segment carrying the report (the final report).
+			 * Falls back to the last non-empty segment when the final segment carries no
+			 * deliverable markers, and to the live segment when nothing is non-empty.
+			 */
+			const composeFinalOutputSegment = (): string => {
+				const segments = [...outputSegments, output].filter(s => s.trim().length > 0);
+				const last = segments[segments.length - 1];
+				if (last === undefined) return output;
+				if (hasDeliverableMarkers(last)) return last;
+				for (let i = segments.length - 2; i >= 0; i--) {
+					if (hasDeliverableMarkers(segments[i])) return segments[i];
+				}
+				return last;
+			};
 			let turns = 0;
 			let _lastFeedSnapshot: string | null = null;
 			const goal = shortenLabel(task);
@@ -1049,7 +1100,12 @@ export class SubagentRunner {
 						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "step_advanced", model: modelLabel, provider } });
 						return { content: [{ type: "text", text: `Step complete. Next: ${nextLabel}` }], details: { nextStep: nextLabel, totalSteps: feed.steps.length, allComplete: feed.currentStep >= feed.steps.length, status: "step_advanced" } };
 					}
-					return { content: [{ type: "text", text: "No active step to complete" }], details: { status: "no_active_step" } };
+					// C: advancing past the end is idempotent success, NOT an error — batched
+					// advanceStep calls must not report "No active step" and confuse the model.
+					return {
+						content: [{ type: "text" as const, text: "All steps already complete" }],
+						details: { status: "all_complete", totalSteps: feed.steps.length, allComplete: true },
+					};
 				}
 			});
 
@@ -1061,12 +1117,16 @@ export class SubagentRunner {
 				parameters: Type.Object({
 					finding: Type.String({ description: "What you discovered" }),
 				}),
-				execute: async (_toolCallId: string, params: { finding: string }) => {
+				execute: async (_toolCallId: string, params: { finding: string }): Promise<{ content: { type: "text"; text: string }[]; details: { status: string; stepIndex?: number; orphaned?: boolean } }> => {
 					if (!feed.planParsed) {
-						return { content: [{ type: "text" as const, text: "Error: planSteps() must be called first" }], details: {} };
+						return { content: [{ type: "text", text: "Error: planSteps() must be called first" }], details: { status: "no_plan" } };
 					}
-					if (feed.currentStep >= 0 && feed.currentStep < feed.steps.length) {
-						const step = feed.steps[feed.currentStep];
+					// C: findings are NEVER dropped. Past the last step (all steps advanced),
+					// attach to the LAST step instead of failing with "No active step".
+					const orphaned = !(feed.currentStep >= 0 && feed.currentStep < feed.steps.length);
+					const targetIdx = orphaned ? feed.steps.length - 1 : feed.currentStep;
+					if (targetIdx >= 0) {
+						const step = feed.steps[targetIdx];
 						const newSubstep: Substep = {
 							label: params.finding,
 							completed: true,
@@ -1076,14 +1136,21 @@ export class SubagentRunner {
 						};
 						const newSubsteps = [...step.substeps, newSubstep];
 						const newSteps = feed.steps.map((s, i) =>
-							i === feed.currentStep ? { ...s, substeps: newSubsteps } : s
+							i === targetIdx ? { ...s, substeps: newSubsteps } : s
 						);
 						feed.feedState = { ...feed.feedState, steps: newSteps };
 						const text = feed.render(specialist.name);
 						config.onUpdate?.({ content: [{ type: "text", text }], details: { status: "report", model: modelLabel, provider } });
-						return { content: [{ type: "text", text: `${statusIcon("completed")} Reported: ${params.finding}` }], details: {} };
+						return {
+							content: [{ type: "text", text: `${statusIcon("completed")} Reported: ${params.finding}` }],
+							details: { status: "reported", stepIndex: targetIdx, orphaned },
+						};
 					}
-					return { content: [{ type: "text", text: "No active step" }], details: {} };
+					// No steps at all to attach to — still surface the finding in the tool result.
+					return {
+						content: [{ type: "text", text: `${statusIcon("completed")} Reported (no plan steps to attach to): ${params.finding}` }],
+						details: { status: "reported", orphaned: true },
+					};
 				},
 			});
 
@@ -1359,9 +1426,8 @@ export class SubagentRunner {
 					} catch {}
 					// Append tool result to output for complete delegation results
 					if (rawResult != null && stripped != null) {
-						const cappedResult = stripped.length > PER_RESULT_CAP
-							? stripped.slice(0, PER_RESULT_CAP - 50) + "\n...[tool result truncated at " + PER_RESULT_CAP + " chars]"
-							: stripped;
+						// B: head+tail cap — the tail carries exit codes / error endings.
+						const cappedResult = truncateToolResultHeadTail(stripped, PER_RESULT_CAP);
 						output += "\n[tool result]\n" + cappedResult + "\n[/tool result]\n";
 					}
 					const isError = (event as any).isError === true;
@@ -1553,6 +1619,7 @@ export class SubagentRunner {
 					const cleanCompleteStop = isCleanCompleteStop(lastStopReason, stepsIncomplete, output);
 					if (!cleanCompleteStop && shouldNudge(lastStopReason ?? "", stepsIncomplete, nudged)) {
 						nudged = true;
+						startOutputSegment();
 						await session.prompt("You stopped before completing the task. Continue: finish all remaining steps, then report the final result.");
 					}
 
@@ -1567,6 +1634,7 @@ export class SubagentRunner {
 								content: [{ type: "text", text: feed.render(specialist.name) }],
 								details: { specialist: specialist.name, status: "budget_nudge", budgetReason },
 							});
+							startOutputSegment();
 							await session.prompt(BUDGET_WRAPUP_MESSAGE);
 						} catch (e) {
 							debugLog("[budget] wrap-up nudge failed:", e);
@@ -1599,6 +1667,7 @@ export class SubagentRunner {
 								content: [{ type: "text", text: feed.render(specialist.name) }],
 								details: { specialist: specialist.name, status: "stall_nudge", turns },
 							});
+							startOutputSegment();
 							await session.prompt(nudgeMsg);
 							// Re-evaluate after the model had its chance to recover.
 							const d2 = nextIntervention(intervention, detector.state(), turns);
@@ -1632,7 +1701,7 @@ export class SubagentRunner {
 				config.onUpdate?.({content: [{ type: "text", text: errorText }],
 					details: { specialist: specialist.name, status: isAborted ? "aborted" : "error", error: errorMsg, model: modelLabel, provider },
 				});
-				const prevOutput = output;
+				const prevOutput = composeAllOutputSegments();
 				if (isAborted) {
 					const marker = `[aborted] Interrupted by user${errorMsg && !errorMsg.toLowerCase().includes("abort") ? ` (${errorMsg})` : ""}`;
 					output = marker + (prevOutput ? "\n\n--- Partial output before abort: ---\n\n" + prevOutput : "");
@@ -1683,12 +1752,17 @@ export class SubagentRunner {
 						}
 						// Match each toolCall with its toolResult
 						for (const msg of messages) {
-							if (msg.role === "tool" && msg.toolCallId) {
+							// B: the SDK stores tool results under role "toolResult" ("tool" kept for
+							// legacy shapes). The old matcher only checked "tool", so the trail
+							// always fell back to 80-char previews and the 50KB cap was dead code.
+							if ((msg.role === "toolResult" || msg.role === "tool") && msg.toolCallId) {
 								const tc = toolCallsById.get(msg.toolCallId);
 								if (!tc) continue;
 								const isError = msg.isError === true;
 								const outputParts: string[] = [];
-								if (Array.isArray(msg.content)) {
+								if (typeof msg.content === "string") {
+									outputParts.push(msg.content);
+								} else if (Array.isArray(msg.content)) {
 									for (const part of msg.content) {
 										if (part.type === "text" && typeof part.text === "string") outputParts.push(part.text);
 									}
@@ -1782,7 +1856,14 @@ export class SubagentRunner {
 			setViewerTokens({ input: accInput, output: accOutput, cached: accCached, ctxTokens, ctxWindow });
 			recordTimelineFrame("step_finalized", feed.inspectState(), feed.snapshotRender(), orchestratorCtx);
 
-			const cleaned = sanitizeOutputForOrchestrator(compressOutput(output || "(no output)"));
+			// #8: completed runs return only the final prompt segment (the final report) —
+			// earlier segments repeat it verbatim when a nudge asked for a re-emit.
+			// Stall-terminated / error / abort paths never produced a final report: keep
+			// every segment (the error/abort marker already embeds the partial output).
+			const finalSegment = finalStatus === "completed" && !stallTerminated
+				? composeFinalOutputSegment()
+				: output;
+			const cleaned = sanitizeOutputForOrchestrator(compressOutput(finalSegment || "(no output)"));
 			let finalOutput = truncateSubagentOutput(cleaned, OUTPUT_CAP);
 			// ── Programmatic budget gate (PART A.3a): conditionally FORCE the signal ──
 			// The observation banner ALWAYS surfaces a breach to the orchestrator. The
@@ -1795,7 +1876,7 @@ export class SubagentRunner {
 			// Captured BEFORE the gate so the un-forced values are the defaults, then
 			// overwritten with the gate's ACTUAL emitted values (single source of truth).
 			let calibrationBudget: BudgetStatus = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns);
-			let calibrationDifficulty: DifficultySignal | null = extractDifficultyFromOutput(output);
+			let calibrationDifficulty: DifficultySignal | null = extractDifficultyFromOutput(finalSegment);
 			let calibrationGate: CalibrationBudgetGate = {
 				forced: false,
 				grossBreach: false,
@@ -1808,7 +1889,7 @@ export class SubagentRunner {
 				const finalBudget = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns);
 				budgetBreachKind = finalBudget.breachKind;
 				// Parse the worker's own final difficulty (from the untruncated output).
-				const finalDifficulty = extractDifficultyFromOutput(output);
+				const finalDifficulty = extractDifficultyFromOutput(finalSegment);
 				const grossBreach = isGrossBreach(finalBudget);
 				const force = shouldForceRecommend(budgetBreachKind, finalDifficulty, grossBreach);
 				// FIX 3(a): build the banner from the FINAL totals (all breached axes; the
@@ -1834,7 +1915,7 @@ export class SubagentRunner {
 				};
 			}
 
-			setViewerOutput(output);
+			setViewerOutput(finalSegment);
 
 			const toolCallTrail: { tool: string; outputPreview?: string; completed: boolean }[] = [];
 			for (const step of feed.steps) {
