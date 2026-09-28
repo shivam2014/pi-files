@@ -33,6 +33,9 @@ const READ_COMMANDS = new Set([
   // Round 5: process / open-file diagnostics (live reviewer FP: blocked as
   // writes). Base-token normalization (below) also covers `/usr/bin/pgrep` etc.
   "pgrep", "lsof",
+  // Round 7: `read` is a shell builtin consuming stdin (never mutates) — needed
+  // so `while read -r l; do …; done` loop conditions classify as reads.
+  "read",
 ]);
 
 /** Leading `VAR=value` env-assignment tokens inline a variable, not a command
@@ -108,6 +111,125 @@ export function hasUnquotedRedirect(command: string): boolean {
   return false;
 }
 
+// ── Round 7: shell loop constructs (`for` / `while` / `until`) ──
+// A command that BEGINS with a loop keyword (after leading VAR=value
+// assignments) runs its body; the header (`for <var> in …`, `while <cond>`) is
+// not itself a command. Callers split commands at shell separators, which
+// fragments a loop into `for …` / `do …` / `done` pieces whose fragments are
+// not standalone commands — so the whole-text parse below is the only place
+// that sees a loop intact.
+
+/** Loop keywords: `for <var> in <list>`, `while <cond>`, `until <cond>`. */
+const LOOP_KEYWORDS = new Set(["for", "while", "until"]);
+
+/** One quote-aware token of splitLoopTokens: a word or a shell separator. */
+interface LoopToken { value: string; sep: boolean; }
+
+/** Quote-aware split into words and separator tokens (`;`, `&&`, `||`, `|`, `&`). */
+function splitLoopTokens(text: string): LoopToken[] {
+  const tokens: LoopToken[] = [];
+  let current = '';
+  let quote: string | null = null;
+  const flush = () => {
+    if (current.length > 0) tokens.push({ value: current, sep: false });
+    current = '';
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else current += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '\\' && i + 1 < text.length) { current += text[i + 1]; i++; continue; }
+      if (ch === '"') quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === '\\' && i + 1 < text.length) { current += text[i + 1]; i++; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (/\s/.test(ch)) { flush(); continue; }
+    if (ch === ';' || ch === '&' || ch === '|') {
+      flush();
+      if ((ch === '&' || ch === '|') && text[i + 1] === ch) {
+        tokens.push({ value: ch + ch, sep: true });
+        i++;
+      } else {
+        tokens.push({ value: ch, sep: true });
+      }
+      continue;
+    }
+    current += ch;
+  }
+  flush();
+  return tokens;
+}
+
+/** Drop `< file` / `<file` input redirects — sourcing stdin is a read. */
+function stripInputRedirectTokens(words: string[]): string {
+  const kept: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (/^\d*<$/.test(w)) { i++; continue; }   // `< file` / `0< file`
+    if (/^\d*<.+$/.test(w)) continue;         // `<file` / `0<file` / `<<EOF`
+    kept.push(w);
+  }
+  return kept.join(' ');
+}
+
+/** Split tokens[start, end) into command segments at separators. Segments
+ *  left empty after input-redirect stripping (e.g. `done < /tmp/in.txt` →
+ *  nothing) are not commands and are skipped. */
+function collectLoopSegments(tokens: LoopToken[], start: number, end: number): string[] {
+  const segments: string[] = [];
+  let buf: string[] = [];
+  const flush = () => {
+    const text = stripInputRedirectTokens(buf);
+    if (text.trim().length > 0) segments.push(text);
+    buf = [];
+  };
+  for (let i = start; i < end; i++) {
+    if (tokens[i].sep) flush();
+    else buf.push(tokens[i].value);
+  }
+  flush();
+  return segments;
+}
+
+/**
+ * Classify a shell loop construct (`for` / `while` / `until`).
+ *
+ * `for <var> in <list>`: the header/list tokens are DATA for later segments,
+ * not a command — skipped. `while <cond>` / `until <cond>`: the condition is a
+ * command list — classified. The body between `do` … `done`, plus any commands
+ * after `done`, are split on shell separators and classified recursively.
+ *
+ * @returns true (write) / false (read-only); `undefined` when the command is
+ * not a loop or is malformed (missing `do`/`done`) — callers fall back to the
+ * unknown-command default (write). Read only when EVERY segment is read-class.
+ */
+export function classifyLoopCommand(command: string): boolean | undefined {
+  const tokens = splitLoopTokens(command);
+  let i = 0;
+  while (i < tokens.length && !tokens[i].sep && ENV_ASSIGNMENT_RE.test(tokens[i].value)) i++;
+  const keyword = tokens[i];
+  if (!keyword || keyword.sep || !LOOP_KEYWORDS.has(keyword.value)) return undefined;
+  const doIdx = tokens.findIndex((t, idx) => idx > i && !t.sep && t.value === 'do');
+  if (doIdx < 0) return undefined; // malformed: no `do`
+  let doneIdx = -1;
+  for (let j = tokens.length - 1; j > doIdx; j--) {
+    if (!tokens[j].sep && tokens[j].value === 'done') { doneIdx = j; break; }
+  }
+  if (doneIdx < 0) return undefined; // malformed: no `done`
+  const segments: string[] = [];
+  // while/until conditions are commands; `for` header/list is data.
+  if (keyword.value !== 'for') segments.push(...collectLoopSegments(tokens, i + 1, doIdx));
+  segments.push(...collectLoopSegments(tokens, doIdx + 1, doneIdx)); // body
+  segments.push(...collectLoopSegments(tokens, doneIdx + 1, tokens.length)); // after done
+  return segments.some((segment) => isWriteCommand(segment));
+}
+
 /**
  * Check if a bash command is write-modifying.
  * @param command - The bash command to classify
@@ -132,6 +254,15 @@ export function isWriteCommand(command: string): boolean {
   while (cmdIndex < parts.length && ENV_ASSIGNMENT_RE.test(parts[cmdIndex])) cmdIndex++;
   const rawCommand = parts[cmdIndex] ?? '';
   const baseCommand = rawCommand.includes('/') ? basename(rawCommand) : rawCommand;
+
+  // Round 7: a command BEGINNING with a loop keyword (after leading VAR=value
+  // assignments) is a loop construct — classify the whole loop (header/list is
+  // data, condition + body are commands). Malformed loops (no `do`/`done`)
+  // fall through to the unknown-command default below (write).
+  if (LOOP_KEYWORDS.has(baseCommand)) {
+    const loopVerdict = classifyLoopCommand(trimmed);
+    if (loopVerdict !== undefined) return loopVerdict;
+  }
 
   // Check if base command is a known write command
   if (WRITE_COMMANDS.has(baseCommand)) {

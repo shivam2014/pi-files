@@ -37,6 +37,14 @@ function isTmpPath(p: string): boolean {
 	return p.startsWith('/tmp/') || p.startsWith('/private/tmp/');
 }
 
+/** Round 7: `/dev/null` is a bit bucket — a redirect target that mutates
+ *  nothing and must NEVER be scope-checked (fed-1 forms were blocked as
+ *  "Scope violation: /dev/null is outside the allowed scope" while
+ *  `2>/dev/null` passed). */
+function isDevNullTarget(p: string): boolean {
+	return p === '/dev/null';
+}
+
 /**
  * W2: broadened file-like extension allowlist (+sh/json/yaml/md/env/csv/log/mjs/cjs…).
  * Round 2: hoisted to module scope so substitution-payload scanning can reuse it.
@@ -259,6 +267,94 @@ function firstCommandIndex(tokens: ShellToken[]): number {
 	return i;
 }
 
+/** Round 7: shell loop keywords — classification lives in bash-classifier.ts
+ *  (`classifyLoopCommand`); this mirror only has to recognize the well-formed
+ *  shape for fragment normalization. */
+const LOOP_KEYWORDS = new Set(['for', 'while', 'until']);
+
+/** Round 7: well-formed loop detection — keyword at command position plus a
+ *  `do` … `done` pair, mirroring classifyLoopCommand's well-formedness rule.
+ *  Malformed loops (`for x in a`) are NOT a loop context: their fragments keep
+ *  the per-segment unknown-command write default. */
+function isWellFormedLoopCommand(tokens: ShellToken[]): boolean {
+	const idx = firstCommandIndex(tokens);
+	const word = tokens[idx]?.value;
+	if (word === undefined || !LOOP_KEYWORDS.has(word)) return false;
+	const hasDo = tokens.some((t) => !t.quoted && t.value === 'do');
+	const hasDone = tokens.some((t) => !t.quoted && t.value === 'done');
+	return hasDo && hasDone;
+}
+
+/** Drop `< file` / `<file` input redirects at the START of a fragment (loop
+ *  tails like `done < /tmp/in.txt`): sourcing stdin is not a write. */
+function dropLeadingInputRedirects(tokens: ShellToken[]): ShellToken[] {
+	let i = 0;
+	while (i < tokens.length && !tokens[i].quoted) {
+		const v = tokens[i].value;
+		if (/^\d*<$/.test(v)) { i += 2; continue; }   // `< file`
+		if (/^\d*<.+$/.test(v)) { i += 1; continue; } // `<file` / `<<EOF`
+		break;
+	}
+	return tokens.slice(i);
+}
+
+/** Round 7: `;`-splitting a loop command yields non-command fragments
+ *  (`for f in …` header/list is data; `do …` / `done …` are control words).
+ *  Strip the control syntax so each fragment classifies by the command it
+ *  actually runs; header/`done`-only fragments become empty (read-class).
+ *  Applied only when the whole command is a well-formed loop. */
+function normalizeLoopFragment(tokens: ShellToken[]): ShellToken[] {
+	const idx = firstCommandIndex(tokens);
+	const word = tokens[idx]?.value;
+	if (word === 'for') return [];
+	if (word === 'while' || word === 'until') return tokens.slice(idx + 1);
+	if (word === 'do' || word === 'done') return dropLeadingInputRedirects(tokens.slice(idx + 1));
+	return dropLeadingInputRedirects(tokens);
+}
+
+/**
+ * Round 7: normalize unquoted `&>` / `&>>` / `>&` (stdout+stderr redirects)
+ * into plain `>` / `>>` before tokenizing. The tokenizer treats `&` as a
+ * separator, which mangled these forms into bogus fragments (`>/dev/null`,
+ * `&`, `/dev/null`) and made the redirect-target extraction see a command.
+ * fd-duplication (`2>&1`, `>&2`, `>&-`) is left untouched.
+ */
+function normalizeAmpRedirects(command: string): string {
+	let out = '';
+	let quote: string | null = null;
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i];
+		if (quote === "'") {
+			out += ch;
+			if (ch === "'") quote = null;
+			continue;
+		}
+		if (quote === '"') {
+			out += ch;
+			if (ch === '\\' && i + 1 < command.length) { out += command[i + 1]; i++; continue; }
+			if (ch === '"') quote = null;
+			continue;
+		}
+		if (ch === '\\' && i + 1 < command.length) { out += ch + command[i + 1]; i++; continue; }
+		if (ch === '"' || ch === "'") { quote = ch; out += ch; continue; }
+		if (ch === '&' && command[i + 1] === '>') {
+			// `&>` / `&>>` — empty stdout+stderr; normalize to the plain form.
+			if (command[i + 2] === '>') { out += '>>'; i += 2; } else { out += '>'; i += 1; }
+			continue;
+		}
+		if (ch === '>' && command[i + 1] === '&') {
+			const after = command[i + 2];
+			// fd duplication / close (`2>&1`, `>&2`, `>&-`) — leave as-is.
+			if (after === undefined || /[0-9-]/.test(after)) { out += ch; continue; }
+			out += '>'; // `>& path` / `>&/path` — swallow the `&`
+			i += 1;
+			continue;
+		}
+		out += ch;
+	}
+	return out;
+}
+
 /**
  * Segment text for the classifier. Quoted tokens become `""` so a quoted `>`
  * (commit message, `--format="%h > %s"`, grep pattern) cannot classify the
@@ -425,6 +521,15 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 			let bashWriteOp = false;
 			if (event.toolName === 'bash' && input.command) {
 				const cmd = input.command.trim();
+				// Round 7: a well-formed shell loop (`for`/`while`/`until`) is
+				// fragmented by the `;`-split below into header/`do`/`done` pieces that
+				// are not standalone commands. When the whole command is a well-formed
+				// loop, fragments are normalized to the command they actually run.
+				// Malformed loops keep the per-segment unknown-command write default.
+				// Round 7: `&>`/`>&` normalized to `>`/`>>` before tokenizing — the
+				// tokenizer splits on `&` and otherwise mangles the two forms.
+				const bashTokens = tokenizeShell(normalizeAmpRedirects(cmd));
+				const loopContext = isWellFormedLoopCommand(bashTokens);
 
 				// Git commands that are safe (read-only or no file impact)
 				const GIT_SAFE_COMMANDS = new Set([
@@ -462,22 +567,27 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 				// C5 (round 2): where the current pipeline's filePaths entries begin —
 				// used to re-escalate read ops when a downstream xargs is write-class.
 				let pipelineEntryStart = 0;
-				for (const { segment, sep } of splitShellSegments(tokenizeShell(cmd))) {
+				for (const { segment, sep } of splitShellSegments(bashTokens)) {
 					if (sep !== '|') pipelineEntryStart = filePaths.length;
 					const segmentEntryStart = filePaths.length;
-					const cmdIdx = firstCommandIndex(segment);
-					const cmdWord = segment[cmdIdx]?.value;
+					// Round 7: loop fragments classify by the command they run
+					// (`do shasum …` → `shasum …`); header/list/`done` fragments become
+					// empty (read-class). Substitution scanning below still uses the RAW
+					// fragment so loop-control stripping cannot hide `$( … )` payloads.
+					const work = loopContext ? normalizeLoopFragment(segment) : segment;
+					const cmdIdx = firstCommandIndex(work);
+					const cmdWord = work[cmdIdx]?.value;
 
 					// Pure `cd <dir>` segment: rebase every later segment.
 					if (cmdWord === 'cd') {
-						const target = segment[cmdIdx + 1];
+						const target = work[cmdIdx + 1];
 						if (target && !SHELL_SEPARATORS.has(target.value)) {
 							baseDir = resolve(baseDir, target.value);
 						}
 						continue;
 					}
 
-					const gitCmd = findGitCommand(segment);
+					const gitCmd = findGitCommand(work);
 					if (gitCmd) {
 						const subcmd = gitCmd.subcmd;
 						const args = gitCmd.args;
@@ -574,7 +684,9 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						// Round 2: (a) re-classify the cmdIdx-anchored slice so transparent
 						// prefixes (`env X=1 rm …`) cannot mask a write behind the read-listed
 						// `env`; (b) any command substitution is opaque write-class.
-						const classifierSegment = classifierText(segment);
+						const classifierSegment = classifierText(work);
+						// Substitutions are scanned on the RAW fragment — loop-control
+						// stripping must not hide `$( … )` payloads in headers/bodies.
 						const substitutionInners = extractCommandSubstitutions(segment.map((t) => t.value).join(' '));
 
 						// Round 3: split "write due to VERB" from "write due to REDIRECT".
@@ -590,23 +702,34 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						// (raw `>>/tmp/x` failed isTmpPath and resolved to `<cwd>/>>/tmp/x`).
 						const redirectTargetAt = new Map<number, string>();
 						const baseTokens: ShellToken[] = [];
-						for (let t = 0; t < segment.length; t++) {
-							const token = segment[t];
+						for (let t = 0; t < work.length; t++) {
+							const token = work[t];
 							if (!token) continue;
-							if (!token.quoted && (token.value === '>' || token.value === '>>')) {
-								const next = segment[t + 1];
-								if (next && !SHELL_SEPARATORS.has(next.value)) {
-									redirectTargets.push(next.value);
-									redirectTargetAt.set(t + 1, next.value);
-									t++;
+							if (!token.quoted) {
+								// Round 7: fd-aware forms — operator tokens (`>`, `>>`, `1>`, `10>>`)
+								// and attached (`>/f`, `>>/f`, `1>/f`). fd-2 (`2>`, `2>>`) is stderr
+								// noise suppression, not a mutation: dropped from the command stream
+								// (it never classified as a write) so it can never leak into path
+								// extraction as a bogus `<cwd>/2>/…` path.
+								const opMatch = /^(\d*)(>>?)$/.exec(token.value);
+								if (opMatch) {
+									if (opMatch[1] === '2') continue;
+									const next = work[t + 1];
+									if (next && !SHELL_SEPARATORS.has(next.value)) {
+										redirectTargets.push(next.value);
+										redirectTargetAt.set(t + 1, next.value);
+										t++;
+									}
+									continue;
 								}
-								continue;
-							}
-							if (!token.quoted && token.value.startsWith('>') && token.value.length > 1) {
-								const target = token.value.startsWith('>>') ? token.value.slice(2) : token.value.slice(1);
-								redirectTargets.push(target);
-								redirectTargetAt.set(t, target);
-								continue;
+								const attachedMatch = /^(\d*)(>>?)(.+)$/.exec(token.value);
+								if (attachedMatch) {
+									if (attachedMatch[1] === '2') continue;
+									const target = attachedMatch[3];
+									redirectTargets.push(target);
+									redirectTargetAt.set(t, target);
+									continue;
+								}
 							}
 							baseTokens.push(token);
 						}
@@ -621,10 +744,14 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						// mirroring git staging args (#139). Real write targets (redirect
 						// targets, in-place editors) keep the gate.
 						const wrapperWrite = wrapperWrites(baseTokens, baseCmdIdx);
-						const verbWrite =
+						// Round 7: an empty token stream (loop header/list, `done`) runs no
+						// command — `isWriteCommand('')` would hit the unknown-command write
+						// default; classify it as no verb (redirects still count below).
+						const verbWrite = baseTokens.length > 0 && (
 							isWriteCommand(classifierText(baseTokens))
 							|| (baseAnchored !== undefined && isWriteCommand(baseAnchored))
-							|| wrapperWrite;
+							|| wrapperWrite
+						);
 						const commandWrite = verbWrite || substitutionInners.length > 0;
 						const hasRedirect = redirectTargets.length > 0;
 						const segmentWrite = commandWrite || hasRedirect;
@@ -655,14 +782,17 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 							// (`for f in x.test.ts; do shasum …/$f; done`). Redirect targets in
 							// the same segment stay write-scanned.
 							const forListStart = cmdWord === 'for'
-								? segment.findIndex((tk) => !tk.quoted && tk.value === 'in')
+								? work.findIndex((tk) => !tk.quoted && tk.value === 'in')
 								: -1;
-							for (let t = 0; t < segment.length; t++) {
-								const token = segment[t];
+							for (let t = 0; t < work.length; t++) {
+								const token = work[t];
 								if (!token) continue;
-								// Redirect operator tokens name no path of their own; the target token
-								// (separate or attached form) supplies the cleaned path below.
-								if (!token.quoted && (token.value === '>' || token.value === '>>')) continue;
+								// Redirect syntax tokens name no path of their own; the target token
+								// (separate or attached form) supplies the cleaned path below. Round 7:
+								// fd-prefixed forms (`1>`, `2>>`) are redirect syntax too — an fd-2
+								// token with no recorded target (dropped in the scan above) must not
+								// leak a bogus `<cwd>/2>/…` path into scope checks.
+								if (!token.quoted && !redirectTargetAt.has(t) && /^\d*>>?/.test(token.value)) continue;
 								if (forListStart >= 0 && t > forListStart && !redirectTargetAt.has(t)) continue;
 								// Round 4: env-assignment tokens (`VAR=value`, `PATH=…`) assign an
 								// environment variable — the token is not a path operand, and the value
@@ -673,7 +803,7 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 								if (!token.quoted && !redirectTargetAt.has(t) && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.value)) continue;
 								const value = redirectTargetAt.get(t) ?? token.value;
 								if (value === '' || value === '--') continue;
-								const prev = segment[t - 1];
+								const prev = work[t - 1];
 								if (prev && !prev.quoted && valueFlags.has(prev.value)) continue;
 								const candidates: string[] = [];
 								if (value.startsWith('-')) {
@@ -745,9 +875,11 @@ export function handleSubagentToolCall(event: any, fusionEnabled: boolean = true
 						if (ctx?.readOnly && segmentWrite && !(scratchTargetWrite && !nonTmpWriteSeen)) {
 							return { block: true, reason: `⛔ Bash write command blocked for read-only specialist. Use the appropriate SDK tool instead.\nCommand: ${cmd}\nHint: For file reads, use read(). For code search, use grep(). For file listing, use find() or ls().` };
 						}
-						// Commit entries; /tmp scratch paths stay exempt from scope checks.
+						// Commit entries; /tmp scratch paths stay exempt from scope checks,
+						// and /dev/null redirect targets are never scope-checked (round 7).
 						for (const e of segEntries) {
 							if (isTmpPath(e.raw)) continue;
+							if (isDevNullTarget(e.raw)) continue;
 							filePaths.push({ raw: e.raw, base: baseDir, op: e.op, skipSizeCheck: e.skipSizeCheck });
 						}
 						// C5 (round 2): a write-class xargs bridges stdin into file mutation —

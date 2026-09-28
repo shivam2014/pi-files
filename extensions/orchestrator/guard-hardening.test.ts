@@ -597,3 +597,88 @@ describe("round 6 — `bash -n`/`--noexec` are read-class (reads are never block
 		expect(result?.block).toBeFalsy();
 	});
 });
+
+// ── Round 7: shell loop constructs for read-only specialists ──
+// Live probe (read-only specialist): a read-only `for … in …; do shasum …;
+// done` loop was blocked because the `;`-split fragments classify on their own
+// (`for` is not in the allowlist → unknown → write). The whole-command
+// classification now parses loops; the guard's per-segment checks strip the
+// loop-control syntax so each fragment classifies by the command it runs.
+
+describe("round 7 — loop constructs (read-only specialists)", () => {
+	const PROBE = "for f in check-claim.sh claim.sh; do shasum -a 256 /Users/shivam94/.pi/$f; done";
+
+	it("allows the verbatim read-only loop probe", () => {
+		const { result } = runBash(PROBE, { readOnly: true });
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("allows a read-only loop over an in-scope dir", () => {
+		const { result } = runBash(`for f in a.ts b.ts; do shasum -a 256 ${SCOPE_DIR}/$f; done`, { readOnly: true });
+		expect(result?.block).toBeFalsy();
+	});
+
+	it('blocks `for f in a; do rm -f "$f"; done` (write body)', () => {
+		const { result } = runBash('for f in a; do rm -f "$f"; done', { readOnly: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it("blocks `for f in a; do echo x > /outside/y; done` (redirect body)", () => {
+		const { result } = runBash("for f in a; do echo x > /outside/y; done", { readOnly: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it('allows `while read -r l; do echo "$l"; done < /tmp/in.txt`', () => {
+		const { result } = runBash('while read -r l; do echo "$l"; done < /tmp/in.txt', { readOnly: true });
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("keeps malformed loops write-classified: `for x in a`", () => {
+		const { result } = runBash("for x in a", { readOnly: true });
+		expect(result?.block).toBe(true);
+	});
+
+	it("keeps the unknown-command default: `frobnicate --flag`", () => {
+		const { result } = runBash("frobnicate --flag", { readOnly: true });
+		expect(result?.block).toBe(true);
+	});
+});
+
+// ── Round 7: /dev/null redirect targets are never scope-checked ──
+// `ls /tmp >/dev/null` was blocked as "Scope violation: /dev/null is outside
+// the allowed scope" (fd-2 forms passed). /dev/null mutates nothing; targets
+// equal to it must never reach the scope gate in any form.
+
+describe("round 7 — /dev/null redirect targets (scoped coder)", () => {
+	it("allows `ls /tmp >/dev/null; echo exit=$?`", () => {
+		const { result, guard } = runBash("ls /tmp >/dev/null; echo exit=$?");
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).not.toHaveBeenCalledWith("/dev/null", expect.anything());
+	});
+
+	it("allows `ls /tmp 2>/dev/null | head -1`", () => {
+		const { result } = runBash("ls /tmp 2>/dev/null | head -1");
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("allows `ls /tmp &>/dev/null`", () => {
+		const { result } = runBash("ls /tmp &>/dev/null");
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("allows `ls /tmp >>/dev/null`", () => {
+		const { result } = runBash("ls /tmp >>/dev/null");
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("still blocks the real target `echo x > /outside/y`", () => {
+		const { result } = runBash("echo x > /outside/y");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/y is outside the allowed scope");
+	});
+
+	it("allows a real /tmp target: `echo x > /tmp/x`", () => {
+		const { result } = runBash("echo x > /tmp/x");
+		expect(result?.block).toBeFalsy();
+	});
+});

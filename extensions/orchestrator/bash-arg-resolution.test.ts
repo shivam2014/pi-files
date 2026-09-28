@@ -204,3 +204,80 @@ describe("guard false-positive batch — tilde extraction, .c truncation, for-lo
 		expect(result?.reason).toBe("Scope violation: /outside/x.ts is outside the allowed scope");
 	});
 });
+
+// ── Round 7: /dev/null redirect targets are never scope-checked ──
+// Live probe (scoped coder, scope /tmp): `ls /tmp >/dev/null; echo exit=$?`
+// blocked with "Scope violation: /dev/null is outside the allowed scope" while
+// `2>/dev/null` passed. /dev/null is a bit bucket — fd-1 redirect targets
+// equal to it must never reach the scope gate, in every redirect form
+// (`>`, `>>`, `N>`, `&>`, `>&`). fd-duplication (`2>&1`) stays unaffected.
+
+describe("round 7 — /dev/null redirect targets", () => {
+	it("allows the verbatim probe `ls /tmp >/dev/null; echo exit=$?`", () => {
+		const { result, guard } = runBash("ls /tmp >/dev/null; echo exit=$?");
+		expect(result?.block).toBeFalsy();
+		expect(guard.isPathAllowed).not.toHaveBeenCalledWith("/dev/null", expect.anything());
+	});
+
+	it("allows `ls /tmp 2>/dev/null | head -1` (stderr suppression unchanged)", () => {
+		const { result } = runBash("ls /tmp 2>/dev/null | head -1");
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("allows `ls /tmp &>/dev/null` (combined stdout+stderr form)", () => {
+		const { result } = runBash("ls /tmp &>/dev/null");
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("allows `ls /tmp >&/dev/null` (>& form)", () => {
+		const { result } = runBash("ls /tmp >&/dev/null");
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("allows `ls /tmp 1>/dev/null` (explicit fd-1 form)", () => {
+		const { result } = runBash("ls /tmp 1>/dev/null");
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("allows `ls /tmp >>/dev/null` (append form)", () => {
+		const { result } = runBash("ls /tmp >>/dev/null");
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("allows `echo x > /tmp/x` (real /tmp target stays allowed)", () => {
+		const { result } = runBash("echo x > /tmp/x");
+		expect(result?.block).toBeFalsy();
+	});
+
+	it("still blocks `echo x > /outside/y` (real out-of-scope target)", () => {
+		const { result } = runBash("echo x > /outside/y");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/y is outside the allowed scope");
+	});
+
+	it("still blocks `echo x 1>/outside/y` (explicit fd-1 real target)", () => {
+		const { result } = runBash("echo x 1>/outside/y");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/y is outside the allowed scope");
+	});
+
+	it("still blocks `echo x &>/outside/y` (combined form, real target)", () => {
+		const { result } = runBash("echo x &>/outside/y");
+		expect(result?.block).toBe(true);
+		expect(result?.reason).toBe("Scope violation: /outside/y is outside the allowed scope");
+	});
+
+	it("leaves fd-duplication `2>&1` unaffected", () => {
+		const { result, guard } = runBash("ls /tmp 2>&1; echo done");
+		expect(guard.isPathAllowed).not.toHaveBeenCalledWith("/dev/null", expect.anything());
+		expect(result?.reason ?? "").not.toContain("/dev/null");
+	});
+
+	it("does not fabricate a `2>/…` path from attached fd-2 syntax", () => {
+		const { result, guard } = runBash(`rm ${SCOPE_DIR}/stale.txt 2>/dev/null`);
+		expect(result?.block).toBeFalsy();
+		expect(
+			guard.isPathAllowed.mock.calls.map((c: any[]) => String(c[0])).some((p: string) => p.includes("2>")),
+		).toBe(false);
+	});
+});

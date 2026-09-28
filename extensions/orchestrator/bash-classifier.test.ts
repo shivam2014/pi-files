@@ -145,3 +145,41 @@ describe("round 5 — path-token normalization and read-only diagnostics", () =>
   it("still blocks env-prefixed writes: `CAPTURE_DIR=/tmp/x /bin/rm -f x`", () =>
     expect(isWriteCommand("CAPTURE_DIR=/tmp/x /bin/rm -f x")).toBe(true));
 });
+
+// ── Round 7: shell loop constructs ──
+// The read-only gate classifies the WHOLE command; a command beginning with
+// `for`/`while`/`until` (after leading VAR=value assignments) is a loop, not an
+// unknown command. Header/list tokens are data; condition + body segments
+// (and commands after `done`) are classified recursively. Read iff EVERY
+// segment is read-class; malformed loops (missing `do`/`done`) stay write.
+
+describe("round 7 — loop-construct classification (for/while/until)", () => {
+  it("allows the verbatim read-only loop probe", () =>
+    expect(isWriteCommand(
+      "for f in check-claim.sh claim.sh; do shasum -a 256 /Users/shivam94/.pi/$f; done",
+    )).toBe(false));
+  it("allows a read-only for loop over a list", () =>
+    expect(isWriteCommand("for f in a b; do echo $f; done")).toBe(false));
+  it("blocks `for f in a; do rm -f \"$f\"; done` (write body)", () =>
+    expect(isWriteCommand('for f in a; do rm -f "$f"; done')).toBe(true));
+  it("blocks `for f in a; do echo x > /outside/y; done` (redirect body)", () =>
+    expect(isWriteCommand("for f in a; do echo x > /outside/y; done")).toBe(true));
+  it("blocks an unknown command in the body (safe default)", () =>
+    expect(isWriteCommand("for f in a; do frobnicate $f; done")).toBe(true));
+  it("treats the `for … in` list as data, not commands", () =>
+    expect(isWriteCommand("for f in rm mv cp; do echo $f; done")).toBe(false));
+  it("allows `while read -r l; do echo \"$l\"; done < /tmp/in.txt`", () =>
+    expect(isWriteCommand('while read -r l; do echo "$l"; done < /tmp/in.txt')).toBe(false));
+  it("classifies the while CONDITION too (write cond → write)", () =>
+    expect(isWriteCommand("while rm -f x; do echo ok; done")).toBe(true));
+  it("allows `until read -r l; do echo $l; done`", () =>
+    expect(isWriteCommand("until read -r l; do echo $l; done")).toBe(false));
+  it("blocks a command chained AFTER `done`", () =>
+    expect(isWriteCommand("for f in a; do echo $f; done; rm -f /outside/y")).toBe(true));
+  it("classifies malformed loops as write (missing done)", () =>
+    expect(isWriteCommand("for x in a")).toBe(true));
+  it("classifies malformed loops as write (missing do)", () =>
+    expect(isWriteCommand("for x in a; done")).toBe(true));
+  it("skips leading env assignments before the loop keyword", () =>
+    expect(isWriteCommand("FOO=1 for f in a; do echo $f; done")).toBe(false));
+});
