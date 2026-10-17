@@ -97,6 +97,31 @@ export interface Specialist {
 	systemPrompt: string;
 }
 
+/**
+ * ITEM 4: optional per-delegation budget override for delegate().
+ * Precedence: explicit numeric override > profile scale > default caps.
+ *  - "standard" → current defaults (exploration 10, specialist files cap, turns 12).
+ *  - "audit"    → 3× the default caps (exploration 30, scout/researcher files 36, turns 36).
+ * Omitted budget → current behavior exactly.
+ */
+export interface DelegationBudget {
+	/** Cap profile; "audit" scales every cap 3×. Omitted = "standard". */
+	profile?: 'standard' | 'audit';
+	/** Explicit cap for read/grep/find/ls calls (wins over the profile). */
+	maxExplorationCalls?: number;
+	/** Explicit cap for distinct files touched (wins over the profile). */
+	maxFiles?: number;
+	/** Explicit cap for assistant turns (wins over the profile). */
+	maxTurns?: number;
+}
+
+/** Fully resolved budget caps the gate enforces for one delegation. */
+export interface ResolvedDelegationBudget {
+	maxExplorationCalls: number;
+	maxFiles: number;
+	maxTurns: number;
+}
+
 /** Context passed to subagent runner */
 export interface SubagentContext {
 	modelRegistry?: any;
@@ -114,7 +139,9 @@ export const STEP_KIND_SCHEMA = Type.Optional(Type.Union([
 	Type.Literal('delegation'),
 	Type.Literal('orchestrator'),
 	Type.Literal('loop_until'),
-], { description: 'Step classification: delegation (subagent-owned, auto-advances), orchestrator (self-owned, call advance_plan_step), loop_until (repeating evaluation loop)' }));
+	// ITEM 2: orchestrator steps may do READ-ONLY tool calls themselves (incl. web
+	// reads); file edits, bash, and implementation work must be delegated.
+], { description: 'Step classification: delegation (subagent-owned, auto-advances), orchestrator (self-owned, call advance_plan_step; may perform read-only tool calls incl. web reads — file edits, bash, and implementation work must be delegated), loop_until (repeating evaluation loop)' }));
 
 /** Configuration for a loop_until step */
 export interface LoopUntilConfig {
@@ -216,7 +243,7 @@ export interface DelegationStepInput {
 	delegationLabel?: string;
 }
 
-/** Structured orchestrator step input for plan() — self-owned, call advance_plan_step */
+/** Structured orchestrator step input for plan() — self-owned; read-only tool calls (incl. web reads) allowed, call advance_plan_step */
 export interface OrchestratorStepInput {
 	label: string;
 	kind: 'orchestrator';
@@ -321,6 +348,12 @@ export interface BatchDelegationEntry {
 	scope?: Scope;
 	/** Optional short human-readable summary for this entry's plan step label. */
 	label?: string;
+	/**
+	 * ITEM 4: optional counted-budget override for THIS entry — same shape and
+	 * semantics as a single delegation's `budget` (profile 'audit' = 3× caps,
+	 * explicit numeric overrides win over the profile). Omitted → current defaults.
+	 */
+	budget?: DelegationBudget;
 }
 
 /** Aggregated result from a batch delegation */

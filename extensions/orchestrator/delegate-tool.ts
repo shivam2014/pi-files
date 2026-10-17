@@ -22,6 +22,28 @@ import { executeDelegate } from "./delegate-controller.ts";
 let _delegateChannelSeq = 0;
 
 /**
+ * Counted-budget override schema (ITEM 4). Shared verbatim by the single
+ * delegation's `budget` param AND each `batch[]` entry, so a batch entry's
+ * budget is the same shape with the same semantics as a single delegation's.
+ */
+const delegationBudgetSchema = Type.Optional(Type.Object({
+	profile: Type.Optional(Type.Union([Type.Literal("standard"), Type.Literal("audit")], {
+		description: "Cap profile: 'standard' (defaults) or 'audit' (3× caps — exploration 30, scout/researcher files 36, turns 36). Use 'audit' for broad audit-type tasks.",
+	})),
+	maxExplorationCalls: Type.Optional(Type.Number({
+		description: "Explicit cap for read/grep/find/ls calls. Wins over the profile.",
+	})),
+	maxFiles: Type.Optional(Type.Number({
+		description: "Explicit cap for distinct files touched. Wins over the profile.",
+	})),
+	maxTurns: Type.Optional(Type.Number({
+		description: "Explicit cap for assistant turns. Wins over the profile.",
+	})),
+}, {
+	description: "Optional counted-budget override for this delegation. Omit for current defaults. Audit-type tasks that legitimately read widely should declare profile: 'audit'.",
+}));
+
+/**
  * Register the delegate tool on the pi extension API.
  */
 export function registerDelegateTool(pi: ExtensionAPI): void {
@@ -72,6 +94,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			}, {
 				description: "Structured scope constraints. REQUIRED when specialist=coder. Get this from scout's ## Scope output or declare it yourself based on your analysis.",
 			})),
+			budget: delegationBudgetSchema,
 			batch: Type.Optional(Type.Array(Type.Object({
 				specialist: Type.String({ description: "Specialist name for this batch entry" }),
 				task: Type.String({ description: "Task description for this batch entry" }),
@@ -87,8 +110,9 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 					maxLinesPerFile: Type.Optional(Type.Number()),
 					boundaries: Type.Optional(Type.String()),
 				})),
+				budget: delegationBudgetSchema,
 			}), {
-				description: "Run multiple delegations concurrently. Each entry has specialist + task. Use for independent tasks only.",
+				description: "Run multiple delegations concurrently. Each entry has specialist + task, plus its own optional budget override (same shape as the top-level budget). Use for independent tasks only.",
 			})),
 		}),
 
@@ -99,6 +123,8 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			"Spawns a subagent specialist to do the work",
 			"Scope required for coder, writer — optional for scout, researcher, reviewer",
 			"Optional skills: delegate({ specialist: 'coder', task: '...', skills: ['tdd'] })",
+			"Optional budget: delegate({ specialist: 'scout', task: '...', budget: { profile: 'audit' } }) — audit = 3× caps for broad audit-type tasks; numeric overrides (maxExplorationCalls/maxFiles/maxTurns) win over the profile",
+			"Batch entries take their own budget: delegate({ batch: [{ specialist: 'scout', task: '...', budget: { profile: 'audit' } }, { specialist: 'coder', task: '...' }] }) — each entry's budget applies to that entry only",
 			"Optional label: delegate({ specialist: 'coder', task: '...', label: 'Health-check orchestrator' })",
 			"Prefer calling plan() first with 5-10 word steps; label only controls the auto-created step when no plan exists",
 			"Batch runs concurrent delegations — independent tasks only",
@@ -210,7 +236,7 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 			}
 			// Single delegation mode
 			return executeDelegate(
-				{ specialist: params.specialist, task: params.task, skills: params.skills, scope: params.scope, label: params.label, signal },
+				{ specialist: params.specialist, task: params.task, skills: params.skills, scope: params.scope, label: params.label, budget: params.budget, signal },
 				ctx,
 				onUpdate,
 			);

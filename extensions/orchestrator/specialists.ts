@@ -4,7 +4,7 @@
  * Design spec: ORCHESTRATION-UI-DESIGN.md
  */
 
-import { type Specialist } from "./types.ts";
+import { type Specialist, type DelegationBudget, type ResolvedDelegationBudget } from "./types.ts";
 import { listAvailableSkillNames } from "./skill-resolver.ts";
 
 /**
@@ -107,6 +107,28 @@ export function escalationFilesCap(specialistName: string): number {
 	return ESCALATION_FILES_CAPS[specialistName] ?? ESCALATION_MAX_FILES_TOUCHED;
 }
 
+/** ITEM 4: "audit" profile scales every counted cap 3× (broad audits are legitimately wide). */
+export const AUDIT_BUDGET_SCALE = 3;
+
+/**
+ * ITEM 4: resolve a delegation's counted budget caps from the optional
+ * delegate()-time `budget` override. Precedence per axis:
+ *   explicit numeric override > profile scale > default caps.
+ * The files axis scales the specialist's OWN cap (scout/researcher 12 → 36 audit).
+ * An omitted budget resolves to exactly the current defaults.
+ */
+export function resolveDelegationBudget(
+	budget: DelegationBudget | undefined,
+	specialistName: string,
+): ResolvedDelegationBudget {
+	const scale = budget?.profile === "audit" ? AUDIT_BUDGET_SCALE : 1;
+	return {
+		maxExplorationCalls: budget?.maxExplorationCalls ?? ESCALATION_MAX_EXPLORATION_CALLS * scale,
+		maxFiles: budget?.maxFiles ?? escalationFilesCap(specialistName) * scale,
+		maxTurns: budget?.maxTurns ?? ESCALATION_MAX_TURNS * scale,
+	};
+}
+
 /**
  * Hard budget escalation rule — injected into coder/scout prompts.
  * A worker crossing the counted budget escalates UP via ask_orchestrator with a
@@ -165,6 +187,8 @@ When given a task, follow this workflow:
 6. **Complete your plan BEFORE making any tool calls.**
 
 7. **Truncated output** — If a result ends with "[truncated at", use offset/limit to paginate.
+
+8. **Self-contained final report** — The FINAL report must be fully self-contained: restate ALL deliverables (tables, lists, questions, matrices, snippets) inline. NEVER write "delivered earlier", "as shown above", "full matrix delivered earlier", or any similar back-reference — the orchestrator sees only the final message, and earlier content may be elided.
 
 CRITICAL: You MUST call planSteps() before any work. This is REQUIRED for the orchestrator to track your progress. Available tools:
 

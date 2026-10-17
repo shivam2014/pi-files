@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
 	truncateSubagentOutput,
 	truncateToolResultHeadTail,
+	OUTPUT_CAP,
 	snapshotSubagentEnv,
 	cleanSubagentEnv,
 	installSubagentEnv,
@@ -22,7 +23,7 @@ import {
 import { DEFAULTS, resolveSpecialistModel, getSessionModels, setSessionModels, _sessionModels } from "./orchestrator-config.ts";
 import { shortenLabel, truncateLabel } from "../token-saver.ts";
 import { registerFusionTool } from "./fusion-tool.ts";
-import { ESCALATION_MAX_EXPLORATION_CALLS } from "./specialists.ts";
+import { ESCALATION_MAX_EXPLORATION_CALLS, SPECIALISTS } from "./specialists.ts";
 import { createActivityFeed, addStep, completeCurrentStep, markFeedError } from "./activity-feed.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -1279,6 +1280,9 @@ describe("runner fixes — segmented results, head+tail truncation, non-dropping
 		expect(longOutput.length).toBeGreaterThan(2000);
 		expect(result.output).toContain("_TAILMARK_EXIT_0_");
 		expect(result.output).toMatch(/…\[\d+ chars elided\]…/);
+		// ITEM 3: the run result discloses the truncation stage it fired.
+		expect(result.truncated).toBe(true);
+		expect(result.truncationStages).toEqual(["tool-result"]);
 	});
 
 	it("C: advanceStep past the end is idempotent success", { timeout: 20_000 }, async () => {
@@ -1301,7 +1305,10 @@ describe("runner fixes — segmented results, head+tail truncation, non-dropping
 		expect(a3.content[0].text).toBe("All steps already complete");
 
 		state.prompts[0].resolve();
-		await awaitResult(resultPromise, state, 1);
+		const result = await awaitResult(resultPromise, state, 1);
+		// ITEM 3: no truncation occurred on this run → no disclosure flags.
+		expect(result.truncated).toBeUndefined();
+		expect(result.truncationStages).toBeUndefined();
 	});
 
 	it("C: reportFinding after plan exhaustion is stored, not dropped", { timeout: 20_000 }, async () => {
@@ -1351,5 +1358,31 @@ describe("runner fixes — segmented results, head+tail truncation, non-dropping
 		expect(dump.toolCallTrail).toHaveLength(1);
 		expect(dump.toolCallTrail[0].output).toBe(longOutput);
 		expect(dump.toolCallTrail[0].output.length).toBeGreaterThan(80);
+	});
+
+	it("ITEM 3: final-report output-cap truncation sets truncated + output-cap stage", { timeout: 20_000 }, async () => {
+		const { state, resultPromise } = createHarness();
+		await vi.waitFor(() => expect(state.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+		await vi.waitFor(() => expect(state.prompts.length).toBe(1), { timeout: 10_000 });
+
+		// Final report far past OUTPUT_CAP: filler head + findings tail.
+		const huge = "x".repeat(OUTPUT_CAP + 5_000) + "\n\n## Findings\n- summary: huge report";
+		state.subscribeCb!(textDelta(huge));
+		state.subscribeCb!(assistantEnd("end_turn", "## Findings\n- summary: huge report"));
+		state.prompts[0].resolve();
+
+		const result = await awaitResult(resultPromise, state, 1);
+		expect(result.output).toContain("[output truncated at");
+		expect(result.truncated).toBe(true);
+		expect(result.truncationStages).toContain("output-cap");
+	});
+
+	it("ITEM 3: every worker prompt carries the self-contained final-report rule", () => {
+		for (const [name, spec] of Object.entries(SPECIALISTS)) {
+			const prompt = spec.systemPrompt;
+			expect(prompt, `${name} must demand a self-contained final report`).toMatch(/self-contained/i);
+			expect(prompt, `${name} must forbid "delivered earlier" back-references`).toContain("delivered earlier");
+			expect(prompt, `${name} must instruct restating deliverables inline`).toMatch(/restate ALL deliverables/i);
+		}
 	});
 });

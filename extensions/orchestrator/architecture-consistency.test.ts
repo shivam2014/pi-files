@@ -209,6 +209,62 @@ describe("Subagent tool injection consistency", () => {
 });
 
 // =====================================================================
+// Part 6 (ITEM 2): orchestrator tool allowlist — ONE SSOT, both consumers derived
+// =====================================================================
+describe("ITEM 2 — orchestrator tool allowlist derives from one SSOT", () => {
+	const source = readFileSync(resolve(__dirname, "index.ts"), "utf-8");
+
+	it("defines ONE ORCHESTRATOR_TOOLS structure with base + readonlyWeb SSOTs", () => {
+		expect(source).toContain("export const ORCHESTRATOR_TOOLS");
+		expect(source).toContain("readonlyWeb");
+		expect(source).toContain("export function orchestratorToolSet(");
+	});
+
+	it("BOTH consumers derive from the SSOT constant (no duplicate hand-maintained list)", () => {
+		// session_start active set
+		expect(source).toMatch(/pi\.setActiveTools\(orchestratorToolSet\(/);
+		// tool_call whitelist
+		expect(source).toMatch(/new Set\(orchestratorToolSet\(/);
+		// The old duplicated literal whitelist must be gone (it blocked fetch_content).
+		expect(source).not.toContain('event.toolName !== "vision_query"');
+		expect(source).not.toContain('event.toolName !== "interactive_shell"');
+	});
+
+	it("blocks non-allowlisted tools with an actionable delegate() message", () => {
+		expect(source).toContain("is not available to the orchestrator");
+		expect(source).toMatch(/Delegate the work \(researcher\/scout for web reads, coder for edits\) or use plan\(\)\/delegate\(\)/);
+	});
+
+	it("parity: the combined active/allowlist set includes read-only web tools (fusion conditional)", async () => {
+		const {
+			ORCHESTRATOR_READONLY_WEB_TOOLS,
+			orchestratorToolSet,
+		} = await import("./index.ts");
+		const web = ["web_search", "fetch_content", "get_search_content"];
+		expect([...ORCHESTRATOR_READONLY_WEB_TOOLS]).toEqual(web);
+		// BOTH fusion states admit web reads — session_start and the whitelist share this set.
+		for (const tool of web) {
+			expect(orchestratorToolSet({ fusionEnabled: true })).toContain(tool);
+			expect(orchestratorToolSet({ fusionEnabled: false })).toContain(tool);
+		}
+		// Fusion stays conditional.
+		expect(orchestratorToolSet({ fusionEnabled: true })).toContain("fusion");
+		expect(orchestratorToolSet({ fusionEnabled: false })).not.toContain("fusion");
+		// Parity: the fusion-enabled set is exactly the disabled set + fusion inserted
+		// after `delegate` — the ONE function returns the ONE combined list.
+		const disabled = orchestratorToolSet({ fusionEnabled: false });
+		const enabled = orchestratorToolSet({ fusionEnabled: true });
+		expect(enabled).toEqual([
+			...disabled.slice(0, disabled.indexOf("delegate") + 1),
+			"fusion",
+			...disabled.slice(disabled.indexOf("delegate") + 1),
+		]);
+		// No duplicates in the combined set.
+		expect(new Set(enabled).size).toBe(enabled.length);
+	});
+});
+
+// =====================================================================
 // Part 0: CWD resolution — no bare process.cwd() in production code
 // =====================================================================
 describe("CWD resolution — no bare process.cwd() in production code", () => {

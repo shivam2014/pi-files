@@ -24,11 +24,11 @@ import { join, basename } from "path";
 import { subagentSessions } from "./subagent-sessions.ts";
 import { shortenLabel } from "../token-saver.ts";
 import { isLintableExtension } from "../lint-guard/lib/lint-guard-core.ts";
-import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics, CalibrationPayload, CalibrationBudgetGate } from "./types.ts";
+import type { Specialist, SubagentContext, Substep, DelegateControllerContext, DelegationMetrics, CalibrationPayload, CalibrationBudgetGate, DelegationBudget } from "./types.ts";
 import { resolveSpecialistModel, DEFAULTS, getSessionModels } from "./orchestrator-config.ts";
 import { getLastOrchestratorModel } from "./orchestrator-model-state.ts";
 import type { Scope } from "./scope-manager.ts";
-import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS, ESCALATION_MAX_EXPLORATION_CALLS, ESCALATION_MAX_FILES_TOUCHED, ESCALATION_MAX_TURNS, escalationFilesCap } from "./specialists.ts";
+import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS, ESCALATION_MAX_EXPLORATION_CALLS, ESCALATION_MAX_FILES_TOUCHED, ESCALATION_MAX_TURNS, resolveDelegationBudget } from "./specialists.ts";
 import { extractDifficultyFromOutput, type DifficultySignal } from "./delegate-pipeline.ts";
 import {
 	ActivityFeed,
@@ -204,20 +204,23 @@ export function computeBudgetStatus(
 	distinctFiles: number,
 	turns: number,
 	filesCap: number = ESCALATION_MAX_FILES_TOUCHED,
+	caps: { maxExplorationCalls?: number; maxTurns?: number } = {},
 ): BudgetStatus {
 	const explorationCalls = EXPLORATION_TOOLS.reduce((sum, t) => sum + (counts[t] ?? 0), 0);
+	const maxExplorationCalls = caps.maxExplorationCalls ?? ESCALATION_MAX_EXPLORATION_CALLS;
+	const maxTurns = caps.maxTurns ?? ESCALATION_MAX_TURNS;
 	const reasons: string[] = [];
-	const explorationBreach = explorationCalls > ESCALATION_MAX_EXPLORATION_CALLS;
+	const explorationBreach = explorationCalls > maxExplorationCalls;
 	const filesBreach = distinctFiles > filesCap;
-	const turnsBreach = turns > ESCALATION_MAX_TURNS;
+	const turnsBreach = turns > maxTurns;
 	if (explorationBreach) {
-		reasons.push(`exploration calls ${explorationCalls} > ${ESCALATION_MAX_EXPLORATION_CALLS}`);
+		reasons.push(`exploration calls ${explorationCalls} > ${maxExplorationCalls}`);
 	}
 	if (filesBreach) {
 		reasons.push(`distinct files ${distinctFiles} > ${filesCap}`);
 	}
 	if (turnsBreach) {
-		reasons.push(`turns ${turns} > ${ESCALATION_MAX_TURNS}`);
+		reasons.push(`turns ${turns} > ${maxTurns}`);
 	}
 	// SUBSTANTIVE = the worker explored widely (calls) — the strong signal.
 	// TURNS-ONLY = many turns only (files alone never elevates the kind).
@@ -267,11 +270,14 @@ export function forceDifficultyRecommend(output: string, recommend: string): str
 export function isGrossBreach(
 	status: Pick<BudgetStatus, "explorationCalls" | "distinctFiles" | "turns">,
 	filesCap: number = ESCALATION_MAX_FILES_TOUCHED,
+	caps: { maxExplorationCalls?: number; maxTurns?: number } = {},
 ): boolean {
+	const maxExplorationCalls = caps.maxExplorationCalls ?? ESCALATION_MAX_EXPLORATION_CALLS;
+	const maxTurns = caps.maxTurns ?? ESCALATION_MAX_TURNS;
 	return (
-		status.explorationCalls >= ESCALATION_MAX_EXPLORATION_CALLS * 2 ||
+		status.explorationCalls >= maxExplorationCalls * 2 ||
 		status.distinctFiles >= filesCap * 2 ||
-		status.turns >= ESCALATION_MAX_TURNS * 2
+		status.turns >= maxTurns * 2
 	);
 }
 
@@ -283,16 +289,19 @@ export function isGrossBreach(
 export function grossBreachAxisLabels(
 	status: Pick<BudgetStatus, "explorationCalls" | "distinctFiles" | "turns">,
 	filesCap: number = ESCALATION_MAX_FILES_TOUCHED,
+	caps: { maxExplorationCalls?: number; maxTurns?: number } = {},
 ): string[] {
+	const maxExplorationCalls = caps.maxExplorationCalls ?? ESCALATION_MAX_EXPLORATION_CALLS;
+	const maxTurns = caps.maxTurns ?? ESCALATION_MAX_TURNS;
 	const axes: string[] = [];
-	if (status.explorationCalls >= ESCALATION_MAX_EXPLORATION_CALLS * 2) {
-		axes.push(`exploration calls ${status.explorationCalls} ≥ 2× cap ${ESCALATION_MAX_EXPLORATION_CALLS}`);
+	if (status.explorationCalls >= maxExplorationCalls * 2) {
+		axes.push(`exploration calls ${status.explorationCalls} ≥ 2× cap ${maxExplorationCalls}`);
 	}
 	if (status.distinctFiles >= filesCap * 2) {
 		axes.push(`distinct files ${status.distinctFiles} ≥ 2× cap ${filesCap}`);
 	}
-	if (status.turns >= ESCALATION_MAX_TURNS * 2) {
-		axes.push(`turns ${status.turns} ≥ 2× cap ${ESCALATION_MAX_TURNS}`);
+	if (status.turns >= maxTurns * 2) {
+		axes.push(`turns ${status.turns} ≥ 2× cap ${maxTurns}`);
 	}
 	return axes;
 }
@@ -307,11 +316,17 @@ export function grossBreachAxisLabels(
  */
 export function buildBudgetGateBanner(
 	status: BudgetStatus,
-	opts: { force: boolean; grossBreach: boolean },
+	opts: { force: boolean; grossBreach: boolean; informational?: boolean },
 	filesCap: number = ESCALATION_MAX_FILES_TOUCHED,
+	caps: { maxExplorationCalls?: number; maxTurns?: number } = {},
 ): string {
 	const head = `\u26a0 [Budget Gate] ${status.breachKind} budget breach (${status.reason})`;
-	const grossNote = opts.grossBreach ? ` (gross breach: ${grossBreachAxisLabels(status, filesCap).join("; ")})` : "";
+	const grossNote = opts.grossBreach ? ` (gross breach: ${grossBreachAxisLabels(status, filesCap, caps).join("; ")})` : "";
+	// ITEM 4: a cleanly-completed run reports the breach as context, never as an
+	// actionable escalation — the work is already delivered and the full numbers stay visible.
+	if (opts.informational) {
+		return `${head}${grossNote} \u2014 informational: run completed; budget note only.`;
+	}
 	if (!opts.force) {
 		return opts.grossBreach
 			? `${head} \u2014 observed${grossNote}; worker's recommendation stands.`
@@ -838,6 +853,17 @@ export interface SubagentRunnerConfig {
 	}) => Promise<{ session: any }>;
 }
 
+/**
+ * Stage(s) of output truncation that elided content from a delegation's result:
+ *  - "tool-result": a per-tool result was capped by truncateToolResultHeadTail
+ *    (the `…[N chars elided]…` head/tail split).
+ *  - "output-cap": the final report exceeded OUTPUT_CAP and was capped by
+ *    truncateSubagentOutput (head cut, `## Findings`/`## Audit` tail preserved).
+ * The full transcript is always persisted to `flightRecorderPath` — the pipeline
+ * surfaces that path to the orchestrator when any stage fired.
+ */
+export type TruncationStage = "tool-result" | "output-cap";
+
 export type SubagentResult = {
 	output: string;
 	turns: number;
@@ -878,6 +904,10 @@ export type SubagentResult = {
 	budgetReason?: string;
 	/** Path of the flight-recorder dump written for this delegation (instrumentation). */
 	flightRecorderPath?: string;
+	/** True when at least one truncation stage elided content from this result. */
+	truncated?: boolean;
+	/** Which truncation stage(s) fired (tool-result and/or output-cap). */
+	truncationStages?: TruncationStage[];
 	/** Calibration inputs captured for the persisted record (difficulty/budget/budgetGate). */
 	calibration?: import('./types.ts').CalibrationPayload;
 };
@@ -974,8 +1004,12 @@ export class SubagentRunner {
 		orchestratorCtx?: DelegateControllerContext,
 		orchestratorUi?: OrchestratorUi,
 		delegationId?: string,
+		budget?: DelegationBudget,
 	): Promise<SubagentResult> {
 		const startTime = Date.now();
+		// ITEM 4: resolve this delegation's counted caps — explicit override > profile
+		// scale (audit = 3×) > default. Omitted budget → current defaults exactly.
+		const resolvedBudget = resolveDelegationBudget(budget, specialist.name);
 		let envSnapshot: NodeJS.ProcessEnv;
 		let sessionId: string | undefined;
 		// Path of the flight-recorder dump written for this delegation (instrumentation).
@@ -1067,6 +1101,11 @@ export class SubagentRunner {
 								prompt += `- Boundaries: ${scope.boundaries}\n`;
 							}
 						}
+						// ITEM 4: make the child's printed budget match the caps the gate enforces
+						// (the default WORKER_ESCALATION_RULE numbers are superseded by the override).
+						if (budget) {
+							prompt += `\n\n## Delegation Budget (override)\nThis delegation's counted budget is MORE THAN ${resolvedBudget.maxExplorationCalls} exploration calls (read/grep/find/ls), MORE THAN ${resolvedBudget.maxFiles} distinct files, or MORE THAN ${resolvedBudget.maxTurns} turns. These numbers supersede the default budget above.\n`;
+						}
 						if (suggestedSkills && suggestedSkills.length > 0) {
 							prompt += buildSkillSection(specialist.name, suggestedSkills);
 						}
@@ -1085,6 +1124,9 @@ export class SubagentRunner {
 			const excludeTools = canUseBash(specialist.name) ? undefined : ["bash"];
 
 			let output = "";
+			// Truncation detection (ITEM 3): latch when a per-tool result is capped so the
+			// run result can tell the pipeline content was elided (see TruncationStage).
+			let toolResultTruncated = false;
 			// #8: nudge prompts ask the model to re-emit the report, so each prompt
 			// response accumulates into its own segment. `outputSegments` holds the
 			// segments BEFORE the current one; `output` is the live segment. The
@@ -1298,7 +1340,7 @@ export class SubagentRunner {
 			// Recompute the counted budget from live counters; latches on first breach.
 			const checkBudget = () => {
 				if (budgetExceeded) return;
-				const status = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns, escalationFilesCap(specialist.name));
+				const status = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns, resolvedBudget.maxFiles, resolvedBudget);
 				if (status.exceeded) {
 					budgetExceeded = true;
 					budgetBreachKind = status.breachKind;
@@ -1351,6 +1393,8 @@ export class SubagentRunner {
 			let lastAgentErrorExcerpt: string | null = null;
 			let intervention: InterventionSnapshot = INITIAL_INTERVENTION;
 			let stallTerminated = false;
+			/** ITEM 4: set when the run ends as a CLEAN, COMPLETE stop (report delivered). */
+			let runCleanCompleteStop = false;
 			let providerRetries = 0;
 
 			const unsubscribe = session.subscribe((event: any) => {
@@ -1510,6 +1554,7 @@ export class SubagentRunner {
 					if (rawResult != null && stripped != null) {
 						// B: head+tail cap — the tail carries exit codes / error endings.
 						const cappedResult = truncateToolResultHeadTail(stripped, PER_RESULT_CAP);
+						if (cappedResult !== stripped) toolResultTruncated = true;
 						output += "\n[tool result]\n" + cappedResult + "\n[/tool result]\n";
 					}
 					const isError = (event as any).isError === true;
@@ -1733,6 +1778,7 @@ export class SubagentRunner {
 					// live `output` in this same pass — evaluating the pre-nudge snapshot
 					// instead kept `false` and opened this block, terminating delivered work.
 					const stallSuppressed = isCleanCompleteStop(lastStopReason, stepsIncomplete, output);
+					runCleanCompleteStop = stallSuppressed;
 					if (!stallSuppressed) try {
 						const decision = nextIntervention(intervention, detector.state(), turns);
 						intervention = decision.next;
@@ -1946,7 +1992,10 @@ export class SubagentRunner {
 				? composeFinalOutputSegment()
 				: output;
 			const cleaned = sanitizeOutputForOrchestrator(compressOutput(finalSegment || "(no output)"));
-			let finalOutput = truncateSubagentOutput(cleaned, OUTPUT_CAP);
+			const cappedOutput = truncateSubagentOutput(cleaned, OUTPUT_CAP);
+			// ITEM 3: latch output-cap truncation (marker format stays pinned).
+			const outputCapTruncated = cappedOutput !== cleaned;
+			let finalOutput = cappedOutput;
 			// ── Programmatic budget gate (PART A.3a): conditionally FORCE the signal ──
 			// The observation banner ALWAYS surfaces a breach to the orchestrator. The
 			// `recommend` rewrite fires only when the FINAL `## Difficulty` CORROBORATES
@@ -1958,7 +2007,7 @@ export class SubagentRunner {
 			// ── Calibration record inputs (instrumentation only; no behavior change) ──
 			// Captured BEFORE the gate so the un-forced values are the defaults, then
 			// overwritten with the gate's ACTUAL emitted values (single source of truth).
-			let calibrationBudget: BudgetStatus = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns, escalationFilesCap(specialist.name));
+			let calibrationBudget: BudgetStatus = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns, resolvedBudget.maxFiles, resolvedBudget);
 			let calibrationDifficulty: DifficultySignal | null = extractDifficultyFromOutput(finalSegment);
 			let calibrationGate: CalibrationBudgetGate = {
 				forced: false,
@@ -1969,16 +2018,20 @@ export class SubagentRunner {
 			if (budgetExceeded) {
 				// Recompute from the FINAL counters so the kind reflects the whole run,
 				// not just the breach that first latched the wrap-up nudge.
-				const finalBudget = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns, escalationFilesCap(specialist.name));
+				const finalBudget = computeBudgetStatus(toolCallCounts, touchedFiles.size, turns, resolvedBudget.maxFiles, resolvedBudget);
 				budgetBreachKind = finalBudget.breachKind;
 				// Parse the worker's own final difficulty (from the untruncated output).
 				const finalDifficulty = extractDifficultyFromOutput(finalSegment);
-				const grossBreach = isGrossBreach(finalBudget, escalationFilesCap(specialist.name));
-				const force = shouldForceRecommend(budgetBreachKind, finalDifficulty, grossBreach);
+				const grossBreach = isGrossBreach(finalBudget, resolvedBudget.maxFiles, resolvedBudget);
+				// ITEM 4: a CLEAN, COMPLETE run (report delivered, stop declared) must never
+				// have its difficulty signal rewritten by the gate — the breach is reported
+				// as informational context instead ("run completed; budget note only").
+				// Non-clean completions keep the forcing rule exactly as-is.
+				const force = !runCleanCompleteStop && shouldForceRecommend(budgetBreachKind, finalDifficulty, grossBreach);
 				// FIX 3(a): build the banner from the FINAL totals (all breached axes; the
 				// gross axis/axes named as the trigger), not the stale first-latched reason.
 				// FIX 3(c): a turns-only breach forces nothing — suppress its banner.
-				const gateBanner = buildBudgetGateBanner(finalBudget, { force, grossBreach }, escalationFilesCap(specialist.name));
+				const gateBanner = buildBudgetGateBanner(finalBudget, { force, grossBreach, informational: runCleanCompleteStop }, resolvedBudget.maxFiles, resolvedBudget);
 				if (shouldShowBudgetBanner(finalBudget.breachKind)) {
 					finalOutput = `${gateBanner}\n\n${finalOutput}`;
 				} else {
@@ -2028,6 +2081,12 @@ export class SubagentRunner {
 				}
 			}
 
+			// ITEM 3: which truncation stage(s) elided content — exposed on the result so
+			// the pipeline can surface the flight-recorder recovery pointer.
+			const truncationStages: TruncationStage[] = [];
+			if (toolResultTruncated) truncationStages.push("tool-result");
+			if (outputCapTruncated) truncationStages.push("output-cap");
+
 			return {
 				output: finalOutput,
 				turns,
@@ -2060,6 +2119,9 @@ export class SubagentRunner {
 				budgetReason: budgetReason || undefined,
 				// ── Calibration instrumentation (additive; recorded, never acted on) ──
 				flightRecorderPath,
+				// ── ITEM 3: truncation disclosure (which stage(s) elided content) ──
+				truncated: truncationStages.length > 0 || undefined,
+				truncationStages: truncationStages.length > 0 ? truncationStages : undefined,
 				calibration: {
 					difficulty: calibrationDifficulty,
 					difficultyPresent: calibrationDifficulty !== null,
@@ -2103,6 +2165,7 @@ export class SubagentRunner {
  * @param scope - Optional scope manifest for scope-guard enforcement
  * @param delegationId - Per-delegation scope id (from the pipeline's createDelegationScope());
  *   stored on the session's SubagentState so the guard enforces THIS delegation's scope.
+ * @param budget - ITEM 4: optional per-delegation counted-budget override (profile/numeric).
  */
 export async function runSubagent(
 	specialist: Specialist,
@@ -2116,6 +2179,7 @@ export async function runSubagent(
 	suggestedSkills?: string[],
 	orchestratorCtx?: DelegateControllerContext,
 	delegationId?: string,
+	budget?: DelegationBudget,
 ): Promise<SubagentResult> {
 	const agentDir = getAgentDir();
 	const runner = new SubagentRunner({
@@ -2125,5 +2189,5 @@ export async function runSubagent(
 		signal,
 		onUpdate,
 	});
-	return runner.run(task, specialist, scope ?? undefined, suggestedSkills, parentCtx, orchestratorCtx, orchestratorUi, delegationId);
+	return runner.run(task, specialist, scope ?? undefined, suggestedSkills, parentCtx, orchestratorCtx, orchestratorUi, delegationId, budget);
 }

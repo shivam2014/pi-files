@@ -3,7 +3,7 @@
  * Routes to DelegatePipeline; this module exists so delegate-tool.ts's import
  * stays stable.
  */
-import type { DelegateControllerContext, BatchDelegationEntry } from "./types.ts";
+import type { DelegateControllerContext, BatchDelegationEntry, DelegationBudget } from "./types.ts";
 import { Scope, ScopeManager } from "./scope-manager.ts";
 import { DelegatePipeline, type ExecuteDelegateResult } from "./delegate-pipeline.ts";
 import { getSessionMode } from "./orchestrator-config";
@@ -32,6 +32,8 @@ export async function executeDelegate(
 		task?: string;
 		skills?: string[];
 		scope?: Scope;
+		/** ITEM 4: optional counted-budget override (profile "audit" = 3× caps, or numeric). */
+		budget?: DelegationBudget;
 		label?: string;
 		signal?: AbortSignal;
 		batch?: BatchDelegationEntry[];

@@ -183,3 +183,52 @@ describe("round 7 — loop-construct classification (for/while/until)", () => {
   it("skips leading env assignments before the loop keyword", () =>
     expect(isWriteCommand("FOO=1 for f in a; do echo $f; done")).toBe(false));
 });
+
+// ── Round 8: newline-separated loops, nested loops, `<<<` here-strings ──
+// A `;`-less multi-line loop reaches the classifier as ONE token text
+// (newlines are whitespace, not separators): body parsing must find `do`/
+// `done` in the whitespace-split tokens, not just at explicit separators.
+// Nested loop bodies recurse into inner loop fragments instead of letting a
+// bare `for …` header hit the unknown-command write default. `<<<`
+// (here-string) payloads are stdin DATA like `< file` — not commands or
+// operands; `<<` heredocs keep the existing marker-skip behavior only.
+
+describe("round 8 — newline loops, nested loops, here-strings", () => {
+  it("blocks a newline-separated write loop", () =>
+    expect(isWriteCommand("for f in a\ndo\nrm -f /outside/x\ndone")).toBe(true));
+  it("allows a newline-separated read loop", () =>
+    expect(isWriteCommand("for f in a\ndo\nshasum -a 256 /tmp/$f\ndone")).toBe(false));
+  it("allows a newline-separated `while read` loop with a here-string", () =>
+    expect(isWriteCommand('while read -r l\ndo\necho "$l"\ndone <<< hello')).toBe(false));
+
+  it("allows nested `;`-separated read loops", () =>
+    expect(isWriteCommand("for a in x; do for b in y; do shasum -a 256 /tmp/$b; done; done")).toBe(false));
+  it("blocks nested `;`-separated write loops", () =>
+    expect(isWriteCommand("for a in x; do for b in y; do rm -f /outside/$b; done; done")).toBe(true));
+  it("allows a nested read loop with echo only", () =>
+    expect(isWriteCommand("for a in x; do for b in y; do echo $b; done; done")).toBe(false));
+  it("allows a newline-separated nested read loop", () =>
+    expect(isWriteCommand("for a in x\ndo\nfor b in y\ndo\nshasum -a 256 /tmp/$b\ndone\ndone")).toBe(false));
+
+  it("allows a spaced here-string payload in a while-read loop", () =>
+    expect(isWriteCommand('while read -r l; do echo "$l"; done <<< hello')).toBe(false));
+  it("allows the attached here-string form `<<<word`", () =>
+    expect(isWriteCommand('while read -r l; do echo "$l"; done <<<x')).toBe(false));
+
+  // Low pins from the round-2 verification review.
+  it("blocks a trailing redirect after `done`", () =>
+    expect(isWriteCommand("for f in a; do echo $f; done > /outside/y")).toBe(true));
+  it("allows attached fd-2 append `ls /tmp 2>>/dev/null`", () =>
+    expect(isWriteCommand("ls /tmp 2>>/dev/null")).toBe(false));
+  // ACCEPTED LIMITATION (round-3 review): isDevNullTarget is an EXACT match,
+  // so the trailing-slash alias `/dev/null/` is not recognized as the bit
+  // bucket and the redirect stays write-class. Pinned so a future change to
+  // this behavior is deliberate.
+  it("pins current behavior: `ls /tmp >/dev/null/` is write-class (exact-match limitation)", () =>
+    expect(isWriteCommand("ls /tmp >/dev/null/")).toBe(true));
+  // ACCEPTED LIMITATION (round-3 review, round-4 candidate): the loop parser
+  // only triggers when the loop keyword is the FIRST command; `true && for …`
+  // keeps the unknown-command write classification.
+  it("pins current behavior: `true && for …` is write-class (loop keyword not at command start)", () =>
+    expect(isWriteCommand("true && for f in a; do shasum -a 256 /tmp/$f; done")).toBe(true));
+});

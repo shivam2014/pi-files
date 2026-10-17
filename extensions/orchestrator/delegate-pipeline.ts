@@ -2,7 +2,7 @@
  * DelegatePipeline — orchestrates specialist subagent delegation end-to-end.
  * Inlined from handle-diagnostics.ts and delegate-result-processor.ts.
  */
-import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext, BatchDelegationEntry, DiagnosticKind } from "./types.ts";
+import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext, BatchDelegationEntry, DiagnosticKind, DelegationBudget } from "./types.ts";
 import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills, DELIVERABLE_MARKERS, isReadOnlySpecialist } from "./specialists.ts";
 import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
 import { runSubagent, ERROR_MARKER, ABORT_MARKER, PROVIDER_RETRY_MAX_ATTEMPTS, providerBackoffDelayMs, type OrchestratorUi } from "./subagent-runner.ts";
@@ -206,19 +206,82 @@ export interface DifficultySignal {
 }
 
 /**
+ * ITEM 5 downgrade policy — the ONE place this decision is made.
+ *
+ * A worker-authored `recommend: investigate` is downgraded to informational only
+ * when the run COMPLETED SUCCESSFULLY and reported `verification: pass`. A
+ * budget-gate FORCED investigate is never downgraded (that signal is the gate's
+ * own verdict), and an incomplete/failed run keeps its signal actionable.
+ *
+ * Both output paths — `formatSuccess` (live pipeline) and `formatResult`
+ * (standalone/test path) — render through `formatDifficultySignal`, which calls
+ * this helper with their raw flags.
+ */
+export function shouldDowngradeRecommend(
+	d: DifficultySignal | null,
+	opts?: { completedSuccessfully?: boolean; budgetGateForced?: boolean },
+): boolean {
+	if (opts?.completedSuccessfully !== true) return false;
+	if (opts?.budgetGateForced === true) return false;
+	if (!d) return false;
+	return (d.recommend ?? "").toLowerCase() === "investigate"
+		&& (d.verification ?? "").toLowerCase() === "pass";
+}
+
+/**
  * Format a DifficultySignal for the delegate output the orchestrator sees.
  * Falls back to a neutral value (\`[Difficulty: not reported]\`) when the block is absent
  * or empty — the orchestrator treats this as "no escalation signal".
+ *
+ * ITEM 5: with `completedSuccessfully`, a worker-authored `recommend: investigate`
+ * on a finished run is downgraded to informational (raw signal stays visible).
+ * `budgetGateForced` is the exception guard — see shouldDowngradeRecommend.
  */
-export function formatDifficultySignal(d: DifficultySignal | null): string {
+export function formatDifficultySignal(d: DifficultySignal | null, opts?: { completedSuccessfully?: boolean; budgetGateForced?: boolean }): string {
 	if (!d) return '[Difficulty: not reported]';
 	const parts: string[] = [];
 	if (d.exploration) parts.push(`exploration=${d.exploration}`);
 	if (d.uncertainty) parts.push(`uncertainty=${d.uncertainty}`);
 	if (d.verification) parts.push(`verification=${d.verification}`);
 	if (d.iteration) parts.push(`iteration=${d.iteration}`);
-	if (d.recommend) parts.push(`recommend=${d.recommend}`);
+	// ITEM 5: a successful completed run's `recommend: investigate` has no actionable
+	// target — the work is already done. Downgrade it to informational (raw signal kept
+	// visible); incomplete/failed runs and gate-forced signals keep it as-is.
+	const downgrade = shouldDowngradeRecommend(d, opts);
+	if (downgrade) {
+		parts.push('recommend: none (run completed successfully; raw signal was investigate — informational)');
+	} else if (d.recommend) {
+		parts.push(`recommend=${d.recommend}`);
+	}
 	return parts.length > 0 ? `[Difficulty: ${parts.join(', ')}]` : '[Difficulty: not reported]';
+}
+
+/**
+ * ITEM 3: truncation disclosure threaded from the runner result into the
+ * orchestrator-facing formatted output. `flightRecorderPath` points at the full
+ * JSON transcript the runner always persists (when the dump succeeded).
+ */
+export interface DelegationTruncation {
+	/** True when at least one stage elided content. */
+	truncated: boolean;
+	/** Which stage(s) fired ("tool-result" and/or "output-cap"). */
+	stages?: string[];
+	/** Path of the flight-recorder dump holding the full transcript. */
+	flightRecorderPath?: string;
+}
+
+/**
+ * ITEM 3: recovery pointer appended to the delegate output when truncation
+ * occurred. Tells the orchestrator that content was elided and where the full
+ * record lives. Returns "" when no truncation occurred — no noise otherwise.
+ */
+export function buildTruncationRecoveryNote(truncation: DelegationTruncation | undefined): string {
+	if (!truncation?.truncated) return "";
+	if (truncation.flightRecorderPath) {
+		return `[truncation] Full transcript: ${truncation.flightRecorderPath}`;
+	}
+	const stages = truncation.stages?.length ? ` (${truncation.stages.join(", ")})` : "";
+	return `[truncation] Output was elided${stages} — full transcript unavailable.`;
 }
 
 /** Result type returned by executeDelegate */
@@ -342,7 +405,7 @@ export class DelegatePipeline {
 	 * @returns Result with content and details
 	 */
 	async run(
-		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal; parallel?: boolean; skipStepTracking?: boolean; label?: string },
+		params: { specialist: string; task: string; skills?: string[]; scope?: Scope; signal?: AbortSignal; parallel?: boolean; skipStepTracking?: boolean; label?: string; budget?: DelegationBudget },
 		ctx: DelegateControllerContext,
 		onUpdate: (update: any) => void,
 	): Promise<ExecuteDelegateResult> {
@@ -572,6 +635,7 @@ export class DelegatePipeline {
 				effectiveSignal, wrappedOnUpdate, scopeToUse, orchestratorUi, resolvedSuggestedSkills,
 				ctx, // orchestratorCtx: thread session context to plan-panel calls
 				delegationId ?? undefined, // BRIDGE: thread the per-delegation scope id into the subagent session
+				params.budget, // ITEM 4: optional per-delegation counted-budget override
 			);
 			const providerKind = result?.status === "error"
 				? classifyProviderFailure(result?.errorMessage)
@@ -725,12 +789,19 @@ export class DelegatePipeline {
 					debugLog("delegate-tool: subagent completed", { specialist: params.specialist, outputLength: result.output.length });
 				}
 
+				// ITEM 3: thread truncation disclosure (and the flight-recorder recovery
+				// path) from the runner result into the formatted output.
+				const truncation: DelegationTruncation | undefined = result?.truncated
+					? { truncated: true, stages: result.truncationStages, flightRecorderPath: result.flightRecorderPath }
+					: undefined;
 				result.output = this.processDelegateResult(
 					result.output, metrics, elapsedMs,
 					result.toolCallTrail || [], result.turns || 0,
 					false, false,
 					undefined, undefined,
 					outcome,
+					truncation,
+					result?.calibration?.budgetGate?.forced === true,
 				);
 			} else if (result?.output) {
 				// Error/abort path
@@ -836,6 +907,8 @@ export class DelegatePipeline {
 	 * Execute multiple delegations concurrently via batch parameter.
 	 * Each entry runs as an independent delegation through this.run(),
 	 * which already handles scope, timeout, diagnostics, and plan panel.
+	 * A per-entry `budget` (ITEM 4) is threaded into that entry's own run() call,
+	 * so it applies exactly like a single delegation's budget.
 	 */
 	async runBatch(
 		entries: BatchDelegationEntry[],
@@ -883,6 +956,9 @@ export class DelegatePipeline {
 								skills: entry.skills,
 								scope: entry.scope,
 								label: entry.label,
+								// ITEM 4: the entry's own counted-budget override — same semantics as
+								// the single-delegation path (omitted → current defaults).
+								budget: entry.budget,
 								signal,
 								parallel: true,
 								skipStepTracking: true,
@@ -1053,6 +1129,8 @@ export class DelegatePipeline {
 		errorMessage?: string,
 		stopReason?: string,
 		outcome?: DelegationOutcome,
+		truncation?: DelegationTruncation,
+		budgetGateForced?: boolean,
 	): string {
 		if (isAborted || isError) {
 			// Error/abort/stall paths get the same output hygiene as success: when a
@@ -1063,7 +1141,7 @@ export class DelegatePipeline {
 		}
 		// Output hygiene: strip raw JSON tool-result blocks when report exists
 		const cleaned = DelegatePipeline.sanitizeOutputForOrchestrator(output);
-		return DelegatePipeline.formatSuccess(cleaned, metrics, elapsedMs, toolCallTrail, turns, outcome);
+		return DelegatePipeline.formatSuccess(cleaned, metrics, elapsedMs, toolCallTrail, turns, outcome, truncation, budgetGateForced);
 	}
 
 	/**
@@ -1076,6 +1154,8 @@ export class DelegatePipeline {
 		toolCallTrail: any[],
 		turns: number,
 		outcome?: DelegationOutcome,
+		truncation?: DelegationTruncation,
+		budgetGateForced?: boolean,
 	): string {
 		let result = output;
 
@@ -1089,9 +1169,12 @@ export class DelegatePipeline {
 			result = summaryParts.join('\n') + '\n\n' + result;
 		}
 
-		// Prepend difficulty signal (adaptive escalation) — default to neutral when absent
+		// Prepend difficulty signal (adaptive escalation) — default to neutral when absent.
+		// ITEM 5: this is the live SUCCESS path, so the run completed; the shared policy
+		// (shouldDowngradeRecommend, via formatDifficultySignal) owns the gate-forced
+		// exception — a gate-forced investigate is never downgraded.
 		const difficulty = DelegatePipeline.extractDifficultyFromOutput(result);
-		result = formatDifficultySignal(difficulty) + '\n\n' + result;
+		result = formatDifficultySignal(difficulty, { completedSuccessfully: true, budgetGateForced }) + '\n\n' + result;
 
 		// Prepend execution metadata
 		const execStatus = result?.startsWith(ERROR_MARKER) ? "error" : "ok";
@@ -1130,6 +1213,11 @@ export class DelegatePipeline {
 		const toolWord = toolCalls === 1 ? "tool call" : "tool calls";
 		const statusNote = `${statusIcon('completed')} Completed (${turns} ${turnWord}, ${toolCalls} ${toolWord})`;
 		result = `${statusNote}\n${result}`;
+
+		// ITEM 3: when truncation elided content, append the recovery pointer to the
+		// full transcript. Omitted entirely when nothing was truncated.
+		const recoveryNote = buildTruncationRecoveryNote(truncation);
+		if (recoveryNote) result = `${result}\n\n${recoveryNote}`;
 
 		return result;
 	}
@@ -1250,6 +1338,12 @@ export interface FormatResultParams {
 	toolCalls: number;
 	status: 'ok' | 'error' | 'aborted';
 	toolCallTrail?: Array<{ tool: string; outputPreview?: string; completed: boolean }>;
+	/** ITEM 3: truncation disclosure; when set, the recovery pointer is appended. */
+	truncation?: DelegationTruncation;
+	/** ITEM 5: run finished successfully (cleanCompleteStop/done) — downgrades recommend=investigate. */
+	completedSuccessfully?: boolean;
+	/** ITEM 5: the budget gate forced recommend=investigate — never downgraded. */
+	budgetGateForced?: boolean;
 }
 
 export function formatResult(params: FormatResultParams): {
@@ -1294,8 +1388,14 @@ export function formatResult(params: FormatResultParams): {
 	}
 
 	// Adaptive escalation: surface the subagent's difficulty signal (neutral when absent).
+	// ITEM 5: forward the RAW flags — the single shared policy (shouldDowngradeRecommend,
+	// applied inside formatDifficultySignal) decides, so this path and the live
+	// formatSuccess path can never drift apart.
 	const difficulty = extractDifficultyFromOutput(output);
-	const difficultyStr = `\n\n${formatDifficultySignal(difficulty)}`;
+	const difficultyStr = `\n\n${formatDifficultySignal(difficulty, {
+		completedSuccessfully: params.completedSuccessfully,
+		budgetGateForced: params.budgetGateForced,
+	})}`;
 
 	const audit = null;
 
@@ -1307,7 +1407,10 @@ export function formatResult(params: FormatResultParams): {
 
 	const formatted = `${statusLine}\n${metricsLine}${trailStr}${execStr}${findingsStr}${difficultyStr}\n\n${outputSection}`;
 
-	return { formatted, findings, difficulty, audit };
+	// ITEM 3: mirror formatSuccess — append the recovery pointer only on truncation.
+	const recoveryNote = buildTruncationRecoveryNote(params.truncation);
+
+	return { formatted: recoveryNote ? `${formatted}\n\n${recoveryNote}` : formatted, findings, difficulty, audit };
 }
 
 export function sanitizeOutputForOrchestrator(output: string) {

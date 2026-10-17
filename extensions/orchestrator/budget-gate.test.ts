@@ -19,12 +19,14 @@ import {
 	extractToolFilePath,
 	BUDGET_WRAPUP_MESSAGE,
 } from "./subagent-runner.ts";
-import { extractDifficultyFromOutput, formatResult } from "./delegate-pipeline.ts";
+import { DelegatePipeline, extractDifficultyFromOutput, formatResult, formatDifficultySignal, shouldDowngradeRecommend } from "./delegate-pipeline.ts";
+import type { DelegationBudget } from "./types.ts";
 import { createAskOrchestratorResolver, detectEscalationSignal, UNANSWERED_SENTINEL } from "./ask-resolver.ts";
 import {
 	ESCALATION_MAX_EXPLORATION_CALLS,
 	ESCALATION_MAX_FILES_TOUCHED,
 	ESCALATION_MAX_TURNS,
+	resolveDelegationBudget,
 } from "./specialists.ts";
 
 // The real model runtime and theme modules do network/console I/O during setup —
@@ -157,7 +159,7 @@ describe("forceDifficultyRecommend (programmatic recommend override)", () => {
 // ── PART A: end-to-end runner behavior ──────────────────────────────────────
 type SubscribeCb = (event: any) => void;
 
-function createRunner(specialistName = "budget-specialist") {
+function createRunner(specialistName = "budget-specialist", budget?: DelegationBudget) {
 	const ref = { subscribeCb: null as SubscribeCb | null };
 	let resolvePrompt: () => void = () => {};
 	let rejectPrompt: (e: Error) => void = () => {};
@@ -196,7 +198,7 @@ function createRunner(specialistName = "budget-specialist") {
 		agentSessionFactory: async () => ({ session: mockSession }),
 	} as any);
 	const specialist = { name: specialistName, tools: ["read", "grep", "find", "ls", "bash", "edit"], systemPrompt: "p" } as any;
-	const resultPromise = runner.run("task", specialist);
+	const resultPromise = runner.run("task", specialist, undefined, undefined, undefined, undefined, undefined, undefined, budget);
 	return { ref, resolvePrompt: () => resolvePrompt(), resultPromise };
 }
 
@@ -343,5 +345,256 @@ describe("PART B — createAskOrchestratorResolver surfaces escalation", () => {
 		const answer = await resolver("What is the meaning of life?");
 		expect(answer).toBe(UNANSWERED_SENTINEL);
 		expect(buffer).toEqual(["What is the meaning of life?"]);
+	});
+});
+
+// ── ITEM 4: delegate()-time budget override + clean-completion semantics ────
+describe("resolveDelegationBudget (ITEM 4) — profile scales caps, numeric override wins", () => {
+	it("omitted budget resolves to the current defaults exactly", () => {
+		expect(resolveDelegationBudget(undefined, "coder")).toEqual({
+			maxExplorationCalls: ESCALATION_MAX_EXPLORATION_CALLS,
+			maxFiles: ESCALATION_MAX_FILES_TOUCHED,
+			maxTurns: ESCALATION_MAX_TURNS,
+		});
+		expect(resolveDelegationBudget({ profile: "standard" }, "scout")).toEqual({
+			maxExplorationCalls: 10,
+			maxFiles: 12, // scout's own files cap, NOT the generic 5
+			maxTurns: 12,
+		});
+	});
+
+	it("audit profile scales every cap 3× (exploration 30; scout/researcher files 36; turns 36)", () => {
+		expect(resolveDelegationBudget({ profile: "audit" }, "scout")).toEqual({
+			maxExplorationCalls: 30,
+			maxFiles: 36,
+			maxTurns: 36,
+		});
+		expect(resolveDelegationBudget({ profile: "audit" }, "researcher")).toEqual({
+			maxExplorationCalls: 30,
+			maxFiles: 36,
+			maxTurns: 36,
+		});
+		// Non-read-heavy specialists scale their own (default) 5-file cap.
+		expect(resolveDelegationBudget({ profile: "audit" }, "coder").maxFiles).toBe(15);
+	});
+
+	it("explicit numeric overrides win over the profile (per axis)", () => {
+		const resolved = resolveDelegationBudget({ profile: "audit", maxTurns: 99, maxExplorationCalls: 7 }, "scout");
+		expect(resolved.maxExplorationCalls).toBe(7);
+		expect(resolved.maxTurns).toBe(99);
+		expect(resolved.maxFiles).toBe(36); // untouched axis still scales
+		expect(resolveDelegationBudget({ maxFiles: 3 }, "coder")).toEqual({ maxExplorationCalls: 10, maxFiles: 3, maxTurns: 12 });
+	});
+
+	it("computeBudgetStatus honours the scaled audit caps", () => {
+		const auditCaps = resolveDelegationBudget({ profile: "audit" }, "scout");
+		// 20 exploration calls: over the default 10, under the audit 30.
+		expect(computeBudgetStatus({ read: 20 }, 1, 1).exceeded).toBe(true);
+		expect(computeBudgetStatus({ read: 20 }, 1, 1, auditCaps.maxFiles, auditCaps).exceeded).toBe(false);
+		// 31 > 30 → breached with the SCALED number in the reason.
+		const over = computeBudgetStatus({ read: 31 }, 1, 1, auditCaps.maxFiles, auditCaps);
+		expect(over.exceeded).toBe(true);
+		expect(over.reason).toContain("exploration calls 31 > 30");
+	});
+});
+
+describe("ITEM 4 — clean complete + breach reports informationally; non-clean still forces", () => {
+	it("(c) clean complete stop + corroborating breach → recommend NOT forced, note shows the numbers", { timeout: 20_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createRunner("clean-complete-break");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		// 11 exploration calls (substantive, non-gross) with recommend=investigate in the
+		// report — without the clean-completion carve-out this WOULD be forced.
+		for (let i = 0; i < ESCALATION_MAX_EXPLORATION_CALLS + 1; i++) {
+			ref.subscribeCb!(toolStart("read", `c${i}`, { path: "/tmp/one-file.ts" }));
+			ref.subscribeCb!(toolEnd("read", `c${i}`));
+		}
+		const report = `## Findings\n- summary: broad audit delivered\n\n## Difficulty\n- exploration: high\n- uncertainty: medium\n- verification: pass\n- iteration: medium\n- recommend: investigate\n`;
+		ref.subscribeCb!(textDelta(report));
+		// Clean stop: "stop" + deliverable markers + all steps complete → cleanCompleteStop.
+		ref.subscribeCb!(assistantEnd("stop", report));
+
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.budgetBreachKind).toBe("substantive");
+		// Banner keeps the breach numbers visible, labelled informational.
+		expect(result.output).toContain("⚠ [Budget Gate]");
+		expect(result.output).toContain(`exploration calls ${ESCALATION_MAX_EXPLORATION_CALLS + 1} > ${ESCALATION_MAX_EXPLORATION_CALLS}`);
+		expect(result.output).toContain("informational: run completed; budget note only");
+		// NOT forced on a cleanly-completed run.
+		expect(result.output).not.toContain("forcing recommend=investigate");
+		expect(result.calibration?.budgetGate?.forced).toBe(false);
+	});
+
+	it("(c) the structured clean-completion note is emitted through onUpdate even before formatting", { timeout: 20_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createRunner("clean-complete-note");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		for (let i = 0; i < ESCALATION_MAX_EXPLORATION_CALLS + 1; i++) {
+			ref.subscribeCb!(toolStart("read", `n${i}`, { path: "/tmp/one-file.ts" }));
+			ref.subscribeCb!(toolEnd("read", `n${i}`));
+		}
+		const report = `## Findings\n- summary: done\n\n## Difficulty\n- exploration: medium\n- uncertainty: low\n- verification: pass\n- iteration: low\n- recommend: none\n`;
+		ref.subscribeCb!(textDelta(report));
+		ref.subscribeCb!(assistantEnd("stop", report));
+		resolvePrompt();
+		const result = await resultPromise;
+
+		// Breach numbers remain visible and the difficulty stays the worker's own.
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
+		expect(result.output).toContain("budget breach");
+	});
+
+	it("(d) NON-clean completion with a corroborating breach still forces recommend=investigate", { timeout: 20_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createRunner("nonclean-break");
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		for (let i = 0; i < ESCALATION_MAX_EXPLORATION_CALLS + 1; i++) {
+			ref.subscribeCb!(toolStart("read", `u${i}`, { path: "/tmp/one-file.ts" }));
+			ref.subscribeCb!(toolEnd("read", `u${i}`));
+		}
+		const report = `## Findings\n- summary: explored and stopped\n\n## Difficulty\n- exploration: high\n- uncertainty: high\n- verification: fail\n- iteration: medium\n- recommend: none\n`;
+		ref.subscribeCb!(textDelta(report));
+		// Non-clean: end_turn (not a declared clean stop).
+		ref.subscribeCb!(assistantEnd("end_turn", report));
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.output).toContain("forcing recommend=investigate");
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("investigate");
+		expect(result.calibration?.budgetGate?.forced).toBe(true);
+	});
+
+	it("(a/e2e) audit profile threads into the gate: 20 calls breach default but not audit", { timeout: 20_000 }, async () => {
+		const { ref, resolvePrompt, resultPromise } = createRunner("audit-e2e", { profile: "audit" });
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+
+		for (let i = 0; i < 20; i++) {
+			ref.subscribeCb!(toolStart("read", `a${i}`, { path: "/tmp/one-file.ts" }));
+			ref.subscribeCb!(toolEnd("read", `a${i}`));
+		}
+		const report = `## Findings\n- summary: broad audit\n\n## Difficulty\n- exploration: high\n- uncertainty: low\n- verification: pass\n- iteration: medium\n- recommend: none\n`;
+		ref.subscribeCb!(textDelta(report));
+		ref.subscribeCb!(assistantEnd("end_turn", report));
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.budgetExceeded).toBeUndefined();
+		expect(result.output).not.toContain("[Budget Gate]");
+	});
+});
+
+// ── ITEM 5: completed-run escalation-signal downgrade ───────────────────────
+describe("ITEM 5 — recommend=investigate on a completed run is downgraded to informational", () => {
+	const difficultyOut = (verification: string) =>
+		`## Findings\n- summary: done\n\n## Difficulty\n- exploration: low\n- uncertainty: low\n- verification: ${verification}\n- iteration: low\n- recommend: investigate\n`;
+	const metrics = { readCalls: 1, grepCalls: 0, findCalls: 0, editCalls: 0, writeCalls: 0, bashCalls: 0, lsCalls: 0 } as any;
+
+	it("formatDifficultySignal downgrades when the run completed successfully AND verification=pass", () => {
+		const d = extractDifficultyFromOutput(difficultyOut("pass"))!;
+		const line = formatDifficultySignal(d, { completedSuccessfully: true });
+		expect(line).toContain("recommend: none (run completed successfully; raw signal was investigate — informational)");
+		// Raw signal stays visible for the reader.
+		expect(line).toContain("raw signal was investigate");
+		expect(line).not.toContain("recommend=investigate");
+	});
+
+	it("keeps the raw signal when the run is incomplete or verification failed", () => {
+		const passD = extractDifficultyFromOutput(difficultyOut("pass"))!;
+		const failD = extractDifficultyFromOutput(difficultyOut("fail"))!;
+		// Not a completed run → untouched.
+		expect(formatDifficultySignal(passD)).toContain("recommend=investigate");
+		expect(formatDifficultySignal(passD, { completedSuccessfully: false })).toContain("recommend=investigate");
+		// Completed but verification=fail → the signal stays actionable.
+		expect(formatDifficultySignal(failD, { completedSuccessfully: true })).toContain("recommend=investigate");
+	});
+
+	it("formatResult downgrade is opt-in (completedSuccessfully) and never touches gate-forced signals", () => {
+		const output = difficultyOut("pass");
+		const base = { output, metrics, elapsed: 1, turns: 1, toolCalls: 1, status: "ok" as const };
+		// Default (legacy callers): unchanged.
+		expect(formatResult(base).formatted).toContain("recommend=investigate");
+		// Completed successful run: downgraded.
+		const done = formatResult({ ...base, completedSuccessfully: true });
+		expect(done.formatted).toContain("recommend: none (run completed successfully");
+		expect(done.formatted).not.toContain("recommend=investigate");
+		// Gate-forced investigate is the gate's own verdict — never downgraded.
+		const forced = formatResult({ ...base, completedSuccessfully: true, budgetGateForced: true });
+		expect(forced.formatted).toContain("recommend=investigate");
+	});
+
+	it("shouldDowngradeRecommend is the single policy both output paths share", () => {
+		const passD = extractDifficultyFromOutput(difficultyOut("pass"))!;
+		const failD = extractDifficultyFromOutput(difficultyOut("fail"))!;
+		// Downgrade only on: completed + verification=pass + recommend=investigate.
+		expect(shouldDowngradeRecommend(passD, { completedSuccessfully: true })).toBe(true);
+		expect(shouldDowngradeRecommend(passD, { completedSuccessfully: true, budgetGateForced: false })).toBe(true);
+		// Gate-forced signal is preserved on EVERY path.
+		expect(shouldDowngradeRecommend(passD, { completedSuccessfully: true, budgetGateForced: true })).toBe(false);
+		// Incomplete run / failed verification / missing signal → untouched.
+		expect(shouldDowngradeRecommend(passD, { completedSuccessfully: false })).toBe(false);
+		expect(shouldDowngradeRecommend(passD)).toBe(false);
+		expect(shouldDowngradeRecommend(failD, { completedSuccessfully: true })).toBe(false);
+		expect(shouldDowngradeRecommend(null, { completedSuccessfully: true })).toBe(false);
+
+		// The renderer applies that same policy, so both call sites pass raw flags.
+		expect(formatDifficultySignal(passD, { completedSuccessfully: true, budgetGateForced: false }))
+			.toContain("recommend: none (run completed successfully");
+		expect(formatDifficultySignal(passD, { completedSuccessfully: true, budgetGateForced: true }))
+			.toContain("recommend=investigate");
+
+		// Path parity: the live path's call shape and the test path's produced line must match.
+		const livePathLine = formatDifficultySignal(passD, { completedSuccessfully: true, budgetGateForced: false });
+		const viaFormatResult = formatResult({
+			output: difficultyOut("pass"), metrics, elapsed: 1, turns: 1, toolCalls: 1, status: "ok" as const,
+			completedSuccessfully: true, budgetGateForced: false,
+		}).formatted;
+		expect(viaFormatResult).toContain(livePathLine);
+	});
+});
+
+// ── ITEM 4: per-entry budgets on batch delegations ──────────────────────────
+describe("batch entry budget (ITEM 4) — an entry's budget threads into that entry's delegation", () => {
+	it("entry { profile: 'audit' } gets 3× caps; an entry without budget keeps the defaults", async () => {
+		const pipeline = new DelegatePipeline({ scopeManager: {} as any });
+		const seen: Array<{ specialist: string; budget?: DelegationBudget }> = [];
+		// Spy on the shared per-entry run() so the assertion is about the plumbing
+		// (runBatch → run), not about subagent execution.
+		const runSpy = vi.spyOn(DelegatePipeline.prototype, "run").mockImplementation(async (params: any) => {
+			seen.push({ specialist: params.specialist, budget: params.budget });
+			return { content: [{ type: "text", text: "ok" }], details: {} } as any;
+		});
+		try {
+			await pipeline.runBatch(
+				[
+					{ specialist: "scout", task: "broad audit", budget: { profile: "audit" } },
+					{ specialist: "scout", task: "narrow look" },
+				],
+				{ cwd: "/tmp", config: { delegation: { parallel: { maxConcurrent: 2 } } } } as any,
+				() => {},
+			);
+		} finally {
+			runSpy.mockRestore();
+		}
+
+		// Every entry reaches its own run() call, carrying its own budget.
+		expect(seen.map(s => s.specialist)).toEqual(["scout", "scout"]);
+		expect(seen[0].budget).toEqual({ profile: "audit" });
+		expect(seen[1].budget).toBeUndefined();
+
+		// audit → 3× every cap (scout: exploration 10→30, files 12→36, turns 12→36).
+		const defaults = resolveDelegationBudget(undefined, "scout");
+		const audit = resolveDelegationBudget(seen[0].budget, "scout");
+		expect(audit).toEqual({ maxExplorationCalls: 30, maxFiles: 36, maxTurns: 36 });
+		expect(audit.maxExplorationCalls).toBe(3 * defaults.maxExplorationCalls);
+		expect(audit.maxFiles).toBe(3 * defaults.maxFiles);
+		expect(audit.maxTurns).toBe(3 * defaults.maxTurns);
+
+		// Omission keeps the defaults exactly.
+		expect(resolveDelegationBudget(seen[1].budget, "scout")).toEqual(defaults);
+		expect(resolveDelegationBudget(seen[1].budget, "scout").maxExplorationCalls).toBe(ESCALATION_MAX_EXPLORATION_CALLS);
+		expect(resolveDelegationBudget(seen[1].budget, "scout").maxTurns).toBe(ESCALATION_MAX_TURNS);
 	});
 });

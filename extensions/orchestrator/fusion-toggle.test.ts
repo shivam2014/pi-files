@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerFusionTool, loadFusionConfig, _resetFusionRegistrationsForTests } from "./fusion-tool";
-import orchestrator from "./index";
+import orchestrator, { orchestratorToolSet } from "./index";
 
 function createMockPi() {
 	const tools: any[] = [];
@@ -80,8 +80,9 @@ describe("global fusion toggle", () => {
 		const results = await pi.trigger("before_agent_start", event, ctx);
 		const prompt = results[0]?.systemPrompt ?? event.systemPrompt;
 
-		// But setActiveTools excludes fusion when disabled
-		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "plan_add_steps", "advance_plan_step", "insert_step", "remove_step", "modify_step", "delegate", "read_skill", "list_skills", "list_tools", "vision_query", "interactive_shell"]);
+		// But setActiveTools excludes fusion when disabled. Derive from the SSOT
+		// (orchestratorToolSet) instead of re-pinning a duplicate literal array.
+		expect(pi.getActiveToolsHistory()[0]).toEqual(orchestratorToolSet({ fusionEnabled: false }));
 		expect(prompt).not.toContain("### Fusion Tool");
 		expect(prompt).toContain("## Capabilities");
 	});
@@ -99,7 +100,7 @@ describe("global fusion toggle", () => {
 		const prompt = results[0]?.systemPrompt ?? event.systemPrompt;
 
 		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(true);
-		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "plan_add_steps", "advance_plan_step", "insert_step", "remove_step", "modify_step", "delegate", "fusion", "read_skill", "list_skills", "list_tools", "vision_query", "interactive_shell"]);
+		expect(pi.getActiveToolsHistory()[0]).toEqual(orchestratorToolSet({ fusionEnabled: true }));
 		expect(prompt).toContain("### Fusion Tool");
 		expect(prompt).toContain("## Capabilities");
 	});
@@ -115,7 +116,7 @@ describe("global fusion toggle", () => {
 		const results = await pi.trigger("before_agent_start", event, ctx);
 		const prompt = results[0]?.systemPrompt ?? event.systemPrompt;
 
-		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "plan_add_steps", "advance_plan_step", "insert_step", "remove_step", "modify_step", "delegate", "fusion", "read_skill", "list_skills", "list_tools", "vision_query", "interactive_shell"]);
+		expect(pi.getActiveToolsHistory()[0]).toEqual(orchestratorToolSet({ fusionEnabled: true }));
 		expect(prompt).toContain("### Fusion Tool");
 	});
 
@@ -135,7 +136,7 @@ describe("global fusion toggle", () => {
 
 		// Tool still registered, but not in active tools
 		expect(pi.getAllTools().some((t: any) => t.name === "fusion")).toBe(true);
-		expect(pi.getActiveToolsHistory()[0]).toEqual(["plan", "plan_add_steps", "advance_plan_step", "insert_step", "remove_step", "modify_step", "delegate", "read_skill", "list_skills", "list_tools", "vision_query", "interactive_shell"]);
+		expect(pi.getActiveToolsHistory()[0]).toEqual(orchestratorToolSet({ fusionEnabled: false }));
 	});
 
 	it("is idempotent when enabled", () => {

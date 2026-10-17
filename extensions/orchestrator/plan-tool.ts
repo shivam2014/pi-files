@@ -88,7 +88,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
                     }),
                     Type.Object({
                         label: Type.String({ description: 'Step label shown in the plan panel' }),
-                        kind: Type.Literal('orchestrator', { description: 'Orchestrator step — self-owned, call advance_plan_step' }),
+                        kind: Type.Literal('orchestrator', { description: 'Orchestrator step — self-owned, call advance_plan_step. May perform read-only tool calls itself (incl. web reads); file edits, bash, and implementation work must be delegated.' }),
                     }),
                 ]),
                 { description: 'Step labels (strings) or structured step objects (for loops)' },

@@ -41,6 +41,49 @@ function resolveCwd(ctx?: { cwd?: string }): string {
 /** Specialist names that have bash but no edit/write — need tool-level readOnly enforcement */
 const READ_ONLY_WITH_BASH = new Set(["reviewer"]);
 
+// ── Orchestrator tool allowlist (SSOT) ─════════════════════════════════════
+/**
+ * SINGLE SOURCE OF TRUTH for orchestrator-mode tooling. Both consumers derive
+ * from THIS structure — the tool_call whitelist AND the frozen setActiveTools
+ * set — so the hand-maintained duplicates can no longer drift (live defect:
+ * fetch_content was registered/visible yet hard-blocked by a duplicate list).
+ *
+ * `readonlyWeb` tools cannot mutate anything and are allowed through in
+ * orchestrator mode. The harness-level web extension keeps them eagerly
+ * available (verified in live sessions: their tool_call events fire), so they
+ * are admitted at the guard rather than forced into the frozen active set.
+ */
+export const ORCHESTRATOR_TOOLS = {
+	/** Coordination tools frozen into the active set at session_start. */
+	base: [
+		...PLAN_TOOLS,
+		"delegate",
+		"read_skill",
+		"list_skills",
+		"list_tools",
+		"vision_query",
+		"interactive_shell",
+	],
+	/** Read-only web tools the orchestrator may call itself (never edit/bash). */
+	readonlyWeb: ["web_search", "fetch_content", "get_search_content"],
+} as const;
+
+/** Back-compat alias: the read-only web tool names. */
+export const ORCHESTRATOR_READONLY_WEB_TOOLS = ORCHESTRATOR_TOOLS.readonlyWeb;
+
+/**
+ * The SINGLE combined tool set for orchestrator mode: base coordination tools
+ * (+fusion when enabled, inserted after `delegate` for historical ordering)
+ * plus the READ-ONLY web tools. BOTH consumers call this ONE function —
+ * `pi.setActiveTools()` at session_start and the tool_call whitelist — so the
+ * hand-maintained duplicates can no longer drift.
+ */
+export function orchestratorToolSet(opts: { fusionEnabled: boolean }): string[] {
+	const tools: string[] = [...ORCHESTRATOR_TOOLS.base];
+	if (opts.fusionEnabled) tools.splice(PLAN_TOOLS.length + 1, 0, "fusion");
+	return [...tools, ...ORCHESTRATOR_TOOLS.readonlyWeb];
+}
+
 export default function (pi: ExtensionAPI) {
 	// ── Defensive: clear stale subagent env var from previous delegations ──
 	// The env var is set during subagent extension loading and deleted in finally.
@@ -88,16 +131,9 @@ export default function (pi: ExtensionAPI) {
 		loadOrchestratorConfig();
 		const cwd = ctx?.cwd ?? process.cwd();
 		const fusionConfig = loadFusionConfig(cwd);
-		const activeTools: string[] = [...PLAN_TOOLS, "delegate"];
-		if (fusionConfig.enabled) {
-			activeTools.push("fusion");
-		}
-		activeTools.push("read_skill");
-		activeTools.push("list_skills");
-		activeTools.push("list_tools");
-		activeTools.push("vision_query");
-		activeTools.push("interactive_shell");
-		pi.setActiveTools(activeTools);
+		// SSOT: session_start consumes orchestratorToolSet; the tool_call handler
+		// consumes the SAME function — both derive from ORCHESTRATOR_TOOLS.
+		pi.setActiveTools(orchestratorToolSet({ fusionEnabled: fusionConfig.enabled }));
 	});
 
 	// ── System Prompt: Tell the agent to ALWAYS delegate ──
@@ -175,8 +211,14 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: "Fusion is disabled. Enable it in .pi/fusion.json" };
 		}
 
-		if (event.toolName !== "delegate" && !PLAN_TOOLS.includes(event.toolName as typeof PLAN_TOOLS[number]) && event.toolName !== "fusion" && event.toolName !== "read_skill" && event.toolName !== "list_skills" && event.toolName !== "list_tools" && event.toolName !== "vision_query" && event.toolName !== "interactive_shell") {
-			return { block: true, reason: `Orchestrator mode: use plan() or delegate() instead of ${event.toolName}` };
+		// SSOT allowlist (plan tools + delegate + coordination helpers + read-only
+		// web tools). A blocked call gets an actionable message, not just a refusal.
+		const allowedTools = new Set(orchestratorToolSet({ fusionEnabled: true }));
+		if (!allowedTools.has(event.toolName)) {
+			return {
+				block: true,
+				reason: `Orchestrator mode: ${event.toolName} is not available to the orchestrator. Delegate the work (researcher/scout for web reads, coder for edits) or use plan()/delegate().`,
+			};
 		}
 	});
 
