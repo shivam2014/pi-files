@@ -212,3 +212,24 @@ describe('PART D — stop-aware persistence nudge', () => {
 		}
 	});
 });
+
+// ── DEFECT 1: annotated values are compared NORMALIZED, rendered RAW ──────
+describe('PART B — annotated difficulty values: display untouched, decisions normalized', () => {
+	it('extraction keeps the raw annotated prose verbatim', () => {
+		const output = `## Findings
+- summary: done
+
+## Difficulty
+- exploration: low — one module
+- uncertainty: low — fully specified
+- verification: pass — each count asserted
+- iteration: low — one pass
+- recommend: investigate — spawn scout
+`;
+		const d = extractDifficultyFromOutput(output)!;
+		expect(d.verification).toBe('pass — each count asserted');
+		expect(d.recommend).toBe('investigate — spawn scout');
+		// Rendered text keeps the raw annotation (normalization happens at decision sites only).
+		expect(formatDifficultySignal(d, { completedSuccessfully: false })).toContain('verification=pass — each count asserted');
+	});
+});

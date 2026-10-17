@@ -58,6 +58,27 @@ ${DIFFICULTY_TEMPLATE}`;
  */
 export const DELIVERABLE_MARKERS = ["## Completed", "## Findings", "## Files Changed"] as const;
 
+/**
+ * SSOT normalizer for `## Difficulty` values used in DECISION comparisons.
+ *
+ * Real workers annotate their values ("pass — each count asserted…",
+ * "low (task fully specified)", "none — task complete", "investigate — spawn
+ * scout"). Every enum-decision site fed by `extractDifficultyFromOutput` must
+ * compare the leading enum token, not the prose, or annotated values silently
+ * defeat the comparison (live defect: a cleanly completed scout was forced to
+ * `recommend=investigate` because "pass — …" !== "pass").
+ *
+ * Display/render paths keep the RAW value — normalize at comparison, never at
+ * render. Consumers: shouldForceRecommend (subagent-runner.ts),
+ * shouldDowngradeRecommend (delegate-pipeline.ts).
+ */
+export function normalizeDifficultyValue(v?: string | null): string {
+	// Lowercase, trim, drop leading punctuation/backticks/markdown, then keep the
+	// leading word: "pass — each count asserted" → "pass"; "LOW (…) → "low".
+	const match = String(v ?? "").trim().toLowerCase().replace(/^[^a-z]+/, "").match(/^[a-z]+/);
+	return match ? match[0] : "";
+}
+
 /** Scope violation guidance — injected into specialists with write/edit access. */
 export const SCOPE_VIOLATION_GUIDANCE = `
 

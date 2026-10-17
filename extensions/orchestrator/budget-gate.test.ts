@@ -161,6 +161,9 @@ type SubscribeCb = (event: any) => void;
 
 function createRunner(specialistName = "budget-specialist", budget?: DelegationBudget) {
 	const ref = { subscribeCb: null as SubscribeCb | null };
+	// Captured session options — lets a test invoke the planSteps/advanceStep custom
+	// tools directly (probe-mirror e2e: plan parsed mid-run, final step auto-closed).
+	const captured = { sessionOptions: null as any };
 	let resolvePrompt: () => void = () => {};
 	let rejectPrompt: (e: Error) => void = () => {};
 	let promptCalls = 0;
@@ -195,11 +198,14 @@ function createRunner(specialistName = "budget-specialist", budget?: DelegationB
 		cwd: "/tmp",
 		modelRegistry: mockModelRegistry,
 		agentDir: "/Users/shivam94/.pi/agent",
-		agentSessionFactory: async () => ({ session: mockSession }),
+		agentSessionFactory: async (opts: any) => {
+			captured.sessionOptions = opts;
+			return { session: mockSession };
+		},
 	} as any);
 	const specialist = { name: specialistName, tools: ["read", "grep", "find", "ls", "bash", "edit"], systemPrompt: "p" } as any;
 	const resultPromise = runner.run("task", specialist, undefined, undefined, undefined, undefined, undefined, undefined, budget);
-	return { ref, resolvePrompt: () => resolvePrompt(), resultPromise };
+	return { ref, captured, resolvePrompt: () => resolvePrompt(), resultPromise };
 }
 
 const toolStart = (toolName: string, id: string, args: any = {}) => ({ type: "tool_execution_start", toolName, toolCallId: id, args });
@@ -484,6 +490,70 @@ describe("ITEM 4 — clean complete + breach reports informationally; non-clean 
 		expect(result.budgetExceeded).toBeUndefined();
 		expect(result.output).not.toContain("[Budget Gate]");
 	});
+
+	// DEFECT 2 live-probe mirror: delegation-2026-10-17T17-45-01-631Z-scout.json —
+	// explicit budget {exploration 2}, scout completed cleanly (stopReason "stop",
+	// status "completed") but the final plan step was auto-completed at teardown and
+	// the delivered banner was "forcing recommend=investigate" over ANNOTATED
+	// difficulty values. Both defects fired together; this test pins the suppression
+	// against BOTH the teardown ordering and the annotated prose.
+	it("(probe mirror) gross breach on a clean stop whose final plan step auto-closes at teardown → informational banner, recommend NOT rewritten", { timeout: 20_000 }, async () => {
+		const { ref, captured, resolvePrompt, resultPromise } = createRunner("probe-mirror", { maxExplorationCalls: 2, maxTurns: 20 });
+		await vi.waitFor(() => expect(ref.subscribeCb).not.toBeNull(), { timeout: 10_000 });
+		await vi.waitFor(() => expect(captured.sessionOptions).not.toBeNull(), { timeout: 10_000 });
+		const byName = (n: string) => (captured.sessionOptions.customTools as any[]).find(t => t.name === n);
+
+		// 3-step plan; the worker advances steps 1-2, does step 3's work and reports —
+		// but never calls advanceStep for the last step (teardown auto-closes it).
+		await byName("planSteps").execute("p1", { goal: "g", steps: ["one", "two", "three"] });
+		await byName("advanceStep").execute("a1", {});
+		await byName("advanceStep").execute("a2", {});
+
+		// 8 exploration calls on ONE path → 8 > 2 and 8 ≥ 2×2: substantive AND gross.
+		for (let i = 0; i < 8; i++) {
+			ref.subscribeCb!(toolStart("read", `p${i}`, { path: "/tmp/one-file.ts" }));
+			ref.subscribeCb!(toolEnd("read", `p${i}`));
+		}
+
+		// The probe's ANNOTATED difficulty prose — the shape that defeated the strict
+		// equality checks in shouldForceRecommend.
+		const report = [
+			"## Completed",
+			"Delivered the audit.",
+			"",
+			"## Findings",
+			"- summary: done",
+			"",
+			"## Difficulty",
+			"- exploration: low — trivial",
+			"- uncertainty: low — task fully specified",
+			"- verification: pass — each count asserted",
+			"- iteration: low — one pass",
+			"- recommend: none — task complete",
+		].join("\n");
+		ref.subscribeCb!(textDelta(report));
+		ref.subscribeCb!(assistantEnd("stop", report));
+		resolvePrompt();
+		const result = await resultPromise;
+
+		expect(result.stopReason).toBe("stop");
+		expect(result.status).toBe("completed");
+		expect(result.budgetExceeded).toBe(true);
+		expect(result.budgetBreachKind).toBe("substantive");
+		// The ordering that made the mid-run stepsIncomplete snapshot stale: the final
+		// plan step's completion (autoCompleted) is a teardown artifact.
+		const planSteps: any[] = result.planSteps ?? [];
+		const finalStep = planSteps[planSteps.length - 1];
+		expect(finalStep).toMatchObject({ completed: true, autoCompleted: true });
+		expect(planSteps.filter((s: any) => s.autoCompleted)).toHaveLength(1);
+
+		// Informational banner; the worker's own (annotated) recommend is NOT rewritten.
+		expect(result.output).toContain("informational: run completed; budget note only");
+		expect(result.output).toContain("gross breach");
+		expect(result.output).not.toContain("forcing recommend=investigate");
+		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none — task complete");
+		expect(result.calibration?.budgetGate?.forced).toBe(false);
+	});
 });
 
 // ── ITEM 5: completed-run escalation-signal downgrade ───────────────────────
@@ -538,6 +608,25 @@ describe("ITEM 5 — recommend=investigate on a completed run is downgraded to i
 		expect(shouldDowngradeRecommend(passD)).toBe(false);
 		expect(shouldDowngradeRecommend(failD, { completedSuccessfully: true })).toBe(false);
 		expect(shouldDowngradeRecommend(null, { completedSuccessfully: true })).toBe(false);
+
+		// DEFECT 1 (live probe): ANNOTATED values must still downgrade, and gate-forced
+		// is still never downgraded — real workers write annotated prose constantly.
+		const annotated = extractDifficultyFromOutput(
+			`## Findings\n- summary: done\n\n## Difficulty\n- exploration: high — three modules\n- uncertainty: low — fully specified\n- verification: pass — verified end-to-end\n- iteration: low — one pass\n- recommend: investigate — spawn scout\n`,
+		)!;
+		// Display keeps the RAW value (rendered text is untouched by the normalizer).
+		expect(annotated.recommend).toBe("investigate — spawn scout");
+		expect(annotated.verification).toBe("pass — verified end-to-end");
+		// Decision compares the normalized enum token.
+		expect(shouldDowngradeRecommend(annotated, { completedSuccessfully: true })).toBe(true);
+		expect(shouldDowngradeRecommend(annotated, { completedSuccessfully: true, budgetGateForced: false })).toBe(true);
+		expect(shouldDowngradeRecommend(annotated, { completedSuccessfully: true, budgetGateForced: true })).toBe(false);
+		expect(formatDifficultySignal(annotated, { completedSuccessfully: true })).toContain("recommend: none (run completed successfully");
+		// Annotated verification=fail stays actionable (never downgraded).
+		const annotatedFail = extractDifficultyFromOutput(
+			`## Difficulty\n- verification: fail — tests red\n- recommend: investigate — spawn scout\n`,
+		)!;
+		expect(shouldDowngradeRecommend(annotatedFail, { completedSuccessfully: true })).toBe(false);
 
 		// The renderer applies that same policy, so both call sites pass raw flags.
 		expect(formatDifficultySignal(passD, { completedSuccessfully: true, budgetGateForced: false }))

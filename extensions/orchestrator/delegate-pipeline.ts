@@ -3,7 +3,7 @@
  * Inlined from handle-diagnostics.ts and delegate-result-processor.ts.
  */
 import type { Specialist, DelegationMetrics, SubagentContext, SubagentDiagnostic, DelegateControllerContext, BatchDelegationEntry, DiagnosticKind, DelegationBudget } from "./types.ts";
-import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills, DELIVERABLE_MARKERS, isReadOnlySpecialist } from "./specialists.ts";
+import { SPECIALISTS, SPECIALIST_VERBS, getSpecialistSkills, DELIVERABLE_MARKERS, isReadOnlySpecialist, normalizeDifficultyValue } from "./specialists.ts";
 import { createAskOrchestratorResolver, resolve } from "./ask-resolver.ts";
 import { runSubagent, ERROR_MARKER, ABORT_MARKER, PROVIDER_RETRY_MAX_ATTEMPTS, providerBackoffDelayMs, type OrchestratorUi } from "./subagent-runner.ts";
 import { hasActivePlan, setupPlanPanel, startDelegationStep, finalizePlanStep, errorPlanStep, incrementDelegationCount, decrementDelegationCount, clearPlanIfComplete, updatePlanStepDetail, recordTimelineFrame } from "./plan-panel.ts";
@@ -224,8 +224,8 @@ export function shouldDowngradeRecommend(
 	if (opts?.completedSuccessfully !== true) return false;
 	if (opts?.budgetGateForced === true) return false;
 	if (!d) return false;
-	return (d.recommend ?? "").toLowerCase() === "investigate"
-		&& (d.verification ?? "").toLowerCase() === "pass";
+	return (normalizeDifficultyValue(d.recommend) === "investigate")
+		&& (normalizeDifficultyValue(d.verification) === "pass");
 }
 
 /**

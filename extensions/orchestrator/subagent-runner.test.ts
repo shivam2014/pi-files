@@ -19,6 +19,7 @@ import {
 	INITIAL_INTERVENTION,
 	STALL_GRACE_TURNS,
 	isLintMessage,
+	isPlanCompleteAtTeardown,
 } from "./subagent-runner.ts";
 import { DEFAULTS, resolveSpecialistModel, getSessionModels, setSessionModels, _sessionModels } from "./orchestrator-config.ts";
 import { shortenLabel, truncateLabel } from "../token-saver.ts";
@@ -1384,5 +1385,32 @@ describe("runner fixes — segmented results, head+tail truncation, non-dropping
 			expect(prompt, `${name} must forbid "delivered earlier" back-references`).toContain("delivered earlier");
 			expect(prompt, `${name} must instruct restating deliverables inline`).toMatch(/restate ALL deliverables/i);
 		}
+	});
+});
+
+// ─── DEFECT 2: final plan state at the budget-force site ─────────────────────
+// The teardown `finally` auto-closes ALL remaining plan steps AFTER the mid-run
+// guard snapshots. A run whose only auto-closed step is the trailing final one
+// (live probe: delegation-2026-10-17T17-45-01-631Z-scout.json, plan 3/3, final
+// step autoCompleted:true) completed cleanly and must count as complete.
+describe("isPlanCompleteAtTeardown (DEFECT 2: teardown auto-close accounting)", () => {
+	const done = { completed: true, autoCompleted: false };
+	const auto = { completed: true, autoCompleted: true };
+
+	it("no plan → complete (the stepsIncomplete predicate is false without a plan)", () => {
+		expect(isPlanCompleteAtTeardown(false, -1, [])).toBe(true);
+	});
+
+	it("worker explicitly advanced every step → complete", () => {
+		expect(isPlanCompleteAtTeardown(true, 3, [done, done, done])).toBe(true);
+	});
+
+	it("ONLY the trailing final step auto-closed at teardown → complete (live probe shape)", () => {
+		expect(isPlanCompleteAtTeardown(true, 2, [done, done, auto])).toBe(true);
+	});
+
+	it("two or more auto-closed steps → incomplete (the worker stopped mid-plan)", () => {
+		expect(isPlanCompleteAtTeardown(true, 1, [done, auto, auto])).toBe(false);
+		expect(isPlanCompleteAtTeardown(true, 0, [auto, auto, auto])).toBe(false);
 	});
 });

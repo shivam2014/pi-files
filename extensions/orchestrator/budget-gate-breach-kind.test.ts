@@ -25,6 +25,7 @@ import {
 	ESCALATION_MAX_EXPLORATION_CALLS,
 	ESCALATION_MAX_FILES_TOUCHED,
 	ESCALATION_MAX_TURNS,
+	normalizeDifficultyValue,
 } from "./specialists.ts";
 
 vi.mock("./orchestrator-theme.ts", () => ({
@@ -365,5 +366,45 @@ describe("PART A — breach-kind forcing (end-to-end)", () => {
 		expect(result.output).toContain("⚠ [Budget Gate]");
 		expect(result.output).not.toContain("forcing recommend=investigate");
 		expect(extractDifficultyFromOutput(result.output)!.recommend).toBe("none");
+	});
+});
+
+// ── DEFECT 1 (live probe): annotated difficulty values must not defeat the ──
+// ── strict-equality decisions — real workers write annotated prose.        ──
+describe("normalizeDifficultyValue SSOT + annotated values (DEFECT 1)", () => {
+	it("extracts the leading enum token from annotated real-world values", () => {
+		expect(normalizeDifficultyValue("pass — each count asserted")).toBe("pass");
+		expect(normalizeDifficultyValue("low (task fully specified)")).toBe("low");
+		expect(normalizeDifficultyValue("none — task complete")).toBe("none");
+		expect(normalizeDifficultyValue("investigate — spawn scout")).toBe("investigate");
+		expect(normalizeDifficultyValue("FAIL — lint broke")).toBe("fail");
+		expect(normalizeDifficultyValue("`pass`")).toBe("pass");
+		expect(normalizeDifficultyValue("  High  ")).toBe("high");
+		expect(normalizeDifficultyValue("")).toBe("");
+		expect(normalizeDifficultyValue(undefined)).toBe("");
+	});
+
+	it("gross breach + ANNOTATED clean values does NOT force (live-probe shape)", () => {
+		expect(shouldForceRecommend(
+			"substantive",
+			{ verification: "pass — each count asserted", uncertainty: "low — task fully specified", recommend: "none — task complete" },
+			true,
+		)).toBe(false);
+	});
+
+	it("annotated verification=fail still forces (gross and turns-only)", () => {
+		expect(shouldForceRecommend("substantive", { verification: "fail — tests red", uncertainty: "low — ok" }, true)).toBe(true);
+		expect(shouldForceRecommend("turns-only", { verification: "FAIL — lint broke", uncertainty: "low — ok" })).toBe(true);
+		expect(shouldForceRecommend("turns-only", { verification: "pass — ok", uncertainty: "High — guessing" })).toBe(true);
+	});
+
+	it("annotated recommend=investigate still corroborates a non-gross substantive breach", () => {
+		expect(shouldForceRecommend("substantive", { verification: "pass — ok", uncertainty: "low — ok", recommend: "investigate — spawn scout" })).toBe(true);
+		expect(shouldForceRecommend("substantive", { verification: "pass — ok", uncertainty: "low — ok", recommend: "none — done" })).toBe(false);
+	});
+
+	it("gross breach + annotated non-clean values still forces", () => {
+		expect(shouldForceRecommend("substantive", { verification: "fail — red", uncertainty: "low — ok" }, true)).toBe(true);
+		expect(shouldForceRecommend("substantive", { verification: "pass — ok", uncertainty: "medium — unsure" }, true)).toBe(true);
 	});
 });

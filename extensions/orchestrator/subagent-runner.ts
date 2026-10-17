@@ -28,7 +28,7 @@ import type { Specialist, SubagentContext, Substep, DelegateControllerContext, D
 import { resolveSpecialistModel, DEFAULTS, getSessionModels } from "./orchestrator-config.ts";
 import { getLastOrchestratorModel } from "./orchestrator-model-state.ts";
 import type { Scope } from "./scope-manager.ts";
-import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS, ESCALATION_MAX_EXPLORATION_CALLS, ESCALATION_MAX_FILES_TOUCHED, ESCALATION_MAX_TURNS, resolveDelegationBudget } from "./specialists.ts";
+import { buildSkillSection, canUseBash, hasGitTools, DELIVERABLE_MARKERS, ESCALATION_MAX_EXPLORATION_CALLS, ESCALATION_MAX_FILES_TOUCHED, ESCALATION_MAX_TURNS, resolveDelegationBudget, normalizeDifficultyValue } from "./specialists.ts";
 import { extractDifficultyFromOutput, type DifficultySignal } from "./delegate-pipeline.ts";
 import {
 	ActivityFeed,
@@ -385,8 +385,12 @@ export function shouldForceRecommend(
 ): boolean {
 	if (breachKind === "none") return false;
 	if (breachKind === "files-only") return false;
-	const verification = (difficulty?.verification ?? "").toLowerCase();
-	const uncertainty = (difficulty?.uncertainty ?? "").toLowerCase();
+	// DEFECT 1 (live probe): compare the NORMALIZED enum token, not the raw value —
+	// real workers annotate it ("pass — each count asserted…"), and strict equality
+	// on the prose silently defeated every branch below. SSOT:
+	// normalizeDifficultyValue in specialists.ts.
+	const verification = normalizeDifficultyValue(difficulty?.verification);
+	const uncertainty = normalizeDifficultyValue(difficulty?.uncertainty);
 	if (grossBreach) {
 		// A gross breach no longer forces when the FINAL [Difficulty] block explicitly
 		// reports a clean, unambiguous run (verification=pass AND uncertainty=low).
@@ -394,7 +398,7 @@ export function shouldForceRecommend(
 		return !(verification === "pass" && uncertainty === "low");
 	}
 	if (breachKind === "substantive") {
-		const recommend = (difficulty?.recommend ?? "").toLowerCase();
+		const recommend = normalizeDifficultyValue(difficulty?.recommend);
 		return verification === "fail" || uncertainty === "high" || recommend === "investigate";
 	}
 	// turns-only: force only on a self-admitted hard signal.
@@ -624,6 +628,31 @@ export function isCleanCompleteStop(
 	output: string,
 ): boolean {
 	return lastStopReason === "stop" && !stepsIncomplete && hasDeliverableMarkers(output);
+}
+
+/**
+ * DEFECT 2: plan completeness evaluated at the budget-force site (AFTER the
+ * teardown auto-close in `finally`). The mid-run guard snapshots
+ * (`stepsIncomplete` in the completion block and in the stall recompute) are
+ * captured BEFORE that teardown closes the remaining steps, so a live run whose
+ * final plan step is completed only by the teardown (probe:
+ * delegation-2026-10-17T17-45-01-631Z-scout.json — final step
+ * `autoCompleted:true`, endTime ≈ run end) reads incomplete there even though
+ * the run finished cleanly.
+ *
+ * Semantics: the teardown closes ALL remaining steps in one loop. Exactly ONE
+ * auto-closed step means the worker finished every plan step but never called
+ * advanceStep for the trailing final one — still complete. Two or more mean the
+ * worker stopped mid-plan → incomplete, so non-clean runs still force.
+ */
+export function isPlanCompleteAtTeardown(
+	planParsed: boolean,
+	currentStep: number,
+	steps: ReadonlyArray<{ autoCompleted?: boolean }>,
+): boolean {
+	if (!planParsed) return true;
+	if (currentStep >= steps.length) return true; // worker advanced every step explicitly
+	return steps.filter(s => s.autoCompleted).length <= 1;
 }
 
 // ── Graduated intervention (HEALTHY → DEGRADED → STALLED) ──────────────────────
@@ -2027,11 +2056,24 @@ export class SubagentRunner {
 				// have its difficulty signal rewritten by the gate — the breach is reported
 				// as informational context instead ("run completed; budget note only").
 				// Non-clean completions keep the forcing rule exactly as-is.
-				const force = !runCleanCompleteStop && shouldForceRecommend(budgetBreachKind, finalDifficulty, grossBreach);
+				//
+				// DEFECT 2: evaluate that at the FORCE SITE from FINAL run state. The
+				// `runCleanCompleteStop` latch is captured mid-run from a `stepsIncomplete`
+				// computed even earlier; the `finally` teardown auto-closes the worker's
+				// remaining plan steps AFTER both, so a run whose final plan step closed at
+				// teardown (live probe: final step autoCompleted:true, endTime ≈ run end) read
+				// as incomplete there and got forced despite a clean "stop" + delivered
+				// report. The latch is kept as the union so a run already judged clean mid-run
+				// never regresses if a segment boundary splits a marker.
+				const finalPlanComplete = isPlanCompleteAtTeardown(feed.planParsed, feed.currentStep, feed.steps);
+				const finalCleanCompleteStop = finalStatus === "completed" && !stallTerminated
+					&& isCleanCompleteStop(lastStopReason, !finalPlanComplete, finalSegment);
+				const cleanCompleteStop = runCleanCompleteStop || finalCleanCompleteStop;
+				const force = !cleanCompleteStop && shouldForceRecommend(budgetBreachKind, finalDifficulty, grossBreach);
 				// FIX 3(a): build the banner from the FINAL totals (all breached axes; the
 				// gross axis/axes named as the trigger), not the stale first-latched reason.
 				// FIX 3(c): a turns-only breach forces nothing — suppress its banner.
-				const gateBanner = buildBudgetGateBanner(finalBudget, { force, grossBreach, informational: runCleanCompleteStop }, resolvedBudget.maxFiles, resolvedBudget);
+				const gateBanner = buildBudgetGateBanner(finalBudget, { force, grossBreach, informational: cleanCompleteStop }, resolvedBudget.maxFiles, resolvedBudget);
 				if (shouldShowBudgetBanner(finalBudget.breachKind)) {
 					finalOutput = `${gateBanner}\n\n${finalOutput}`;
 				} else {
