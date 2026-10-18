@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "version": 1,
+    "description": "Coding task set for the pi orchestrator vs single-agent baseline eval. Each task seeds a fresh scratch dir from evals/fixtures/<id>/ and is graded by evals/checks/<id>.mjs (exit 0 = pass). Tasks are ordered trivial -> hard.",
+    "difficultyScale": ["trivial", "easy", "medium", "hard"]
+  },
+  "tasks": [
+    {
+      "id": "t1-hello",
+      "difficulty": "trivial",
+      "prompt": "Create a file named hello.txt in the current working directory containing exactly the text: hi (no trailing newline, no extra characters). Then stop.",
+      "check": "t1-hello.mjs"
+    },
+    {
+      "id": "t2-fizzbuzz",
+      "difficulty": "easy",
+      "prompt": "In the current working directory there is fizzbuzz.js with an unimplemented fizzbuzz(n) export. Implement fizzbuzz(n) so it returns an array of length n where element i (1-indexed) is 'Fizz' if divisible by 3, 'Buzz' if divisible by 5, 'FizzBuzz' if divisible by both, otherwise the number as a string. Keep the existing export signature. Verify with node before finishing.",
+      "check": "t2-fizzbuzz.mjs"
+    },
+    {
+      "id": "t3-range-bug",
+      "difficulty": "easy",
+      "prompt": "The file range.js has a bug: range(start, end) should return an inclusive array of integers from start to end (e.g. range(1,5) => [1,2,3,4,5]). It currently drops the final element. Fix the bug. If start > end, return an empty array. Keep the export signature.",
+      "check": "t3-range-bug.mjs"
+    },
+    {
+      "id": "t4-add-tests",
+      "difficulty": "medium",
+      "prompt": "The file calc.js exports add(a,b) and sub(a,b), both already implemented correctly. Write a test file named calc.test.js using node:test and node:assert that covers BOTH add and sub, including negative numbers and zero. The suite must pass when run with `node --test`. Do not modify calc.js.",
+      "check": "t4-add-tests.mjs"
+    },
+    {
+      "id": "t5-csv",
+      "difficulty": "medium",
+      "prompt": "Implement parseCSV(text) in csv.js (currently a stub that throws). It must parse a CSV string into an array of arrays of strings (rows of fields). Requirements: comma is the delimiter; fields may be double-quoted; inside a quoted field a comma is literal and a doubled quote (\"\") means a literal quote character; rows are separated by \\n. Ignore a single trailing newline. An empty input string \"\" must return [[\"\"]] (one row containing one empty field). Support the existing export.",
+      "check": "t5-csv.mjs"
+    },
+    {
+      "id": "t6-dedupe-perf",
+      "difficulty": "hard",
+      "prompt": "dedupe.js exports dedupe(arr) which currently removes duplicates in O(n^2) time using Array.prototype.indexOf. Rewrite dedupe so it is O(n) on average while preserving the first-occurrence order and the existing behaviour (it removes duplicate primitive values, keeping the first). It must process an array of 200000 integers in well under 300 ms. Keep the export.",
+      "check": "t6-dedupe-perf.mjs"
+    },
+    {
+      "id": "t7-refactor-multifile",
+      "difficulty": "hard",
+      "prompt": "a.js and b.js each contain a duplicated formatName(first, last) helper with identical behaviour (trim the parts, capitalise the first letter of each, join with a single space; empty parts are skipped). Extract the shared helper into a new module util.js and have both a.js and b.js import it, keeping their existing exports (formatFromA, formatFromB) and behaviour identical. Do not change observable behaviour.",
+      "check": "t7-refactor-multifile.mjs"
+    },
+    {
+      "id": "t8-router",
+      "difficulty": "hard",
+      "prompt": "Implement a tiny HTTP-style path router in router.js. Export createRouter() returning an object with: add(method, pattern, handler) and match(method, path). pattern supports static segments and :param segments (e.g. /users/:id/posts/:postId). match returns { handler, params } when a route matches, or null when nothing matches. Params are URL-decoded. When several routes match, the earliest added route wins. Method comparison is case-insensitive. Keep the existing createRouter export.",
+      "check": "t8-router.mjs"
+    }
+  ]
+}

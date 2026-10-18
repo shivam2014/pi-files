@@ -5,6 +5,8 @@ import { styledSymbol, formatDuration as thFormatDuration, partialStrikethrough,
 import type { PlanStep, StepKind, SessionContext, LoopUntilConfig, LoopUntilState, LoopIteration, LoopUntilStepInput, PlanStepSetupEntry } from "./types.ts";
 import type { ActivityFeedState, Step, Substep } from "./types.ts";
 import { renderActivityFeed } from "./activity-feed.ts";
+import { footerWidth, toFooterLines } from "./footer-text.ts";
+import { createFooterWidget, type FooterWidgetComponent } from "./footer-widget.ts";
 import { resetSpinner } from "./spinner-state.ts";
 import { registerChannel, unregisterChannel } from "./render-scheduler.ts";
 
@@ -65,6 +67,18 @@ const MAX_TIMELINE_FRAMES = 500;
 const WIDGET_KEY = "orchestrator-status";
 const BUDGET = 9;
 
+/**
+ * The plan widget is installed through the COMPONENT-FACTORY form of `setWidget`
+ * (`(tui, theme) => Component & { dispose?(): void }`), never the string-array
+ * form. The array form wraps every row in pi-tui's `Text`, which early-returns
+ * ZERO rows for whitespace-only text — so a panel padded to BUDGET rows still
+ * collapsed to its content height, and pi-tui vacated the missing rows
+ * erase-only (Warp keeps those glyphs). The factory path adds the component
+ * directly, so its `render(width)` output IS the frame (see footer-widget.ts).
+ */
+type FooterWidgetFactory = (tui: unknown, theme: unknown) => FooterWidgetComponent;
+type SetWidgetFn = (key: string, content: string[] | FooterWidgetFactory | undefined, options?: unknown) => void;
+
 /** Monotonic id source for render-scheduler channel keys (one per panel lifecycle). */
 let _planChannelSeq = 0;
 
@@ -78,8 +92,9 @@ export class PlanPanel {
 	private _sessionId: string | null = null;
 	private _activeDelegations: number = 0;
 	private planState: { goal: string; steps: PlanStep[]; startTime: number; sessionId: string; completed?: boolean } | null = null;
-	private _setWidget: ((key: string, content: string[] | undefined) => void) | null = null;
+	private _setWidget: SetWidgetFn | null = null;
 	private _lastWidgetContent: string[] | null = null;
+	private _footerWidget: FooterWidgetComponent | null = null;
 	private _spinnerChannel: string | null = null;
 	private _cleared: boolean = false;
 
@@ -442,14 +457,36 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 
 	private _renderWidget(): void {
 		if (!this._setWidget || this._cleared) return;
-		const lines = this.renderPlanLines();
+		// FOOTER BOUNDARY. Every emitted row is control-stripped, width-truncated and
+		// padded to EXACTLY BUDGET rows, so the widget height is the same on every
+		// render regardless of content. A shrinking widget left vacated rows that the
+		// TUI only erased (`\x1b[2K`) and Warp does not invalidate cells on erase-only
+		// writes — that is the ghost/doubled-text artifact this closes. Well-formed SGR
+		// styling (the red rule, dim/bold spans) is preserved; cursor moves, OSC
+		// payloads, stray control chars and truncated escapes (`\x1b[3`) are not.
+		const lines = toFooterLines(this.renderPlanLines().join("\n"), {
+			maxLines: BUDGET,
+			width: footerWidth(),
+			keepSgr: true,
+		});
 		if (this._lastWidgetContent && this._lastWidgetContent.length === lines.length) {
 			let same = true;
 			for (let i = 0; i < lines.length; i++) { if (this._lastWidgetContent[i] !== lines[i]) { same = false; break; } }
 			if (same) return;
 		}
 		this._lastWidgetContent = lines;
-		this._setWidget(WIDGET_KEY, lines);
+		// Component factory, NOT the string-array path: the array path hands each row
+		// to `new Text(row, 1, 0)`, whose whitespace-only early-return renders the pad
+		// rows as ZERO rows — the panel would shrink back to content height and the
+		// erase-only vacate path would re-open.
+		if (!this._footerWidget) {
+			this._footerWidget = createFooterWidget(() => this._lastWidgetContent ?? [], () => footerWidth(), BUDGET);
+		}
+		const widget = this._footerWidget;
+		// Signal the (stateless) component, then re-set the widget so pi-tui repaints
+		// this frame — the same repaint trigger the array path provided.
+		widget.invalidate();
+		this._setWidget(WIDGET_KEY, () => widget);
 	}
 
   /**
@@ -614,8 +651,12 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			startTime: (sameGoal && !previousComplete && prevStart) ? prevStart : Date.now(),
 			completed: false,
 		};
-		this._setWidget = ctx.ui.setWidget.bind(ctx.ui);
+		// `ctx.ui.setWidget` (pi's ExtensionContext) accepts the component-factory
+		// form; the local structural type only declares the array form, so widen once
+		// here instead of at every call site.
+		this._setWidget = ctx.ui.setWidget.bind(ctx.ui) as unknown as SetWidgetFn;
 		this._lastWidgetContent = null;
+		this._footerWidget = null;
 		this.startPlanTimer();
 		this._renderWidget();
 		this.savePlanState();
@@ -641,6 +682,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 			this.stopPlanTimer();
 			this._setWidget = null;
 			this._lastWidgetContent = null;
+			this._footerWidget = null;
 			clearDelegationWidgets(ctx);
 			this.savePlanState();
 			return;
@@ -653,6 +695,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 		this.stopPlanTimer();
 		this.planState = null;
 		this._lastWidgetContent = null;
+		this._footerWidget = null;
 		clearDelegationWidgets(ctx);
 		if (sessionId) _removeSession(sessionId);
 	}
@@ -669,6 +712,7 @@ private selectCollapsedSteps(lines: string[], budget: number): string[] {
 	discard(): void {
 		this._cleared = true;
 		this._setWidget = null;
+		this._footerWidget = null;
 		this.stopPlanTimer();
 		if (this._timeline.length > 0) this.dumpTimelineToDisk();
 		this.planState = null;

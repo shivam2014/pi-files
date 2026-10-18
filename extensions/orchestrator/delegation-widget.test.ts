@@ -380,14 +380,27 @@ describe("isTerminal", () => {
 describe("controller/panel lifecycle integration", () => {
 	const sessionIds: string[] = [];
 
+	/** The delegations surface is installed as a constant-height FACTORY, never as
+	 * a `string[]` (a shrinking surface leaves erase-only vacated rows — see
+	 * footer-ghost-loop.test.ts). Render it the way pi does to read its rows. */
+	type WidgetContent =
+		| string[]
+		| ((tui: unknown, theme: unknown) => { render(width: number): string[] })
+		| undefined;
+	function widgetLines(content: WidgetContent): string[] {
+		if (Array.isArray(content)) return content;
+		if (typeof content === "function") return content({}, {}).render(80);
+		return [];
+	}
+
 	function makeCtx() {
 		const sessionId = `it-session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 		sessionIds.push(sessionId);
-		const calls: { key: string; content: string[] | undefined }[] = [];
+		const calls: { key: string; content: WidgetContent }[] = [];
 		const ctx = {
 			cwd: `/tmp/orchestrator-delegation-it-${sessionId}`,
 			sessionManager: { sessionId },
-			ui: { setWidget: (key: string, content: string[] | undefined) => calls.push({ key, content }) },
+			ui: { setWidget: (key: string, content: WidgetContent) => calls.push({ key, content }) },
 		};
 		return { ctx, calls };
 	}
@@ -409,15 +422,15 @@ describe("controller/panel lifecycle integration", () => {
 
 		let last = [...calls].reverse().find((c) => c.key === DELEGATION_KEY);
 		expect(last).toBeDefined();
-		expect(last!.content!.join("\n")).toContain("⟳ Coder: fix auth");
-		expect(last!.content!.join("\n")).toContain("reading files");
+		expect(widgetLines(last!.content).join("\n")).toContain("⟳ Coder: fix auth");
+		expect(widgetLines(last!.content).join("\n")).toContain("reading files");
 
 		// Aggregate plan path untouched — still renders under its own key.
 		expect(calls.some((c) => c.key === WIDGET_KEY)).toBe(true);
 
 		completeDelegationWidget(ctx, "d1");
 		last = [...calls].reverse().find((c) => c.key === DELEGATION_KEY);
-		expect(last!.content!.join("\n")).toContain("✓ Coder: fix auth");
+		expect(widgetLines(last!.content).join("\n")).toContain("✓ Coder: fix auth");
 	});
 
 	it("remove and clear hide the widget (undefined content); remove is idempotent", () => {

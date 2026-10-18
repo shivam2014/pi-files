@@ -13,6 +13,7 @@
 import type { ActivityFeedState, Step, Substep, PlanStep } from "./types.ts";
 import { styledSymbol, statusIcon, formatDuration as thFormatDuration, formatTokens, getTheme, partialStrikethrough, SYMBOLS } from "./orchestrator-theme.ts";
 import { capAtWordBoundary } from "./delegate-pipeline.ts";
+import { stripControl, truncateToWidth } from "./footer-text.ts";
 
 /**
  * Max chars for the rendered goal line. Kept >= AUTO_PLAN_LABEL_MAX (60) so the
@@ -132,7 +133,7 @@ export function addSubstep(state: ActivityFeedState, label: string, toolCallId?:
 	}
 	if (currentStep < 0 || steps.length === 0) {
 		if (steps.length === 0) {
-			const stepLabel = label.length > MAX_LABEL_CHARS ? label.slice(0, MAX_LABEL_CHARS - 3) + "..." : label;
+			const stepLabel = truncateToWidth(stripControl(label), MAX_LABEL_CHARS);
 			return {
 				...state,
 				steps: [{ label: stepLabel, completed: false, substeps: [{ label, completed: false, startTime: Date.now(), ...(toolCallId ? { toolCallId } : {}) }], startTime: Date.now() }],
@@ -416,28 +417,38 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 		case "read":
 			return `Reading ${normalizePath(input?.path || input?.file_path)}`;
 		case "bash":
-			const cmd = (input?.command || "").trim();
+			// Strip escapes BEFORE any cut: a char-count cut on raw text can bisect an
+			// escape sequence and the half-escape is what wedges the footer renderer.
+			const cmd = stripControl((input?.command || "").trim());
 			const firstWord = cmd.split(/\s+/)[0] || "";
 			const trivialCmds = ["cd", "pwd", "echo", "clear", "which", "type"];
 			if (trivialCmds.includes(firstWord)) {
-				return `${firstWord} ${cmd.slice(firstWord.length).trim().slice(0, 80)}`;
+				return `${firstWord} ${truncateToWidth(cmd.slice(firstWord.length).trim(), 80)}`;
 			}
-			return `bash: ${cmd.slice(0, 100)}`;
-		case "grep":
-			return input?.pattern ? `Searching: ${input.pattern}` : "Searching";
-		case "find":
-			return input?.pattern ? `Finding: ${input.pattern}` : "Finding";
-		case "edit":
+			return `bash: ${truncateToWidth(cmd, 100)}`;
+		case "grep": {
+			// W6: sanitise + width-cut like the neighbouring cases — a char-count cut on
+			// raw tool input can bisect an escape sequence and wedge the row.
+			const pattern = stripControl(input?.pattern || "");
+			return pattern ? `Searching: ${truncateToWidth(pattern, 100)}` : "Searching";
+		}
+		case "find": {
+			const pattern = stripControl(input?.pattern || "");
+			return pattern ? `Finding: ${truncateToWidth(pattern, 100)}` : "Finding";
+		}
+		case "edit": {
 			const edits = input?.edits;
-			return `Editing ${normalizePath(input?.path)}${Array.isArray(edits) ? ` (${edits.length} changes)` : ""}`;
-		case "write":
+			return `Editing ${truncateToWidth(stripControl(normalizePath(input?.path)), 100)}${Array.isArray(edits) ? ` (${edits.length} changes)` : ""}`;
+		}
+		case "write": {
 			const content = input?.content || "";
-			return `Writing ${normalizePath(input?.path)} (${(typeof content === "string" ? content.length : 0)} chars)`;
+			return `Writing ${truncateToWidth(stripControl(normalizePath(input?.path)), 100)} (${(typeof content === "string" ? content.length : 0)} chars)`;
+		}
 		case "ls":
-			return `Listing ${normalizePath(input?.path)}`;
+			return `Listing ${truncateToWidth(stripControl(normalizePath(input?.path)), 100)}`;
 		case "ask_orchestrator": {
-			const q = (input?.question || "").trim();
-			return `Clarify: ${q ? q.slice(0, 80) + (q.length > 80 ? "..." : "") : "question"}`;
+			const q = stripControl((input?.question || "").trim());
+			return `Clarify: ${q ? truncateToWidth(q, 80, { ellipsis: "..." }) : "question"}`;
 		}
 		case "lint": {
 			// The registered `lint` tool takes `files` (string | string[]); accept a
@@ -458,7 +469,7 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 				? input.queries.filter((q: unknown) => typeof q === "string")
 				: typeof input?.query === "string" ? [input.query] : [];
 			if (queries.length === 0) return "Search web: (no query)";
-			const first = queries[0].slice(0, 200);
+			const first = truncateToWidth(stripControl(queries[0]), 200);
 			const label = `Search web: "${first}"`;
 			return queries.length > 1 ? `${label} (${queries.length} queries)` : label;
 		}
@@ -467,7 +478,7 @@ export function toolCallToSubstep(toolName: string, input: any): string {
 				? input.urls.filter((u: unknown) => typeof u === "string")
 				: typeof input?.url === "string" ? [input.url] : [];
 			if (urls.length === 0) return "Fetch URL: (no URL)";
-			const first = urls[0].replace(/^https?:\/\//, "").slice(0, 200);
+			const first = truncateToWidth(stripControl(urls[0].replace(/^https?:\/\//, "")), 200);
 			const label = `Fetch URL: ${first}`;
 			return urls.length > 1 ? `${label} (+${urls.length - 1} more)` : label;
 		}
@@ -827,7 +838,11 @@ export function snapshotFeedRender(feed: ActivityFeedState): string {
 // Compression — applied to ALL subagent output before returning to main agent
 // ============================================================================
 
-const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+// Stepped-up superset of the old CSI-only pattern: it also drops OSC payloads
+// (`ESC ] … BEL/ST`), 2-char escapes and TRUNCATED escapes (a cut such as
+// "\x1b[3" that bisected a sequence). A compressed string handed on to the
+// footer therefore can never carry a half-escape.
+const ANSI_RE = /\x1b\][\s\S]*?(?:\x07|\x1b\\|$)|\x1b\[[0-9;?<>=!]*[ -/]*[@-~]|\x1b\[[0-9;?<>=!]*|\x1b[@-Z\\-_0-9A-Za-z]/g;
 
 export function compressOutput(output: string): string {
 	let result = output;

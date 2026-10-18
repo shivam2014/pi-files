@@ -17,6 +17,19 @@ import { statusIcon, getTheme, formatTokens, formatDuration } from "./orchestrat
 
 import { Text } from "@earendil-works/pi-tui";
 import { executeDelegate } from "./delegate-controller.ts";
+import { footerWidth, toFooterLines } from "./footer-text.ts";
+
+/** Max rows a delegate block may occupy in the transcript/footer. */
+const DELEGATE_FOOTER_MAX_LINES = 10;
+
+/**
+ * Footer boundary for delegate blocks: no raw escape can reach the renderer,
+ * no row can exceed the terminal width, and the row count is fixed (so a longer
+ * previous block can never leave glyph tails behind in Warp).
+ */
+function renderFooterBlock(text: string, maxLines: number): string {
+	return toFooterLines(text, { maxLines, width: footerWidth(), keepSgr: true }).join("\n");
+}
 
 /** Monotonic id source for render-scheduler channel keys (one per delegation). */
 let _delegateChannelSeq = 0;
@@ -207,7 +220,15 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 					: [liveTokens, liveElapsed].filter(Boolean).join(" ");
 				const separator = feedHasCounterLine ? "\n" : " ";
 				const displayLiveSuffix = liveSuffix ? `${separator}${theme.fg("dim", liveSuffix)}` : "";
-				comp.setText(prefix ? `${prefix}\n${feedText}${displayLiveSuffix}` : `${feedText}${displayLiveSuffix}`);
+				// Stable height while the delegation runs: always exactly
+				// DELEGATE_FOOTER_MAX_LINES rows, padded, never shorter than the previous
+				// frame (a shorter frame would vacate rows that Warp leaves painted).
+				comp.setText(
+					renderFooterBlock(
+						prefix ? `${prefix}\n${feedText}${displayLiveSuffix}` : `${feedText}${displayLiveSuffix}`,
+						DELEGATE_FOOTER_MAX_LINES,
+					),
+				);
 			} else {
 				// Build suffix with token and elapsed info
 				const tokenParts: string[] = [];
@@ -219,7 +240,15 @@ export function registerDelegateTool(pi: ExtensionAPI): void {
 				const displaySuffix = suffix ? ` ${theme.fg("dim", suffix)}` : "";
 
 				const feedText = state.lastFeedText || text || (statusIcon("completed") + " done" + displaySuffix);
-				comp.setText(prefix ? `${prefix}\n${theme.fg("success", feedText)}` : theme.fg("success", feedText));
+				const completedText = prefix ? `${prefix}\n${theme.fg("success", feedText)}` : theme.fg("success", feedText);
+				// CONSTANT height (C2): the completed frame emits the SAME
+				// DELEGATE_FOOTER_MAX_LINES rows as the live frame. Shrinking a 10-row live
+				// block to a 3-row result vacated 7 rows, and pi-tui clears vacated rows
+				// erase-only (`"\r\n\x1b[2K"` in tui.js) — a shrink is never a full repaint,
+				// so Warp keeps the previous glyphs. `toFooterLines` space-fills the pad
+				// rows; a multi-line `Text` renders those pad rows (its whitespace-only
+				// early-return only fires when the WHOLE text is blank).
+				comp.setText(renderFooterBlock(completedText, DELEGATE_FOOTER_MAX_LINES));
 			}
 
 			return comp;

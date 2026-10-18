@@ -16,6 +16,7 @@ import { formatDuration } from "./ui-utils.ts";
 import { styledSymbol, statusIcon, getTheme, formatTokens } from "./orchestrator-theme.ts";
 import { matchesKey, Key } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { stripControl } from "./footer-text.ts";
 
 // Local interface subset — avoids module resolution issues with pi-tui imports.
 // At runtime these are the same types from @earendil-works/pi-tui.
@@ -512,6 +513,14 @@ export function showPeek(
         },
     ).catch((err: unknown) => {
         console.error('[peek] overlay error:', err);
+        // A failed mount can still have registered an overlay handle. Hide it BEFORE
+        // clearing state: hide() removes the overlay from pi-tui's overlay stack,
+        // while clearPeekState() only drops our reference. A handle merely dropped
+        // stays in the stack, is painted forever, and suppresses pi-tui's
+        // clear-on-shrink full redraw (i.e. it is exactly the stale-frame bug).
+        if (_peekHandle) {
+            try { _peekHandle.hide(); } catch (hideErr: unknown) { console.error('[peek] hide after mount error:', hideErr); }
+        }
         clearPeekState();
     });
 }
@@ -526,7 +535,10 @@ export function showPeek(
 export function updatePeek(text: string): void {
     if (!_peekHandle || _peekHandle.isHidden()) return;
 
-    const newLines = text.split("\n");
+    // Strip control codes at the ingest boundary: overlay content lines come from
+    // subagent output, so a raw escape could otherwise be painted into the overlay
+    // (and a later char-count cut could bisect it).
+    const newLines = stripControl(text).split("\n");
     _peekLines.push(...newLines);
 
     // Cap at MAX_PEEK_LINES — trim oldest
@@ -545,7 +557,7 @@ export function updatePeek(text: string): void {
  */
 export function pushStreamingText(text: string): void {
     if (!_peekHandle || _peekHandle.isHidden()) return;
-    _streamingBuffer += text;
+    _streamingBuffer += stripControl(text);
     
     // GC: trim oldest text when buffer exceeds max
     if (_streamingBuffer.length > STREAMING_BUFFER_MAX) {
@@ -576,10 +588,16 @@ export function hidePeek(): void {
         clearTimeout(_pushRenderTimer);
         _pushRenderTimer = null;
     }
-    if (_peekHandle) {
-        try { _peekHandle.hide(); } catch (err: unknown) { console.error('[peek] hide error:', err); }
+    const handle = _peekHandle;
+    try {
+        handle?.hide();
+    } catch (err: unknown) {
+        console.error('[peek] hide error:', err);
+    } finally {
+        // Always release state, even when hide() throws — a stale handle left in the
+        // overlay stack is what keeps a dead overlay painted over the footer.
+        clearPeekState();
     }
-    clearPeekState();
 }
 
 /**

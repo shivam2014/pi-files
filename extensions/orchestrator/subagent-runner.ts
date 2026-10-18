@@ -53,6 +53,7 @@ import { classifyProviderFailure, PROVIDER_FAILURE_KIND } from "./outcome.ts";
 import { setViewerSession, updatePeek, setViewerOutput, setViewerError, clearViewerState, pushStreamingText, setViewerTokens } from "./peek-overlay.ts";
 import { gitReadTool, ghTool } from "./scout-tools.ts";
 import { createReadSkillTool } from "./read-skill-tool.ts";
+import { stripControl, truncateToWidth } from "./footer-text.ts";
 
 /**
  * Timer-based progress emission coalescer.
@@ -813,7 +814,7 @@ export function createAskOrchestratorTool(
 			});
 
 			const answer = await resolve(params.question, params.context);
-			const answerPreview = answer.slice(0, 80);
+			const answerPreview = truncateToWidth(stripControl(answer), 80);
 
 			feed.completeActiveSubstepWithLabel(`${CLARIFIED_PREFIX} ${answerPreview}`, answerPreview, false, true);
 			const text = feed.render(specialistName);
@@ -1343,7 +1344,7 @@ export class SubagentRunner {
 
 			// Register feed for peek overlay
 			const peekAbort = new AbortController();
-			setViewerSession(session, task.length > 60 ? task.slice(0, 57) + "..." : task);
+			setViewerSession(session, truncateToWidth(stripControl(task), 60));
 			signal?.addEventListener("abort", () => peekAbort.abort(), { once: true });
 			peekAbort.signal.addEventListener("abort", () => { try { session.abort(); } catch {} }, { once: true });
 
@@ -1485,7 +1486,7 @@ export class SubagentRunner {
 						const lintContent = typeof lintMsg.content === "string"
 							? lintMsg.content
 							: JSON.stringify(lintMsg.content ?? "");
-						feed.addSubstep(lintContent.slice(0, 80));
+						feed.addSubstep(truncateToWidth(stripControl(lintContent), 80));
 						feed.completeLastSubstep();
 						output += "\n" + lintContent + "\n";
 						config.onUpdate?.({
@@ -1542,7 +1543,7 @@ export class SubagentRunner {
 									const partialText = coercePartialResultText(event.partialResult);
 									if (partialText != null) {
 										const preview = partialText.length > 80
-											? partialText.slice(0, 77) + "..."
+											? truncateToWidth(stripControl(partialText), 80, { ellipsis: "..." })
 											: partialText;
 										feed.updateActiveSubstepOutput(preview);
 										const newActiveStep = feed.steps[feed.currentStep];
@@ -1576,7 +1577,7 @@ export class SubagentRunner {
 						if (rawResult != null) {
 							const raw = typeof rawResult === "string" ? rawResult : JSON.stringify(rawResult);
 							stripped = compressOutput(raw);
-							outputPreview = stripped.length > 80 ? stripped.slice(0, 77) + "..." : stripped || undefined;
+							outputPreview = truncateToWidth(stripControl(stripped), 80, { ellipsis: "..." }) || undefined;
 						}
 					} catch {}
 					// Append tool result to output for complete delegation results
