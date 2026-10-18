@@ -140,13 +140,18 @@ export default function (pi: ExtensionAPI) {
       content.push({ type: "image", data: img.data, mimeType: img.mimeType });
     }
 
+    // opencode-go's withOpenCodeSessionHeader() only adds x-opencode-session when
+    // options.sessionId is set; otherwise every call 400s with MissingSessionID.
+    let sessionId: string | undefined;
+    try { sessionId = ctx.sessionManager.getSessionId() || undefined; } catch { /* no session id */ }
+
     const response = await complete(
       model,
       {
         systemPrompt: config.instructions ?? DEFAULT_INSTRUCTIONS,
         messages: [{ role: "user", content, timestamp: Date.now() }],
       },
-      { apiKey: auth.apiKey, headers: auth.headers, signal },
+      { apiKey: auth.apiKey, headers: auth.headers, signal, ...(sessionId ? { sessionId } : {}) },
     );
 
     if (response.stopReason === "aborted") return "[Aborted]";
