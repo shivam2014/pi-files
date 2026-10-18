@@ -8,9 +8,9 @@
  * Both can diff a fresh render against a preserved prompt-dump capture
  * (`--diff <capture>.json`). These tests pin that behaviour against three
  * independent live captures checked in as fixtures:
- *   scripts/__fixtures__/orchestrator-prompt.json        (26,578 chars, cwd /private/tmp)
- *   scripts/__fixtures__/orchestrator-prompt-resume.json (31,926 chars, cwd …/Documents/Resume)
- *   scripts/__fixtures__/coder-prompt.json               (12,725 chars, cwd …/Documents/Resume)
+ *   scripts/__fixtures__/orchestrator-prompt.json        (27,594 chars, cwd /private/tmp)
+ *   scripts/__fixtures__/orchestrator-prompt-resume.json (32,942 chars, cwd …/Documents/Resume)
+ *   scripts/__fixtures__/coder-prompt.json               (13,741 chars, cwd …/Documents/Resume)
  *   scripts/__fixtures__/coder-scope.json                (the delegation scope the coder pass ran with)
  *
  * The fixtures hold prompt TEXT ONLY — no messages, no conversation, no payload.
