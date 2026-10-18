@@ -145,7 +145,28 @@ export async function renderSpecialist(opts, name, preloaded) {
 			restore();
 		}
 	}
-	const extensionPaths = discoveredPaths.filter((p) => path.normalize(p) !== path.join(EXT_DIR, "index.ts"));
+	// Discovery always walks the LIVE agent dir (`new pi.DefaultResourceLoader({ agentDir: agentDir() })`), so when
+	// EXT_DIR is a repo copy the `path.join(EXT_DIR, "index.ts")` comparison never matches there and the
+	// orchestrator extension leaks into the render. Exclude it by RESOLVED IDENTITY instead: the agent-dir path
+	// (plus its realpath) alongside the EXT_DIR comparison, which stays for installs where the two agree.
+	const orchestratorEntries = new Set(
+		[path.join(EXT_DIR, "index.ts"), path.join(agentDir(), "extensions", "orchestrator", "index.ts")].flatMap((p) => {
+			try {
+				return [path.normalize(p), path.normalize(fs.realpathSync(p))];
+			} catch {
+				return [path.normalize(p)];
+			}
+		}),
+	);
+	const extensionPaths = discoveredPaths.filter((p) => {
+		let real = p;
+		try {
+			real = fs.realpathSync(p);
+		} catch {
+			/* keep the literal discovered path */
+		}
+		return !orchestratorEntries.has(path.normalize(p)) && !orchestratorEntries.has(path.normalize(real));
+	});
 
 	const loader = new pi.DefaultResourceLoader({
 		cwd: opts.cwd,

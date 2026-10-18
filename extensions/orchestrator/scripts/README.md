@@ -121,11 +121,11 @@ return early while that flag is set.
   on a 0.80.x-only machine by design.
 - **The extension tree is always the live one.** Discovery walks `<agentDir>/extensions` (`~/.pi/agent`),
   so a render launched from a *copy* of this tree (e.g. the `~/pi-files` backup) still loads the live
-  extensions, and the `orchestrator/index.ts` exclusion — which compares against `<EXT_DIR>/index.ts` —
-  misses: the orchestrator extension then loads and appends its own `## Session-Start Protocol` /
-  `## Capabilities` sections (32,513 chars vs the captured 14,229). Run the gate from the live tree until
-  the exclusion is made path-independent (resolve `<agentDir>/extensions/orchestrator` by identity, not by
-  one hard-coded path).
+  extensions — that is fine: the orchestrator exclusion is path-independent and runs by **resolved
+  agent-dir identity** (`path.normalize` + realpath of `<agentDir>/extensions/orchestrator/index.ts`,
+  alongside the `<EXT_DIR>/index.ts` comparison), so the live orchestrator no longer leaks its
+  `## Session-Start Protocol` / `## Capabilities` sections into a copy-tree render (32,513 chars vs the
+  captured 14,229) and the gate is green from both trees.
 - **Per-cwd.** The prompt embeds cwd-dependent content (context files, skills, pi docs paths).
 - **Fixtures hold prompt text only.** A capture's `payload`/`messages` (the whole conversation) must never
   be copied into `__fixtures__`; the gate fixtures carry `cwd`/`piVersion`/`note`/`systemPrompt` and nothing else.
