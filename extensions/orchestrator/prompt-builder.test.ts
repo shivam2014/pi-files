@@ -40,7 +40,7 @@ vi.mock('./specialists', () => ({
 			suggestedSkills: ['agents-md-writer'],
 		},
 	},
-	COMMUNICATION_INSTRUCTION: '\n\nRespond with completeness but without verbosity (caveman). All technical substance stay. Only fluff die.\n\n## Auto-Clarity\nDrop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.\n',
+	COMMUNICATION_INSTRUCTION: '\n<communication>\nADHD-shaped output, every turn. All substance, no filler.\n1. Lead with the next action — first line is something the reader can do now, not context or plan.\n9. Cap lists at 5 items — split longer ones into "do now" and "later".\n\n## Auto-Clarity\nDrop the shape for security warnings, destructive ops, multi-step ambiguity, or a user request for explanation. Full sentences there; resume after.\n\n## Boundaries\nCode, commits, PRs and docs are written normally. "stop adhd mode" / "normal mode" reverts the style.\n</communication>',
 }));
 
 import { buildOrchestratorPrompt } from './prompt-builder';
@@ -139,12 +139,13 @@ describe("appendix slimming (#39)", () => {
 		vi.resetAllMocks();
 	});
 
-	it("includes caveman mode in orchestrator prompt", () => {
+	it("includes the adhd-shaped output contract in orchestrator prompt", () => {
 		const basePrompt = "Some base instructions without Orchestrator header";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
-		// The appendix now includes the new caveman mode text
-		expect(systemPrompt).toContain("Respond with completeness but without verbosity (caveman)");
-		expect(systemPrompt).toContain("Drop caveman for: security warnings");
+		// The appendix carries the communication contract verbatim
+		expect(systemPrompt).toContain("ADHD-shaped output, every turn");
+		expect(systemPrompt).toContain("Drop the shape for security warnings");
+		expect(systemPrompt).not.toContain("caveman");
 	});
 
 	it("keeps orchestrator-specific sections", () => {
@@ -161,7 +162,7 @@ describe("appendix slimming (#39)", () => {
 	it("reduces appendix character count compared to before", () => {
 		const basePrompt = "Some base instructions";
 		const { systemPrompt } = buildOrchestratorPrompt({ basePrompt, fusionEnabled: false });
-		// The appended part should be reasonable (< 7500 chars — includes routing table + caveman instruction + orchestrator intro)
+		// The appended part should be reasonable (< 7500 chars — includes routing table + communication contract + orchestrator intro)
 		const appendix = systemPrompt.replace(basePrompt, "").trim();
 		expect(appendix.length).toBeLessThan(13500);
 	});

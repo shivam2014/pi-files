@@ -48,9 +48,20 @@ describe("renderSpecialistPrompt — AC2: string-inclusion assertions", () => {
 		expect(prompt).toContain("## Audit");
 	});
 
-	it("prompt contains terse instruction", () => {
+	it("prompt contains the communication contract", () => {
 		const prompt = renderSpecialistPrompt("reviewer");
-		expect(prompt).toContain("caveman");
+		expect(prompt).toContain("ADHD-shaped output");
+	});
+
+	it("communication contract appears once and carries no caveman wording", () => {
+		for (const name of listSpecialists()) {
+			const prompt = renderSpecialistPrompt(name);
+			expect(prompt.split("<communication>").length - 1, `${name}: one contract copy`).toBe(1);
+			expect(prompt.split("</communication>").length - 1, `${name}: one closing tag`).toBe(1);
+			for (const stale of ["caveman", "fluff die", "Respond terse"]) {
+				expect(prompt, `${name}: stale wording "${stale}"`).not.toContain(stale);
+			}
+		}
 	});
 });
 

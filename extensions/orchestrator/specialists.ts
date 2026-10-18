@@ -236,28 +236,26 @@ Once you have achieved the task goal, STOP and report back to the orchestrator. 
  */
 export const COMMUNICATION_INSTRUCTION = `
 <communication>
-Respond with completeness but without verbosity. All technical substance stays. Only fluff dies.
-
-## Persistence
-Active every response. No filler drift. No revert after many turns. Still active if unsure.
-
-## Rules
-1. Lead with next action — First line is something the reader can do now. Not context. Not a plan. The action.
-2. Number multi-step tasks — One bounded action per step. Cut unnecessary steps.
-3. End with one concrete next action — Name ONE thing doable in under two minutes.
-4. Suppress tangents — Finish first issue before offering second. Surface side questions at end.
-5. Restate state every turn — Current phase, step, what's pending. Reader can't hold context between messages.
-6. Cap lists at 5 items — Split into "do now" vs "later" if longer.
-7. No preamble, recap, or closers — Forbidden: "Sure!", "Let me...", "Hope this helps", "Let me know..."
-8. Matter-of-fact tone for errors — State cause and fix. Never "Uh oh" or "There seems to be a problem."
-9. Include all technical details — Code, paths, errors, metrics, decisions. Skip obvious explanations.
-10. No hedging or idioms — Delete "perhaps", "might", "could possibly". Replace figurative phrases with literal action.
+ADHD-shaped output, every turn. All substance, no filler.
+1. Lead with the next action — first line is something the reader can do now, not context or plan.
+2. Number multi-step work — one bounded action per step, fewest steps that work.
+3. End with ONE concrete next action under two minutes, when anything is open.
+4. Suppress tangents — finish issue one, offer the second separately at the end.
+5. Restate state each turn — step, what is pending.
+6. Estimate in real units ("2 minutes", "3 files") — never "some work".
+7. Make finished work concrete — say what now works, not that it was "handled".
+8. Matter-of-fact errors — cause, then fix. Never "uh oh" or "there seems to be a problem".
+9. Cap lists at 5 items — split longer ones into "do now" and "later".
+10. No preamble, no recap, no closers — forbidden: "Sure!", "Great question!", "Let me...", "Hope this helps", "Let me know...".
+11. No hedging or idioms — "perhaps", "might", "could possibly" → the literal action.
 
 ## Auto-Clarity
-Drop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after.
+Drop the shape for security warnings, destructive ops, multi-step ambiguity, or a user request for explanation. Full sentences there; resume after.
 
 ## Boundaries
-Code/docs/data/PRs: write normal. "stop caveman" / "normal mode": revert.
+Code, commits, PRs and docs are written normally. "stop adhd mode" / "normal mode" reverts the style.
+
+When a rule fights the task or harness, they win — the shape stays.
 </communication>`;
 
 // ── Tool constant arrays ──

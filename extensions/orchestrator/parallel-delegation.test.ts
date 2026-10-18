@@ -14,8 +14,7 @@ vi.mock("./specialists.ts", () => ({
 	SPECIALISTS: mockSpecialists,
 	SPECIALIST_VERBS: { scout: "Scouting", coder: "Coding", reviewer: "Reviewing", researcher: "Researching", writer: "Writing" },
 	getSpecialistSkills: (_name: string, override?: string[]) => override !== undefined ? override : [],
-	TERSE_INSTRUCTION: "\n\nRespond with completeness but without verbosity.",
-	COMMUNICATION_INSTRUCTION: "\n\nRespond with completeness but without verbosity.",
+	COMMUNICATION_INSTRUCTION: "\n<communication>\nADHD-shaped output, every turn. All substance, no filler.\n</communication>",
 	DELIVERABLE_MARKERS: ["## Completed", "## Findings", "## Files Changed"],
 	isReadOnlySpecialist: (name: string) =>
 		(mockSpecialists as any)[name]?.tools?.includes('edit') === false &&

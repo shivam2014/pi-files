@@ -5,7 +5,7 @@
  * Compression happens BEFORE output enters context, so cached prefix stays clean.
  *
  * 5 compression layers:
- *   1. Terse Mode — instructs model to reply without filler
+ *   1. Output Style — always-on ADHD-shaped reply rules (no toggle)
  *   2. Read Dedup — fingerprint files, return stub on re-read
  *   3. ANSI Strip — remove color codes from tool output
  *   4. Per-Tool Budgets — aggressive line caps per tool
@@ -14,7 +14,7 @@
  * Install:
  *   ln -s "$(pwd)/token-saver.ts" ~/.pi/agent/extensions/token-saver.ts
  *
- * Configure via /caveman command.
+ * Commands: /tokenstats, /rtk. The output style is always on — no toggle.
  */
 
 import { createHash } from "node:crypto";
@@ -50,26 +50,38 @@ const BUDGETS: Record<string, ToolBudget> = {
 };
 
 // ============================================================================
-// Terse mode prompts
+// Output style — single always-on constant, no toggle
 // ============================================================================
 
-const TERSE_PROMPTS: Record<string, string> = {
-	lite: `\n\n## Reply Style: Terse
-- Use fragments, not sentences
-- No filler: "Great question!", "Sure!", "Let me help"
-- No hedging: "I think", "It seems", "You might want to"
-- Bullet points > paragraphs
-- Code > explanation`,
+/**
+ * ADHD-shaped output rules. Appended to any system prompt that does not already carry the
+ * `<communication>` contract (the orchestrator builder and every specialist prompt embed it), so a
+ * session gets exactly ONE copy. Mirrors orchestrator/specialists.ts COMMUNICATION_INSTRUCTION.
+ */
+export const ADHD_PROMPT = `
 
-	full: `\n\nRespond terse like smart caveman. All technical substance stay. Only fluff die.\n\n## Persistence\nACTIVE EVERY RESPONSE. No revert after many turns. No filler drift. Still active if unsure.\n\n## Rules\nDrop: articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/of course/happy to), hedging. Fragments OK. Short synonyms (big not extensive, fix not "implement a solution for"). Technical terms exact. Code blocks unchanged. Errors quoted exact.\nPattern: [thing] [action] [reason]. [next step].\n\nBad: "Sure! I\'d be happy to help you with that..."\nGood: "Bug in auth middleware. Token expiry check use \'<\' not \'<=\'. Fix:"\n\n## Auto-Clarity\nDrop caveman for: security warnings, destructive ops, multi-step ambiguity, user asks clarify. Resume after clear part done.\n\n## Boundaries\nCode/commits/PRs: write normal. "stop caveman" or "normal mode": revert. Think short too. No verbose CoT.`,
+<communication>
+ADHD-shaped output, every turn. All substance, no filler.
+1. Lead with the next action — first line is something the reader can do now, not context or plan.
+2. Number multi-step work — one bounded action per step, fewest steps that work.
+3. End with ONE concrete next action under two minutes, when anything is open.
+4. Suppress tangents — finish issue one, offer the second separately at the end.
+5. Restate state each turn — step, what is pending.
+6. Estimate in real units ("2 minutes", "3 files") — never "some work".
+7. Make finished work concrete — say what now works, not that it was "handled".
+8. Matter-of-fact errors — cause, then fix. Never "uh oh" or "there seems to be a problem".
+9. Cap lists at 5 items — split longer ones into "do now" and "later".
+10. No preamble, no recap, no closers — forbidden: "Sure!", "Great question!", "Let me...", "Hope this helps", "Let me know...".
+11. No hedging or idioms — "perhaps", "might", "could possibly" → the literal action.
 
-	ultra: `\n\n## Reply Style: Ultra-Minimal
-- Maximum 3 words per line
-- No sentences at all
-- Only: facts, paths, code
-- Example: "src/auth.ts:42 — null check missing"
-- If longer than 10 words, it's too long`,
-};
+## Auto-Clarity
+Drop the shape for security warnings, destructive ops, multi-step ambiguity, or a user request for explanation. Full sentences there; resume after.
+
+## Boundaries
+Code, commits, PRs and docs are written normally. "stop adhd mode" / "normal mode" reverts the style.
+
+When a rule fights the task or harness, they win — the shape stays.
+</communication>`;
 
 // ============================================================================
 // Read dedup
@@ -106,7 +118,7 @@ export function truncateLabel(s: string, max = 58): string {
 }
 
 /**
- * Shorten a task description into a terse caveman label.
+ * Shorten a task description into a compact label.
  * Rules: no filler, no articles, abbreviate, max ~40 chars.
  */
 export function shortenLabel(label: string): string {
@@ -187,13 +199,6 @@ function compress(content: string, budget: ToolBudget): string {
 }
 
 // ============================================================================
-// State
-// ============================================================================
-
-let currentTerseMode: "off" | "lite" | "full" | "ultra" = "full";
-let enabled = true;
-
-// ============================================================================
 // RTK (Rust Token Killer) integration
 // ============================================================================
 
@@ -256,14 +261,12 @@ export default function (pi: ExtensionAPI) {
 		// Check orchestrator here (after runtime is initialized, not during load)
 		checkOrchestrator(pi);
 
-		if (enabled) {
-			const rtkStatus = rtkAvailable ? "rtk ✓" : "";
-			pi.sendMessage({
-				customType: "token-saver-status",
-				content: `[token-saver] Active — ${currentTerseMode} mode${rtkStatus ? ` (${rtkStatus})` : ""}`,
-				display: true,
-			}, { deliverAs: "steer" });
-		}
+		const rtkStatus = rtkAvailable ? "rtk ✓" : "";
+		pi.sendMessage({
+			customType: "token-saver-status",
+			content: `[token-saver] Active — adhd-shaped output style${rtkStatus ? ` (${rtkStatus})` : ""}`,
+			display: true,
+		}, { deliverAs: "steer" });
 
 		// Register bash tool here if orchestrator is not present
 		if (!hasOrchestrator) {
@@ -279,7 +282,7 @@ export default function (pi: ExtensionAPI) {
 				...originalBash,
 				async execute(toolCallId, params, signal, onUpdate, ctx) {
 					const result = await originalBash.execute(toolCallId, params, signal, onUpdate);
-					if (!enabled || !result.content) return result;
+					if (!result.content) return result;
 
 					const text = result.content
 						.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -296,17 +299,14 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	// ── 1. Terse Mode — inject into system prompt ─────────────────────────
+	// ── 1. Output Style — always on, injected into the system prompt ───────
 
 	pi.on("before_agent_start", async (event) => {
-		if (!enabled) return;
 		// One authoritative copy: the orchestrator builder and every specialist prompt
 		// already embed the communication contract (`<communication>…</communication>`),
-		// which covers the same terse rules. Skip the tone block when it is present.
+		// which carries the same style rules. Skip the tone block when it is present.
 		if (event.systemPrompt.includes("<communication>")) return;
-		const prompt = TERSE_PROMPTS[currentTerseMode];
-		if (!prompt) return;
-		return { systemPrompt: event.systemPrompt + prompt };
+		return { systemPrompt: event.systemPrompt + ADHD_PROMPT };
 	});
 
 	const cwd = process.cwd();
@@ -328,37 +328,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── bash: RTK rewrite + ANSI strip + tail 80 lines ──
 	// Orchestrator registers its own bash with destructive-op interception.
-	// Only register our compressed bash when orchestrator is NOT present.
-	//
-	// LEGACY: Original unconditional bash registration below.
-	// Conflicts with orchestrator/registration-hub.ts registerBashWrapper().
-	// Kept for reference if orchestrator is removed.
-	//
-	// const originalBash = createBashTool(cwd, {
-	// 	spawnHook: ({ command, cwd, env }) => {
-	// 		if (!rtkEnabled || !rtkAvailable) return { command, cwd, env };
-	// 		if (command.startsWith("rtk ")) return { command, cwd, env };
-	// 		const rewritten = rtkRewrite(command);
-	// 		return { command: rewritten ?? command, cwd, env };
-	// 	},
-	// });
-	// pi.registerTool({
-	// 	...originalBash,
-	// 	async execute(toolCallId, params, signal, onUpdate, ctx) {
-	// 		const result = await originalBash.execute(toolCallId, params, signal, onUpdate);
-	// 		if (!enabled || !result.content) return result;
-	// 		const text = result.content
-	// 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-	// 			.map((c) => c.text)
-	// 			.join("\n");
-	// 		const budget = BUDGETS.bash;
-	// 		const compressed = compress(text, budget);
-	// 		if (compressed === text) return result;
-	// 		return { ...result, content: [{ type: "text", text: compressed }] };
-	// 	},
-	// });
-	//
-	// END LEGACY
+	// Only register our compressed bash when orchestrator is NOT present (see session_start above).
 
 	// ── 2. Override built-in tools with compressed versions ───────────────
 	// Compression happens BEFORE output enters context = cache-safe
@@ -371,7 +341,7 @@ export default function (pi: ExtensionAPI) {
 		...originalRead,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const result = await originalRead.execute(toolCallId, params, signal, onUpdate);
-			if (!enabled || !result.content) return result;
+			if (!result.content) return result;
 
 			const text = result.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -407,7 +377,7 @@ export default function (pi: ExtensionAPI) {
 		...originalGrep,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const result = await originalGrep.execute(toolCallId, params, signal, onUpdate);
-			if (!enabled || !result.content) return result;
+			if (!result.content) return result;
 
 			const text = result.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -427,7 +397,7 @@ export default function (pi: ExtensionAPI) {
 		...originalFind,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const result = await originalFind.execute(toolCallId, params, signal, onUpdate);
-			if (!enabled || !result.content) return result;
+			if (!result.content) return result;
 
 			const text = result.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -447,7 +417,7 @@ export default function (pi: ExtensionAPI) {
 		...originalLs,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const result = await originalLs.execute(toolCallId, params, signal, onUpdate);
-			if (!enabled || !result.content) return result;
+			if (!result.content) return result;
 
 			const text = result.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -463,35 +433,6 @@ export default function (pi: ExtensionAPI) {
 
 	// ── 3. Commands ──────────────────────────────────────────────────────
 
-	pi.registerCommand("caveman", {
-		description: "Toggle token compression (lite/full/ultra/off)",
-		handler: async (args, ctx) => {
-			const raw = args.trim().toLowerCase();
-
-			if (!raw || !["lite", "full", "ultra", "off"].includes(raw)) {
-				ctx.ui.notify(
-					`Token saver: ${enabled ? "ON" : "OFF"} (${currentTerseMode})\n` +
-					`Usage: /caveman [lite|full|ultra|off]\n\n` +
-					`Budgets: bash:80 read:300 grep:120`,
-					"info",
-				);
-				return;
-			}
-
-			const level = raw as "lite" | "full" | "ultra" | "off";
-
-			if (level === "off") {
-				enabled = false;
-				currentTerseMode = "off";
-				ctx.ui.notify("Token saver: OFF", "info");
-			} else {
-				enabled = true;
-				currentTerseMode = level;
-				ctx.ui.notify(`Token saver: ${level}`, "info");
-			}
-		},
-	});
-
 	pi.registerCommand("tokenstats", {
 		description: "Show dedup stats and compression info",
 		handler: async (_args, ctx) => {
@@ -501,8 +442,7 @@ export default function (pi: ExtensionAPI) {
 			const lines = [
 				`Read dedup: ${entries.length} files tracked`,
 				`Total bytes fingerprinted: ${(totalSaved / 1024).toFixed(1)}KB`,
-				`Mode: ${currentTerseMode}`,
-				`Enabled: ${enabled}`,
+				"Style: adhd-shaped output (always on)",
 				"",
 				"Tool budgets:",
 				...Object.entries(BUDGETS).map(

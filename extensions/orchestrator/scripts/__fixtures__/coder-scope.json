@@ -1,13 +1,12 @@
 {
   "filesToModify": [],
   "filesToCreate": [
-    "/tmp/orch-coder-capture.txt"
+    "/tmp/adhd-coder-capture.txt"
   ],
-  "directories": [
-    "/tmp"
-  ],
-  "maxFiles": 3,
-  "requiresApprovalBeyondScope": true,
-  "changeType": "multi-file",
-  "maxLinesPerFile": 400
+  "directories": [],
+  "maxFiles": 1,
+  "requiresApprovalBeyondScope": false,
+  "changeType": "single-file",
+  "maxLinesPerFile": 5,
+  "boundaries": "Only create /tmp/adhd-coder-capture.txt; touch nothing else"
 }
