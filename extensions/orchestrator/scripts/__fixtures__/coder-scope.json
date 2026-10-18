@@ -1,19 +1,13 @@
 {
-  "filesToModify": [
-    "/Users/shivam94/.pi/agent/extensions/orchestrator/scripts/build-system-prompt.mjs",
-    "/Users/shivam94/.pi/agent/extensions/orchestrator/scripts/README.md",
-    "/Users/shivam94/.pi/agent/extensions/orchestrator/build-system-prompt.test.ts",
-    "/Users/shivam94/.pi/agent/extensions/prompt-dump.ts"
+  "filesToModify": [],
+  "filesToCreate": [
+    "/tmp/orch-coder-capture.txt"
   ],
-  "filesToCreate": [],
   "directories": [
-    "/Users/shivam94/.pi/agent/extensions/orchestrator",
-    "/Users/shivam94/.pi/agent/extensions",
-    "/tmp/orchestrator-debug"
+    "/tmp"
   ],
-  "maxFiles": 10,
+  "maxFiles": 3,
   "requiresApprovalBeyondScope": true,
   "changeType": "multi-file",
-  "maxLinesPerFile": 400,
-  "boundaries": "Do NOT modify anything under any node_modules/ or the pi dist trees. No sync, no commit. No files at the TOP LEVEL of ~/.pi/agent/extensions/. Keep prompt-dump.ts changes minimal and additive."
+  "maxLinesPerFile": 400
 }

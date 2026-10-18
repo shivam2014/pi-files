@@ -56,14 +56,23 @@ function tmpFile(name: string, content: string): string {
 }
 
 describe("argument parsing", () => {
-	it("defaults to process.cwd() with all flags off", () => {
+	it("defaults to process.cwd() with the chain render on (the live text)", () => {
 		const opts = parseArgs([]);
 		expect(opts.cwd).toBe(process.cwd());
 		expect(opts.json).toBe(false);
 		expect(opts.baseOnly).toBe(false);
 		expect(opts.skillsOnly).toBe(false);
-		expect(opts.chain).toBe(false);
+		expect(opts.chain).toBe(true);
 		expect(opts.diff).toBe(null);
+	});
+
+	it("--no-chain opts out of the chain render; --chain stays an accepted no-op alias", () => {
+		expect(parseArgs([]).chain).toBe(true);
+		expect(parseArgs(["--chain"]).chain).toBe(true);
+		expect(parseArgs(["--no-chain"]).chain).toBe(false);
+		// last flag wins, so an explicit --chain can undo --no-chain in a scripted command line
+		expect(parseArgs(["--chain", "--no-chain"]).chain).toBe(false);
+		expect(parseArgs(["--no-chain", "--chain"]).chain).toBe(true);
 	});
 
 	it("parses --cwd (space and = forms) and resolves it", () => {
@@ -179,7 +188,8 @@ describe("CLI", () => {
 		const res = runCli(["--cwd", EXT_DIR, "--json"]);
 		expect(res.status).toBe(0);
 		const record = JSON.parse(res.stdout);
-		expect(Object.keys(record).sort()).toEqual(["baseCharCount", "charCount", "cwd", "lineCount", "piVersion", "source", "systemPrompt"]);
+		expect(Object.keys(record).sort()).toEqual(["baseCharCount", "charCount", "cwd", "lineCount", "mode", "piVersion", "source", "systemPrompt"]);
+		expect(record.mode).toBe("chain");
 		expect(record.piVersion).toMatch(/^\d+\.\d+\.\d+/);
 		expect(record.cwd).toBe(EXT_DIR);
 		expect(record.charCount).toBe(record.systemPrompt.length);
@@ -188,6 +198,30 @@ describe("CLI", () => {
 		expect(record.charCount).toBeGreaterThan(record.baseCharCount);
 		expect(record.systemPrompt).toContain("You are an orchestrator");
 		expect(record.source).toMatch(/^pi-(sdk|sdk:idle-session|buildSystemPrompt)|^pi-sdk/);
+	});
+
+	it("the default render IS the chain render (what the provider receives)", { timeout: TIMEOUT }, () => {
+		const byDefault = runCli(["--cwd", EXT_DIR]);
+		const explicit = runCli(["--cwd", EXT_DIR, "--chain"]);
+		expect(byDefault.status).toBe(0);
+		expect(explicit.status).toBe(0);
+		expect(byDefault.stdout).toBe(explicit.stdout);
+		expect(byDefault.stdout).toContain("You are an orchestrator");
+	});
+
+	it("--no-chain prints the shorter extension-only composition, not the live text", { timeout: TIMEOUT }, () => {
+		const compose = runCli(["--cwd", EXT_DIR, "--no-chain"]);
+		const byDefault = runCli(["--cwd", EXT_DIR]);
+		expect(compose.status).toBe(0);
+		expect(compose.stdout).toContain("You are an orchestrator");
+		expect(compose.stdout).not.toBe(byDefault.stdout);
+		expect(compose.stdout.length).toBeLessThan(byDefault.stdout.length);
+	});
+
+	it("--json names the mode that produced the record", { timeout: TIMEOUT }, () => {
+		expect(JSON.parse(runCli(["--cwd", EXT_DIR, "--json"]).stdout).mode).toBe("chain");
+		expect(JSON.parse(runCli(["--cwd", EXT_DIR, "--no-chain", "--json"]).stdout).mode).toBe("compose");
+		expect(JSON.parse(runCli(["--cwd", EXT_DIR, "--base-only", "--json"]).stdout).mode).toBe("base");
 	});
 
 	it("--base-only prints pi's base prompt, never the orchestrator prompt", { timeout: TIMEOUT }, () => {

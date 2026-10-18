@@ -5,11 +5,12 @@ orchestrator prompt and `render-specialist-prompt.mjs` for any named specialist/
 a cwd (and, for specialists, the delegation scope + budget), each reproduces — with no provider call —
 the exact system text pi would send, by bundling the extension's TypeScript at **runtime** (esbuild, temp
 dir) and driving the real pi SDK code paths, so a render always describes the *live* codebase rather than
-a snapshot. `--chain` additionally runs the loaded extension chain's `before_agent_start` rewrites, which
-is what makes the orchestrator render byte-identical to a live capture (other installed extensions, e.g.
-token-saver's tone block, are part of the real text). `--diff CAPTURE.json` compares a render with a
-preserved `prompt-dump` capture and exits 1 on any difference, which is how the `__fixtures__` gate keeps
-the oracle honest; regenerate a fixture by copying a fresh `systemPrompt` into
+a snapshot. **The default output IS what the provider receives**: it runs the loaded extension chain's
+`before_agent_start` rewrites, so other extensions (e.g. token-saver's tone block) are part of the text —
+which is what makes the render byte-identical to a live capture. `--no-chain` drops to this extension's
+own composition instead. `--diff CAPTURE.json` compares a render with a preserved `prompt-dump` capture
+and exits 1 on any difference, which is how the `__fixtures__` gate keeps the oracle honest; regenerate a
+fixture by copying a fresh `systemPrompt` into
 `{ cwd, piVersion, note, systemPrompt }` — never the whole payload, which carries the conversation.
 
 Ground truth for both is the `prompt-dump` extension (`../prompt-dump.ts`), which captures the
@@ -18,17 +19,22 @@ payload's leading system text. Diff a render against a capture with `--diff`.
 ## build-system-prompt.mjs
 
 ```bash
-node scripts/build-system-prompt.mjs [--cwd DIR] [--json] [--base-only] [--skills] [--chain] [--diff CAPTURE.json] [--pi-root DIR] [--allow-old-pi]
+node scripts/build-system-prompt.mjs [--cwd DIR] [--json] [--base-only] [--skills] [--no-chain] [--diff CAPTURE.json] [--pi-root DIR] [--allow-old-pi]
 ```
 
-- default: final orchestrator prompt to stdout, verbatim
+- default (**= what the provider receives**): the full extension-chain render, verbatim
 - `--cwd DIR`: render for DIR (default `process.cwd()`)
-- `--json`: `{ cwd, piVersion, charCount, lineCount, systemPrompt, baseCharCount, source }`
+- `--json`: `{ mode, cwd, piVersion, charCount, lineCount, systemPrompt, baseCharCount, source }`
+  (`mode`: `chain` | `compose` | `base` — which render produced the record)
 - `--base-only`: pi's base prompt only (starts `You are an expert coding assistant`)
 - `--skills`: the discovered skill names (one per line)
-- `--chain`: the loaded extension chain (`emitBeforeAgentStart`) — byte-for-byte the live-run text,
-  including other installed extensions' prompt rewrites (e.g. token-saver's tone block)
-- `--diff FILE`: unified diff against a capture's `systemPrompt`; exit 1 if they differ
+- `--no-chain`: **the extension's own composition, without other extensions' rewrites**
+  (`buildOrchestratorPrompt()`: stub tool registry, fusion flag from `orchestrator.yml`). Shorter than
+  the live text — never use it to answer "what does pi receive?"
+- `--chain`: explicit alias for the default chain render (`emitBeforeAgentStart`) — a no-op kept so
+  existing invocations keep working unchanged; the committed `__fixtures__` gate passes it explicitly
+- `--diff FILE`: unified diff against a capture's `systemPrompt`; exit 1 if they differ (diff the
+  default render — with `--no-chain` you are diffing the composition, and the script says so on stderr)
 - `--pi-root DIR`: render from this pi install (must be `@earendil-works/pi-coding-agent`)
 - `--allow-old-pi`: permit rendering from a pi older than `1.3.0` (blocked by default)
 
@@ -47,7 +53,7 @@ Render from the pi the RUNNING session uses, not from a stale copy:
 A candidate older than `MIN_PI_VERSION` (`1.3.0`) is **skipped** when a newer one exists and the
 skipped paths/versions are printed to stderr (`[skipped older: pi 0.80.3 at …]`). If every candidate
 is old, resolution **fails with exit 2 naming each path/version**; `--allow-old-pi` overrides.
-Rendering from the 0.80.3 copy silently produced 38,655 chars vs the live 27,494 — the guard exists
+Rendering from the 0.80.3 copy silently produced 38,655 chars vs the then-live 27,494 — the guard exists
 so that never happens again. Normal mode prints `build-system-prompt: pi <version> (<origin>: <root>)`
 to stderr; `--json` carries `piVersion`.
 
@@ -60,9 +66,9 @@ to stderr; `--json` carries `piVersion`.
    `session.systemPrompt`. pi >= 1.3 has **no `AuthStorage`/`ModelRegistry` session options** and
    `createAgentSession` does not accept `additionalExtensionPaths` (`sdk.js:69-120`) — extensions go
    in through the loader (`resource-loader.js:258`). Legacy (<1.3) installs use the old option shape.
-2. **transform** — `--chain`: `runner.emitBeforeAgentStart({messageType:"print"}, session._baseSystemPromptOptions)`
+2. **transform (default, `--chain`)** — `runner.emitBeforeAgentStart({messageType:"print"}, session._baseSystemPromptOptions)`
    then `buildSystemPrompt(result.systemPromptOptions)` (`runner.js:1121`, forced prompt at
-   `runner.js:1149-1151`). Plain mode: `buildOrchestratorPrompt()` from `../prompt-builder.ts` via an
+   `runner.js:1149-1151`). `--no-chain`: `buildOrchestratorPrompt()` from `../prompt-builder.ts` via an
    esbuild bundle in a temp dir (`node --experimental-strip-types` cannot load it — parameter
    properties in transitive imports).
 3. **skills** — `_baseSystemPromptOptions.skills` unioned with the extension's `resources_discover`
@@ -70,8 +76,8 @@ to stderr; `--json` carries `piVersion`.
 
 ### Known limits
 
-- **Plain mode ≠ live text.** `buildOrchestratorPrompt()` alone: no other extensions' rewrites, stub
-  tool registry, fusion flag from `orchestrator.yml`. Use `--chain` when exact text matters.
+- **`--no-chain` ≠ live text.** `buildOrchestratorPrompt()` alone: no other extensions' rewrites, stub
+  tool registry, fusion flag from `orchestrator.yml`. The default render (and `--chain`) is the live text.
 - **Per-cwd.** The prompt embeds cwd-dependent content (context files, skills, pi docs paths).
 - **Runtime reads.** prompt-builder/specialists are read from disk every run (no snapshot) — diff
   against a real capture in CI if the exact text must not drift.
@@ -125,7 +131,7 @@ return early while that flag is set.
   agent-dir identity** (`path.normalize` + realpath of `<agentDir>/extensions/orchestrator/index.ts`,
   alongside the `<EXT_DIR>/index.ts` comparison), so the live orchestrator no longer leaks its
   `## Session-Start Protocol` / `## Capabilities` sections into a copy-tree render (32,513 chars vs the
-  captured 14,229) and the gate is green from both trees.
+  then-captured 14,229) and the gate is green from both trees.
 - **Per-cwd.** The prompt embeds cwd-dependent content (context files, skills, pi docs paths).
 - **Fixtures hold prompt text only.** A capture's `payload`/`messages` (the whole conversation) must never
   be copied into `__fixtures__`; the gate fixtures carry `cwd`/`piVersion`/`note`/`systemPrompt` and nothing else.
@@ -157,12 +163,13 @@ npx vitest run orchestrator/build-system-prompt.test.ts orchestrator/prompt-dump
 
 | fixture | source | size |
 |---|---|---|
-| `orchestrator-prompt.json` | live orchestrator run, `cwd /private/tmp` | 27,494 chars / 28,306 B |
-| `coder-prompt.json` | live coder specialist run, `cwd …/Documents/Resume` | 14,229 chars / 14,863 B |
-| `coder-scope.json` | the delegation scope that run used (needed for a byte-exact coder render) | 839 B |
+| `orchestrator-prompt.json` | live orchestrator run, `cwd /private/tmp` | 26,578 chars / 27,391 B |
+| `orchestrator-prompt-resume.json` | live orchestrator run, `cwd …/Documents/Resume` | 31,926 chars / 32,970 B |
+| `coder-prompt.json` | live coder specialist run, `cwd …/Documents/Resume` | 12,725 chars / 13,327 B |
+| `coder-scope.json` | the delegation scope that run used (needed for a byte-exact coder render) | 233 B |
 
 `../oracle-gate.test.ts` renders against them and asserts exit 0 (`no differences` for the
-two renderers to still agree with the captures they were built from):
+three renders to still agree with the captures they were built from):
 
 ```bash
 cd ~/.pi/agent/extensions

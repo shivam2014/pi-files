@@ -300,7 +300,14 @@ Pi SDK docs (for reference \u2014 delegate to specialists who can read these):
 
 	let baseWithNewIntro: string;
 	if (oldIntroPattern.test(basePrompt)) {
-		baseWithNewIntro = basePrompt.replace(oldIntroPattern, ORCHESTRATOR_INTRO + "\n\n");
+		// The terminator (`- Word word: …`) matches the first guideline bullet, which
+		// lives INSIDE pi's `<rules>` section — so the consumed span also swallows the
+		// `<rules>` opener, leaving an orphan `</rules>` in the render. Re-emit the
+		// opener when the match ate it, so the section wrapper stays balanced (pi's own
+		// render wraps every non-preamble section: dist/core/system-prompt.js).
+		baseWithNewIntro = basePrompt.replace(oldIntroPattern, (matched) =>
+			ORCHESTRATOR_INTRO + "\n\n" + (matched.includes("<rules>") ? "<rules>\n" : "")
+		);
 	} else if (basePrompt.includes(OLD_INTRO_MARKER)) {
 		// Pattern failed but marker exists \u2014 try simpler replacement (start to first blank line after docs)
 		const simplePattern = new RegExp(`[\\s\\S]*?${OLD_INTRO_MARKER}[\\s\\S]*?\\n\\n`, "m");

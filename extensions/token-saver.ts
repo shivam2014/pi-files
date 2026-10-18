@@ -300,8 +300,10 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		if (!enabled) return;
-		// If orchestrator is active, it handles caveman via specialists.ts COPY C
-		if (event.systemPrompt.includes("## Orchestrator Mode")) return;
+		// One authoritative copy: the orchestrator builder and every specialist prompt
+		// already embed the communication contract (`<communication>…</communication>`),
+		// which covers the same terse rules. Skip the tone block when it is present.
+		if (event.systemPrompt.includes("<communication>")) return;
 		const prompt = TERSE_PROMPTS[currentTerseMode];
 		if (!prompt) return;
 		return { systemPrompt: event.systemPrompt + prompt };

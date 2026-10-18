@@ -4,8 +4,10 @@
 /**
  * build-system-prompt.mjs — render the orchestrator extension's system prompt for a cwd, offline,
  * through real code paths: base = pi SDK idle session systemPrompt + bindExtensions (session_start,
- * resources_discover); transform = the live extension chain (--chain) or buildOrchestratorPrompt()
- * from ../prompt-builder.ts (esbuild bundle in a temp dir).
+ * resources_discover); transform = the live extension chain (the DEFAULT — byte-for-byte what the
+ * provider receives) or, with --no-chain, buildOrchestratorPrompt() from ../prompt-builder.ts
+ * (esbuild bundle in a temp dir) — this extension's own composition, without other extensions'
+ * rewrites.
  * pi-root order: --pi-root → PROMPT_SIM_PI_ROOT → `pi` on PATH → .hermes global → extensions
  * node_modules. A pi older than MIN_PI_VERSION (1.3.0) is skipped (or aborts when forced/all-old)
  * unless --allow-old-pi — 0.80.3 rendered 38,655 chars vs the live 27,494.
@@ -22,10 +24,13 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const EXT_DIR = path.resolve(SCRIPT_DIR, "..");
 const PI_SPEC = "@earendil-works/pi-coding-agent";
 export const MIN_PI_VERSION = "1.3.0";
-const USAGE = `Usage: node scripts/build-system-prompt.mjs [--cwd DIR] [--json] [--base-only] [--skills] [--chain] [--diff CAPTURE.json] [--pi-root DIR] [--allow-old-pi]\n  --cwd DIR       render for DIR (default: process.cwd())\n  --json          emit { cwd, piVersion, charCount, lineCount, systemPrompt, baseCharCount, source }\n  --base-only     print only pi's base prompt (starts "You are an expert coding assistant")\n  --skills        print the discovered skill names (one per line), the input the transform receives\n  --chain         print the full extension-chain result from the idle session (live-run equivalent)\n  --diff FILE     unified diff vs a prompt-dump capture's systemPrompt; exit 1 if they differ\n  --pi-root DIR   render from this pi install (must be ${PI_SPEC})\n  --allow-old-pi  permit rendering from a pi older than ${MIN_PI_VERSION} (blocks by default)\n`;
+const USAGE = `Usage: node scripts/build-system-prompt.mjs [--cwd DIR] [--json] [--base-only] [--skills] [--no-chain] [--diff CAPTURE.json] [--pi-root DIR] [--allow-old-pi]\n  --cwd DIR       render for DIR (default: process.cwd())\n  --json          emit { mode, cwd, piVersion, charCount, lineCount, systemPrompt, baseCharCount, source }\n  --base-only     print only pi's base prompt (starts "You are an expert coding assistant")\n  --skills        print the discovered skill names (one per line), the input the transform receives\n  --no-chain      print only this extension's own composition (buildOrchestratorPrompt) — NOT the live text\n  --chain         the default: full extension-chain result from the idle session (live-run equivalent);\n                  accepted explicitly as a no-op alias\n  --diff FILE     unified diff vs a prompt-dump capture's systemPrompt; exit 1 if they differ\n  --pi-root DIR   render from this pi install (must be ${PI_SPEC})\n  --allow-old-pi  permit rendering from a pi older than ${MIN_PI_VERSION} (blocks by default)\n`;
 export class ResolutionError extends Error {}
 export function parseArgs(argv) {
-	const opts = { cwd: process.cwd(), json: false, baseOnly: false, skillsOnly: false, chain: false, diff: null, piRoot: null, allowOldPi: false, help: false };
+	// chain is the DEFAULT: the chain render is the text the provider actually receives. --no-chain
+	// opts back into the extension-only composition; --chain stays an accepted no-op alias so existing
+	// invocations (the committed gate) keep working unchanged.
+	const opts = { cwd: process.cwd(), json: false, baseOnly: false, skillsOnly: false, chain: true, diff: null, piRoot: null, allowOldPi: false, help: false };
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		const val = (flag) => {
@@ -38,6 +43,7 @@ export function parseArgs(argv) {
 		else if (a === "--base-only") opts.baseOnly = true;
 		else if (a === "--skills") opts.skillsOnly = true;
 		else if (a === "--chain") opts.chain = true;
+		else if (a === "--no-chain") opts.chain = false;
 		else if (a === "--diff" || a.startsWith("--diff=")) opts.diff = path.resolve(val("--diff"));
 		else if (a === "--pi-root" || a.startsWith("--pi-root=")) opts.piRoot = path.resolve(val("--pi-root"));
 		else if (a === "--allow-old-pi") opts.allowOldPi = true;
@@ -294,7 +300,7 @@ export async function render(opts) {
 	const base = await getBasePrompt(piRoot, opts.cwd);
 	const { skills, extra } = mergeSkills(base.skills, modules);
 	const meta = { base, skills, extraSkills: extra, source: base.source, bundleLevel: loaded.level, piVersion: resolved.version, piRoot, piOrigin: resolved.origin, skippedPi: resolved.skipped ?? [] };
-	if (opts.baseOnly) return { ...meta, text: base.text };
+	if (opts.baseOnly) return { ...meta, mode: "base", text: base.text };
 	const checkOrchestrator = (candidate, origin) => {
 		if (typeof candidate !== "string" || !(candidate.includes("You are an orchestrator") || candidate.includes("## Orchestrator Mode"))) {
 			throw new ResolutionError(`${origin} produced no orchestrator prompt — refusing to print the base prompt as the final prompt`);
@@ -303,7 +309,7 @@ export async function render(opts) {
 	};
 	if (opts.chain) {
 		const runner = base.session?._extensionRunner;
-		if (!runner?.emitBeforeAgentStart) throw new ResolutionError("--chain needs the extension-loaded idle session (do not set PROMPT_SIM_NO_EXT/PROMPT_SIM_NO_SDK)");
+		if (!runner?.emitBeforeAgentStart) throw new ResolutionError("the chain render (the default) needs the extension-loaded idle session (do not set PROMPT_SIM_NO_EXT/PROMPT_SIM_NO_SDK)");
 		let chainText;
 		try {
 			if (runner.emitBeforeAgentStart.length >= 2) {
@@ -322,7 +328,7 @@ export async function render(opts) {
 		} catch (err) {
 			throw new ResolutionError(`extension chain failed: ${err?.message ?? err}`);
 		}
-		return { ...meta, text: checkOrchestrator(chainText, "extension chain (emitBeforeAgentStart)") };
+		return { ...meta, mode: "chain", text: checkOrchestrator(chainText, "extension chain (emitBeforeAgentStart)") };
 	}
 	let text;
 	try {
@@ -330,7 +336,7 @@ export async function render(opts) {
 	} catch (err) {
 		throw new ResolutionError(`buildOrchestratorPrompt() failed: ${err?.message ?? err}`);
 	}
-	return { ...meta, text: checkOrchestrator(text, "buildOrchestratorPrompt()") };
+	return { ...meta, mode: "compose", text: checkOrchestrator(text, "buildOrchestratorPrompt()") };
 }
 function runDiff(file, text) {
 	const captured = extractCaptureText(file, fs.readFileSync);
@@ -368,13 +374,14 @@ async function main(argv) {
 		return 0;
 	}
 	if (opts.json) {
-		const record = { cwd: opts.cwd, piVersion: rendered.piVersion, charCount: rendered.text.length, lineCount: rendered.text.split("\n").length, systemPrompt: rendered.text, baseCharCount: rendered.base.text.length, source: rendered.source };
+		const record = { mode: rendered.mode, cwd: opts.cwd, piVersion: rendered.piVersion, charCount: rendered.text.length, lineCount: rendered.text.split("\n").length, systemPrompt: rendered.text, baseCharCount: rendered.base.text.length, source: rendered.source };
 		process.stdout.write(`${JSON.stringify(record, null, 2)}\n`);
 		return 0;
 	}
 	const skippedNote = rendered.skippedPi?.length ? ` [skipped older: ${rendered.skippedPi.map((s) => `pi ${s.version} at ${s.root}`).join("; ")}]` : "";
 	process.stderr.write(`build-system-prompt: pi ${rendered.piVersion ?? "unknown"} (${rendered.piOrigin}: ${rendered.piRoot})${skippedNote}\n`);
 	if (opts.diff) {
+		if (!opts.chain) process.stderr.write("build-system-prompt: --diff with --no-chain compares this extension's own composition, not the live text — drop --no-chain to diff what the provider receives\n");
 		try {
 			return runDiff(opts.diff, rendered.text);
 		} catch (err) {
