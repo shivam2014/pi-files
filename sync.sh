@@ -35,6 +35,7 @@ echo "✅ Skills synced"
 ROOT_SCRIPTS=(
   "tui-smoke.sh"
   "sync.sh"
+  "restore.sh"
   "claim.sh"
   "check-claim.sh"
   "release-claim.sh"
