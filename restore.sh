@@ -32,6 +32,9 @@ EXCLUDES=(
   --exclude='tsconfig.tsbuildinfo'
   --exclude='.DS_Store'
   --exclude='diagnostics/'
+  --exclude='README.md'
+  --exclude='*.README.md'
+  --exclude='.gitignore'
 )
 
 if [ ! -d "$CANON_EXT" ]; then

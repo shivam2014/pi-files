@@ -1,0 +1,9 @@
+#!/bin/sh
+# Block a push when the live tree has changes not yet synced to canon.
+# Install with: git config core.hooksPath .githooks
+if [ -x "$HOME/.pi/sync.sh" ]; then
+  if ! bash "$HOME/.pi/sync.sh" --check; then
+    echo "pre-push: canon is behind live. Run: bash ~/.pi/sync.sh, then commit and push." >&2
+    exit 1
+  fi
+fi

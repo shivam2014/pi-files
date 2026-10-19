@@ -6,5 +6,7 @@ extensions/orchestrator/tsconfig.tsbuildinfo
 node_modules/
 evidence/
 .package-lock.json
+package-lock.json
+*.tsbuildinfo
 **/.git/
 extensions/orchestrator/openwiki/.last-update.json
